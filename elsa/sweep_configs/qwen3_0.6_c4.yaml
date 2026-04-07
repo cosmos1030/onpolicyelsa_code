@@ -1,0 +1,50 @@
+# wandb sweep: OPT-125M with math_prompt dataset
+# Same hyperparameters as paper Table 5 (OPT-125M, constant schedule)
+# Comparing with opt125m_sparsity.yaml (C4) to see dataset effect
+#
+# Usage:
+#   cd /home1/doyoonkim/projects/elsa
+#   wandb sweep sweep_configs/opt125m_math_prompt.yaml
+#   sbatch scripts/slurm_sweep_agent.sh <SWEEP_ID>
+
+program: main.py
+command:
+  - ${env}
+  - /home1/doyoonkim/miniconda3/envs/rac/bin/python
+  - ${program}
+  - --dataset=c4
+  - --seqlen=2048
+  - --sparsity_type=unstructured
+  - --admm_steps=4096
+  - --admm_batch_size=1
+  - --admm_gradient_accumulation_steps=8
+  - --admm_beta1=0.9
+  - --admm_beta2=0.999
+  - --admm_base_optimizer=adamw
+  - --admm_precision=bf16
+  - --admm_interval=32
+  - --admm_lmda_schedule_mode=constant
+  - --admm_lr_scheduler=linear
+  - --admm_logging_steps=10
+  - --admm_eval_steps=256
+  - --save_model=True
+  - --admm_save_path=/home1/doyoonkim/projects/elsa/models
+  - --eval_zero_shot=True
+  - --wandb=True
+  - --wandb_project=elsa_qwen3_0.6
+  - ${args}
+
+name: qwen3_0.6_c4_20pct
+method: grid
+project: elsa_qwen3_0.6
+entity: dyk6208-gwangju-institute-of-science-and-technology
+
+parameters:
+  model:
+    value: Qwen/Qwen3-0.6B
+  sparsity_ratio:
+    value: 0.2
+  admm_lr:
+    values: [5e-6, 1e-5, 5e-5, 1e-4]
+  admm_lmda:
+    values: [1e-4, 5e-4, 1e-3, 5e-3, 1e-2]

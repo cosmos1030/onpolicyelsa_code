@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8"/>
+  <title>ELSA + On-Policy KD</title>
+  <script>
+    MathJax = { tex: { inlineMath: [['$','$']], displayMath: [['$$','$$']] } };
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js"></script>
+  <style>
+    body { font-family: 'Segoe UI', sans-serif; max-width: 760px; margin: 52px auto; padding: 0 28px; line-height: 1.85; color: #1a1a1a; font-size: 15px; }
+    h1 { font-size: 1.45rem; border-bottom: 2px solid #222; padding-bottom: 8px; }
+    h2 { font-size: 1.05rem; margin-top: 2em; border-left: 4px solid #2563eb; padding-left: 10px; }
+    hr { border: none; border-top: 1px solid #ddd; margin: 1.4em 0; }
+    p { margin: 0.7em 0; }
+    table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 0.88rem; }
+    th { background: #f1f5f9; padding: 7px 14px; border: 1px solid #cbd5e1; }
+    td { padding: 7px 14px; border: 1px solid #e2e8f0; vertical-align: top; }
+    blockquote { border-left: 4px solid #93c5fd; background: #eff6ff; margin: 10px 0; padding: 10px 18px; border-radius: 0 6px 6px 0; }
+    blockquote p { margin: 0.4em 0; }
+    .alg { border: 1px solid #cbd5e1; border-radius: 8px; padding: 16px 24px; margin: 14px 0; }
+    .alg-title { font-weight: 700; margin-bottom: 10px; }
+  </style>
+</head>
+<body>
+
+<h1>ELSA + On-Policy Knowledge Distillation</h1>
+<hr>
+
+<h2>ELSA 알고리즘</h2>
+
+<p>최적화 문제:</p>
+$$\min_{w,\,z}\; \mathcal{L}(w) \quad \text{s.t.}\quad w = z,\quad z \in \mathcal{S}_s$$
+
+<div class="alg">
+<div class="alg-title">Algorithm 1: ELSA with On-Policy KD</div>
+<hr>
+<p><strong>Input:</strong> Dense model $\pi_T$ (teacher), prompt dataset $\mathcal{D}$, sparsity $s$, penalty $\lambda$</p>
+<p><strong>Initialize:</strong> $w \leftarrow \theta_\text{dense},\quad z \leftarrow \text{Proj}_{\mathcal{S}_s}(w),\quad u \leftarrow 0$</p>
+<hr>
+<p><strong>for</strong> $t = 1, \ldots, T$ <strong>do</strong></p>
+<blockquote>
+  <p>1. Sample prompt $x \sim \mathcal{D}$</p>
+  <p>2. Generate $y \sim \pi_w(\cdot \mid x)$ &nbsp; <em>(student, no gradient)</em></p>
+  <p>3. Compute $\mathcal{L}(w)$ &nbsp; ← <strong>On-Policy KD loss</strong> (아래 참조)</p>
+  <p>4. <strong>w-update</strong>:</p>
+  $$g \leftarrow \nabla_w \mathcal{L}(w) + \lambda(w - z + u), \qquad w \leftarrow w - \eta\,\text{Adam}(g)$$
+  <p>5. <strong>if</strong> $t \bmod \texttt{interval} = 0$:</p>
+  $$z \leftarrow \text{Proj}_{\mathcal{S}_s}(w + u), \qquad u \leftarrow u + (w - z)$$
+</blockquote>
+<p><strong>end for</strong></p>
+<p><strong>return</strong> $\text{Proj}_{\mathcal{S}_s}(w)$</p>
+</div>
+
+<hr>
+
+<h2>Task Loss 비교</h2>
+
+<p>ADMM 구조는 동일. $\mathcal{L}(w)$의 정의만 다름.</p>
+
+<table>
+  <tr>
+    <th></th>
+    <th>NTP</th>
+    <th>KD (offline)</th>
+    <th>On-Policy KD</th>
+  </tr>
+  <tr>
+    <td><strong>학습 시퀀스 $y$</strong></td>
+    <td>고정 CoT trace $y^*$</td>
+    <td>고정 CoT trace $y^*$</td>
+    <td>student 생성 $y \sim \pi_w$</td>
+  </tr>
+  <tr>
+    <td><strong>손실 신호</strong></td>
+    <td>$-\log \pi_w(y^*_t \mid y^*_{&lt;t})$</td>
+    <td>$D\!\left(\pi_T \,\|\, \pi_w\right)$ on $y^*$</td>
+    <td>$D\!\left(\pi_w \,\|\, \pi_T\right)$ on $y$</td>
+  </tr>
+  <tr>
+    <td><strong>Teacher 필요</strong></td>
+    <td>✗</td><td>✓</td><td>✓</td>
+  </tr>
+  <tr>
+    <td><strong>Covariate shift</strong></td>
+    <td>있음</td><td>있음</td><td>없음</td>
+  </tr>
+</table>
+
+<p><strong>NTP:</strong></p>
+$$\mathcal{L}_\text{NTP}(w) = -\,\mathbb{E}_{y^* \sim \mathcal{D}}\!\left[\sum_{t} \log \pi_w\!\left(y^*_t \mid y^*_{&lt;t},\, x\right)\right]$$
+
+<p><strong>KD (offline):</strong> teacher 분포를 타깃으로, 고정된 $y^*$ 위에서 계산.</p>
+$$\mathcal{L}_\text{KD-off}(w) = \mathbb{E}_{y^* \sim \mathcal{D}}\!\left[\sum_{t} D\!\left(\pi_T(\cdot \mid y^*_{&lt;t}, x)\;\Big\|\;\pi_w(\cdot \mid y^*_{&lt;t}, x)\right)\right]$$
+
+<p><strong>On-Policy KD:</strong> student가 생성한 $y$를 사용 → covariate shift 없음.</p>
+$$\mathcal{L}_\text{KD-on}(w) = \mathbb{E}_{y \sim \pi_w(\cdot|x)}\!\left[\sum_{t} D\!\left(\pi_w(\cdot \mid y_{&lt;t}, x)\;\Big\|\;\pi_T(\cdot \mid y_{&lt;t}, x)\right)\right]$$
+
+<hr>
+
+<h2>KL 방향: Reverse vs Forward</h2>
+
+<table>
+  <tr>
+    <th></th>
+    <th>Forward KL &nbsp; $D(\pi_T \| \pi_w)$</th>
+    <th>Reverse KL &nbsp; $D(\pi_w \| \pi_T)$</th>
+  </tr>
+  <tr><td>성질</td><td>mean-seeking</td><td>mode-seeking</td></tr>
+  <tr><td>의미</td><td>teacher 분포 전체를 커버</td><td>teacher의 고확률 영역에 집중</td></tr>
+</table>
+
+<p>현재 실험: <strong>Reverse KL</strong>. 계산 효율을 위해 teacher 기준 top-$k$ ($k{=}50$) 토큰만 사용.</p>
+
+$$\mathcal{L}_\text{KD-on}(w) = \mathbb{E}_{y \sim \pi_w}\!\left[\sum_{t}\sum_{v \in \mathcal{V}_k(t)} \pi_w(v \mid y_{&lt;t}, x)\log\frac{\pi_w(v \mid y_{&lt;t}, x)}{\pi_T(v \mid y_{&lt;t}, x)}\right]$$
+
+</body>
+</html>

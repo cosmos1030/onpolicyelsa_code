@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <title>ELSA 수식 설명</title>
+  <script>
+    MathJax = {
+      tex: { inlineMath: [['$','$'], ['\\(','\\)']] },
+      svg: { fontCache: 'global' }
+    };
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js"></script>
+  <style>
+    body { font-family: 'Segoe UI', sans-serif; max-width: 860px; margin: 60px auto; padding: 0 24px; line-height: 1.8; color: #222; }
+    h1 { border-bottom: 2px solid #333; padding-bottom: 8px; }
+    h2 { margin-top: 2em; border-left: 4px solid #4a90d9; padding-left: 12px; }
+    h3 { margin-top: 1.5em; color: #444; }
+    .box { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 8px; padding: 16px 24px; margin: 16px 0; }
+    .warn { background: #fff8e1; border: 1px solid #f9a825; border-radius: 8px; padding: 16px 24px; margin: 16px 0; }
+    code { background: #eef; padding: 2px 6px; border-radius: 4px; font-size: 0.92em; }
+    table { border-collapse: collapse; width: 100%; margin: 16px 0; }
+    th, td { border: 1px solid #ccc; padding: 8px 14px; text-align: left; }
+    th { background: #f0f4f8; }
+  </style>
+</head>
+<body>
+
+<h1>ELSA 구현 수식 설명</h1>
+<p>코드 기반: <code>lib/gkd_admm_trainer.py</code>, <code>lib/optimizers.py</code></p>
+
+<!-- ======================================================== -->
+<h2>1. 최적화 문제</h2>
+
+<p>원래 목표: task loss를 최소화하면서 sparsity 제약을 만족하는 $w$ 찾기.</p>
+
+<div class="box">
+$$\min_{w} \; \mathcal{L}(w) \quad \text{s.t.} \quad w \in \mathcal{S}_s$$
+</div>
+
+<p>$\mathcal{S}_s$: magnitude 상위 $s$%만 살리고 나머지를 0으로 만드는 집합 (unstructured sparsity).</p>
+
+<p>비볼록 제약을 다루기 위해 ADMM으로 변수 분리:</p>
+
+<div class="box">
+$$\min_{w,z} \; \mathcal{L}(w) \quad \text{s.t.} \quad w = z, \quad z \in \mathcal{S}_s$$
+</div>
+
+<p>Augmented Lagrangian (scaled dual variable $u$ 형태):</p>
+
+<div class="box">
+$$\mathcal{L}_\lambda(w, z, u) = \mathcal{L}(w) + \frac{\lambda}{2}\|w - z + u\|^2$$
+</div>
+
+<!-- ======================================================== -->
+<h2>2. ADMM 업데이트 규칙</h2>
+
+<h3>2-1. w-update (매 step)</h3>
+<p>Adam + proximal term. <code>_proximal_update()</code>에서 gradient에 직접 더해준 뒤 Adam step.</p>
+
+<div class="box">
+$$g_t \;\leftarrow\; \nabla_w \mathcal{L}(w_t) + \lambda\,(w_t - z + u)$$
+$$w_{t+1} \;\leftarrow\; w_t - \text{Adam}(g_t)$$
+</div>
+
+<p>코드 대응:</p>
+<pre><code>penalty = w.detach() - split.detach() + dual.detach()   # w - z + u
+prox    = lmda * penalty
+w.grad.add_(prox)                                        # gradient에 더함
+super().step()                                           # Adam step</code></pre>
+
+<h3>2-2. z-update (매 <code>interval=32</code> steps)</h3>
+<p>Projection: $w + u$에서 magnitude 기준 상위 $(1-s)$% 살리고 나머지 zeroing.</p>
+
+<div class="box">
+$$z^{k+1} \;=\; \text{Proj}_{\mathcal{S}_s}(w + u)$$
+</div>
+
+<p>코드 대응:</p>
+<pre><code>z_in  = w.detach() + dual.detach()          # w + u
+z_new = projection([z_in], sparsity, ...)</code></pre>
+
+<h3>2-3. u-update (z-update와 동시)</h3>
+<p>Dual ascent: residual $w - z$를 누적.</p>
+
+<div class="box">
+$$u^{k+1} \;=\; u^k + (w - z^{k+1})$$
+</div>
+
+<p>코드 대응:</p>
+<pre><code>u_new = dual.detach() + (w.detach() - z_new)
+dual.copy_(u_new)</code></pre>
+
+<h3>2-4. Lambda 스케줄 (cosine)</h3>
+
+<div class="box">
+$$\lambda_t \;=\; \lambda_0 + (\lambda_T - \lambda_0)\cdot\frac{1 - \cos(\pi\, t/T)}{2}$$
+</div>
+
+<p>현재 설정: <code>init_lmda=5e-5</code>, <code>final_lmda=5e-5</code> (상수) → 사실상 constant schedule.</p>
+
+<!-- ======================================================== -->
+<h2>3. Task Loss $\mathcal{L}(w)$</h2>
+
+<h3>3-1. On-policy 생성</h3>
+<p>매 training step에서 현재 student $\pi_\theta$로 응답 샘플링:</p>
+
+<div class="box">
+$$y \;\sim\; \pi_\theta(\cdot \mid x), \quad y = (y_1, \ldots, y_T)$$
+</div>
+
+<h3>3-2. KD Loss (Reverse KL, top-$k$ 필터링)</h3>
+
+<div class="box">
+$$\mathcal{L}_\text{KD} \;=\; \mathbb{E}_{x,y}\!\left[\frac{1}{T}\sum_{t=1}^{T} \sum_{v \in \mathcal{V}_k(t)} p_s^{(t)}(v)\,\log\frac{p_s^{(t)}(v)}{p_T^{(t)}(v)}\right]$$
+</div>
+
+<ul>
+  <li>$p_s^{(t)}$: student의 위치 $t$ 분포</li>
+  <li>$p_T^{(t)}$: teacher (dense 원본 모델)의 위치 $t$ 분포</li>
+  <li>$\mathcal{V}_k(t)$: teacher 기준 상위 $k=50$ 토큰 집합 (<code>kd_topk=50</code>)</li>
+</ul>
+
+<p>코드 대응:</p>
+<pre><code>topk_idx = t_logits.topk(50, dim=-1).indices     # teacher top-50
+s_logits  = s_logits.gather(-1, topk_idx)         # student도 동일 위치
+t_logits  = t_logits.gather(-1, topk_idx)
+
+s_logp = log_softmax(s_logits / T_kd)
+t_logp = log_softmax(t_logits / T_kd)
+
+kl = (s_logp.exp() * (s_logp - t_logp)).sum(dim=-1)   # KL per token
+kd_loss = (kl * gen_mask).sum() / gen_mask.sum()</code></pre>
+
+<p><strong>Reverse KL</strong>: student이 teacher에 비해 mode-seeking. Forward KL보다 분포가 날카로워지는 경향.</p>
+
+<h3>3-3. NTP Loss (현재 비활성)</h3>
+<p>Prompt 토큰에 대한 cross-entropy. <code>ntp_lambda=0</code>이라 현재 안 씀.</p>
+
+<div class="box">
+$$\mathcal{L}_\text{NTP} \;=\; -\mathbb{E}\!\left[\sum_{t=1}^{|x|} \log \pi_\theta(x_t \mid x_{<t})\right]$$
+</div>
+
+<h3>3-4. 최종 loss</h3>
+
+<div class="box">
+$$\mathcal{L}(w) \;=\; \mathcal{L}_\text{KD} + \lambda_\text{NTP} \cdot \mathcal{L}_\text{NTP}$$
+</div>
+
+<p>현재: $\lambda_\text{NTP} = 0$ → $\mathcal{L}(w) = \mathcal{L}_\text{KD}$</p>
+
+<!-- ======================================================== -->
+<h2>4. 전체 알고리즘 흐름</h2>
+
+<div class="box">
+<p><strong>초기화</strong>: $z^0 = \text{Proj}(w_0)$, $u^0 = 0$</p>
+<p><strong>for</strong> $t = 1, \ldots, T$:</p>
+<ol>
+  <li>$y \sim \pi_\theta(\cdot|x)$ &nbsp;(on-policy generation, no grad)</li>
+  <li>$g_t = \nabla_w \mathcal{L}_\text{KD}(w; x, y) + \lambda(w - z + u)$</li>
+  <li>$w_{t+1} = w_t - \text{Adam}(g_t)$</li>
+  <li><strong>if</strong> $t \bmod 32 = 0$:</li>
+  <ul>
+    <li>$z \leftarrow \text{Proj}_{\mathcal{S}_s}(w + u)$</li>
+    <li>$u \leftarrow u + (w - z)$</li>
+  </ul>
+</ol>
+<p><strong>최종</strong>: $w \leftarrow \text{Proj}(w)$ (hard sparsification)</p>
+</div>
+
+<!-- ======================================================== -->
+<h2>5. Lambda 문제</h2>
+
+<div class="warn">
+<p><strong>현재 설정</strong>: <code>lr=1e-2</code>, <code>lmda=5e-5</code></p>
+<p><strong>원래 ELSA 논문 세팅</strong>: <code>lr=1e-1</code>, <code>lmda=5e-5</code></p>
+<p>→ lr을 10배 낮췄는데 lmda는 그대로.</p>
+
+<p>Adam step의 effective scale은 lr에 비례. proximal term $\lambda(w-z+u)$는 gradient에 절대값으로 더해지므로, lr이 낮을수록 Adam step 대비 penalty의 상대적 영향이 커짐.</p>
+
+<p>즉, task gradient $\nabla \mathcal{L}_\text{KD}$가 줄어드는 상황에서 penalty $\lambda(w-z+u)$는 그대로 → <strong>ADMM sparsity 제약이 상대적으로 너무 강하게 작용</strong>할 수 있음.</p>
+
+<table>
+  <tr><th>설정</th><th>lr</th><th>lmda</th><th>lmda/lr 비율</th></tr>
+  <tr><td>논문 세팅</td><td>1e-1</td><td>5e-5</td><td>5e-4</td></tr>
+  <tr><td>현재 스크립트</td><td>1e-2</td><td>5e-5</td><td>5e-3 <strong>(10배)</strong></td></tr>
+  <tr><td>비율 맞춘 경우</td><td>1e-2</td><td>5e-6</td><td>5e-4</td></tr>
+</table>
+</div>
+
+<!-- ======================================================== -->
+<h2>6. 속도 문제</h2>
+
+<div class="warn">
+<p><strong>현재</strong>: <code>BS=1</code>, <code>grad_accum=8</code> → <code>training_step()</code>이 8번 호출 → <code>generate()</code> 8번 순차 실행</p>
+<p>→ 8 × 73s = <strong>584s/step</strong> (~9.7분), 1024 steps × 9.7분 = <strong>ETA 166시간</strong></p>
+
+<p><strong>Fix</strong>: <code>BS=8</code>, <code>grad_accum=1</code>로 변경하면 generate()를 1번만 호출</p>
+<p>→ 약 73s/step, 1024 steps = <strong>약 20시간</strong> (8× 개선)</p>
+</div>
+
+</body>
+</html>

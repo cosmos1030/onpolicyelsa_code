@@ -1,0 +1,14 @@
+python src/open_r1/grpo.py \
+  --config recipes/DeepSeek-R1-Distill-Qwen-1.5B/grpo/config_demo.yaml \
+  --model_name_or_path deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B \
+  --dataset_name open-r1/OpenR1-Math-220k \
+  --dataset_prompt_column problem \
+  --save_dir ./ \
+  --num_generations 2 \
+  --beta 0 \
+  --report_to wandb \
+  --use_vllm False \
+  --max_completion_length 8192 \
+  --do_train False \
+  --trace_only \
+  --trace_tokens 1_000_000

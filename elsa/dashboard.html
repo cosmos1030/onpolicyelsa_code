@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8"/>
+  <title>ELSA Dashboard</title>
+  <style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'Segoe UI', sans-serif; background: #f0f2f5; color: #222; padding: 24px; }
+h1 { font-size: 1.6rem; margin-bottom: 4px; }
+.subtitle { color: #666; font-size: 0.9rem; margin-bottom: 24px; }
+.section { background: #fff; border-radius: 10px; padding: 20px 24px; margin-bottom: 20px; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
+.section h2 { font-size: 1.1rem; margin-bottom: 14px; border-bottom: 2px solid #e0e0e0; padding-bottom: 8px; }
+table { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
+th { background: #f6f8fa; text-align: left; padding: 8px 10px; font-weight: 600; border-bottom: 2px solid #e0e0e0; white-space: nowrap; }
+td { padding: 8px 10px; border-bottom: 1px solid #f0f0f0; vertical-align: top; }
+tr:last-child td { border-bottom: none; }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 0.78rem; font-weight: 600; }
+.badge.running  { background: #e3f2fd; color: #1565c0; }
+.badge.done     { background: #e8f5e9; color: #2e7d32; }
+.badge.failed   { background: #ffebee; color: #c62828; }
+.badge.pending  { background: #fff8e1; color: #f57f17; }
+.badge.cancelled{ background: #f3e5f5; color: #6a1b9a; }
+.result-good { color: #2e7d32; font-weight: 700; }
+.result-ok   { color: #e65100; font-weight: 700; }
+.result-bad  { color: #c62828; }
+code { background: #f3f4f6; padding: 1px 5px; border-radius: 3px; font-size: 0.85em; font-family: monospace; }
+.path { font-family: monospace; font-size: 0.80em; color: #555; word-break: break-all; }
+.note { color: #777; font-size: 0.80em; margin-top: 3px; }
+a { color: #1a73e8; text-decoration: none; }
+a:hover { text-decoration: underline; }
+.tag { display: inline-block; padding: 2px 7px; border-radius: 4px; font-size: 0.78rem; background: #eef2ff; color: #3730a3; margin: 1px; }
+</style>
+</head>
+<body>
+<h1>ELSA Experiment Dashboard</h1>
+<p class="subtitle">자동생성: 2026-04-06 20:36:01 | <a href="elsa_math.html">수식 설명 ↗</a></p>
+
+<div class="section">
+  <h2>⚡ 현재 Slurm Jobs</h2>
+  <table><tr><th>Job ID</th><th>상태</th><th>이름 / 파티션 / 시간</th><th>로그</th><th>wandb</th><th>결과</th></tr>
+        <tr>
+          <td><b>300679</b></td>
+          <td><span class="badge running">running</span></td>
+          <td>elsa_sweep_ntp_cot<div class="note">A100-80GB | 11:42 / 3-00:00:00</div></td>
+          <td><span class="path">/home1/doyoonkim/projects/elsa/output_qwen/300679.out</span></td>
+          <td>—</td>
+          <td>—<div class="note"></div></td>
+        </tr>
+        <tr>
+          <td><b>300680</b></td>
+          <td><span class="badge running">running</span></td>
+          <td>elsa_sweep_ntp_cot<div class="note">A100-80GB | 11:42 / 3-00:00:00</div></td>
+          <td><span class="path">/home1/doyoonkim/projects/elsa/output_qwen/300680.out</span></td>
+          <td>—</td>
+          <td>—<div class="note"></div></td>
+        </tr>
+        <tr>
+          <td><b>300681</b></td>
+          <td><span class="badge running">running</span></td>
+          <td>elsa_sweep_ntp_cot<div class="note">A100-80GB | 11:42 / 3-00:00:00</div></td>
+          <td><span class="path">/home1/doyoonkim/projects/elsa/output_qwen/300681.out</span></td>
+          <td>—</td>
+          <td>—<div class="note"></div></td>
+        </tr>
+        <tr>
+          <td><b>300682</b></td>
+          <td><span class="badge running">running</span></td>
+          <td>elsa_sweep_ntp_cot<div class="note">A100-80GB | 11:42 / 3-00:00:00</div></td>
+          <td><span class="path">/home1/doyoonkim/projects/elsa/output_qwen/300682.out</span></td>
+          <td>—</td>
+          <td>—<div class="note"></div></td>
+        </tr>
+        <tr>
+          <td><b>288458</b></td>
+          <td><span class="badge running">running</span></td>
+          <td>elsa_qwen3_kd_2k<div class="note">A100-80GB | 1-19:51:18 / 3-00:00:00</div></td>
+          <td><span class="path">/home1/doyoonkim/projects/elsa/output_qwen/288458.out</span></td>
+          <td>—</td>
+          <td>—<div class="note"></div></td>
+        </tr></table>
+</div>
+
+<div class="section">
+  <h2>🔄 wandb Sweeps</h2>
+  <table>
+    <tr><th>ID</th><th>Project</th><th>이름</th><th>상태</th><th>Runs</th><th>Best math500</th><th>링크</th></tr>
+    
+        <tr>
+          <td><code>9flioyoy</code></td>
+          <td>elsa_qwen3_0.6b</td>
+          <td>sweep_ntp_cot_qwen3</td>
+          <td><span class="badge pending">unknown</span></td>
+          <td>4</td>
+          <td>—</td>
+          <td><a href="https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/elsa_qwen3_0.6b/sweeps/9flioyoy" target="_blank">↗ ↗</a></td>
+        </tr>
+        <tr>
+          <td><code>xzqfhcwu</code></td>
+          <td>rac_qwen3_0.6_pruning</td>
+          <td>qwen3_0.6_prune_and_eval_20p</td>
+          <td><span class="badge done">done</span></td>
+          <td>3</td>
+          <td>—</td>
+          <td><a href="https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/rac_qwen3_0.6_pruning/sweeps/xzqfhcwu" target="_blank">↗ ↗</a></td>
+        </tr>
+        <tr>
+          <td><code>8yfojeo4</code></td>
+          <td>rac_qwen3_0.6_pruning</td>
+          <td>qwen3_0.6_prune_and_eval_30p</td>
+          <td><span class="badge done">done</span></td>
+          <td>3</td>
+          <td>—</td>
+          <td><a href="https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/rac_qwen3_0.6_pruning/sweeps/8yfojeo4" target="_blank">↗ ↗</a></td>
+        </tr>
+        <tr>
+          <td><code>p00yog1b</code></td>
+          <td>rac_qwen3_0.6_pruning</td>
+          <td>qwen3_0.6_gkd</td>
+          <td><span class="badge done">done</span></td>
+          <td>4</td>
+          <td>—</td>
+          <td><a href="https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/rac_qwen3_0.6_pruning/sweeps/p00yog1b" target="_blank">↗ ↗</a></td>
+        </tr>
+  </table>
+</div>
+
+<div class="section">
+  <h2>📋 wandb Runs (최근 30개)</h2>
+  <table><tr><th>Run ID</th><th>상태</th><th>Project</th><th>이름 / 설정</th><th>Sweep</th><th>wandb</th><th>MATH-500</th></tr>
+        <tr>
+          <td><code>pml729n3</code><div class="note">2026-04-04</div></td>
+          <td><span class="badge running">running</span></td>
+          <td>elsa_qwen3_0.6b</td>
+          <td>kd_admm_s0.5_steps1024_tok2048_lr0.01<br><span class="tag">Qwen3-0.6B</span><span class="tag">s=0.5</span><span class="tag">c4</span><span class="tag">lr=0.01</span><span class="tag">λ=5e-05</span></td>
+          <td>—</td>
+          <td><a href="https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/elsa_qwen3_0.6b/runs/pml729n3" target="_blank">run ↗ ↗</a></td>
+          <td>—</td>
+        </tr>
+        <tr>
+          <td><code>ij66sqbi</code><div class="note">2026-04-04</div></td>
+          <td><span class="badge failed">crashed</span></td>
+          <td>elsa_qwen3_0.6b</td>
+          <td>kd_admm_s0.5_steps1024_tok2048_lr0.01<br><span class="tag">Qwen3-0.6B</span><span class="tag">s=0.5</span><span class="tag">c4</span><span class="tag">lr=0.01</span><span class="tag">λ=5e-05</span></td>
+          <td>—</td>
+          <td><a href="https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/elsa_qwen3_0.6b/runs/ij66sqbi" target="_blank">run ↗ ↗</a></td>
+          <td>—</td>
+        </tr>
+        <tr>
+          <td><code>qqf79t88</code><div class="note">2026-04-04</div></td>
+          <td><span class="badge failed">crashed</span></td>
+          <td>elsa_qwen3_0.6b</td>
+          <td>kd_admm_s0.5_steps1024_tok2048_lr0.01<br><span class="tag">Qwen3-0.6B</span><span class="tag">s=0.5</span><span class="tag">c4</span><span class="tag">lr=0.01</span><span class="tag">λ=5e-05</span></td>
+          <td>—</td>
+          <td><a href="https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/elsa_qwen3_0.6b/runs/qqf79t88" target="_blank">run ↗ ↗</a></td>
+          <td>—</td>
+        </tr>
+        <tr>
+          <td><code>2cx3ool3</code><div class="note">2026-04-04</div></td>
+          <td><span class="badge failed">crashed</span></td>
+          <td>elsa_qwen3_0.6b</td>
+          <td>kd_admm_s0.5_steps1024_tok2048_lr0.01<br><span class="tag">Qwen3-0.6B</span><span class="tag">s=0.5</span><span class="tag">c4</span><span class="tag">lr=0.01</span><span class="tag">λ=5e-05</span></td>
+          <td>—</td>
+          <td><a href="https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/elsa_qwen3_0.6b/runs/2cx3ool3" target="_blank">run ↗ ↗</a></td>
+          <td>—</td>
+        </tr>
+        <tr>
+          <td><code>kh2fxx57</code><div class="note">2026-04-04</div></td>
+          <td><span class="badge failed">failed</span></td>
+          <td>elsa_qwen3_0.6b</td>
+          <td>kd_admm_s0.5_steps1024_tok2048_lr0.01<br><span class="tag">Qwen3-0.6B</span><span class="tag">s=0.5</span><span class="tag">c4</span><span class="tag">lr=0.01</span><span class="tag">λ=5e-05</span></td>
+          <td>—</td>
+          <td><a href="https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/elsa_qwen3_0.6b/runs/kh2fxx57" target="_blank">run ↗ ↗</a></td>
+          <td>—</td>
+        </tr>
+        <tr>
+          <td><code>hfzia7l0</code><div class="note">2026-04-04</div></td>
+          <td><span class="badge failed">failed</span></td>
+          <td>elsa_qwen3_0.6b</td>
+          <td>kd_admm_s0.5_steps1024_tok2048_lr0.01<br><span class="tag">Qwen3-0.6B</span><span class="tag">s=0.5</span><span class="tag">c4</span><span class="tag">lr=0.01</span><span class="tag">λ=5e-05</span></td>
+          <td>—</td>
+          <td><a href="https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/elsa_qwen3_0.6b/runs/hfzia7l0" target="_blank">run ↗ ↗</a></td>
+          <td>—</td>
+        </tr>
+        <tr>
+          <td><code>70cdab2u</code><div class="note">2026-04-04</div></td>
+          <td><span class="badge failed">failed</span></td>
+          <td>elsa_qwen3_0.6b</td>
+          <td>kd_admm_s0.5_steps1024_tok2048_lr0.01<br><span class="tag">Qwen3-0.6B</span><span class="tag">s=0.5</span><span class="tag">c4</span><span class="tag">lr=0.01</span><span class="tag">λ=5e-05</span></td>
+          <td>—</td>
+          <td><a href="https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/elsa_qwen3_0.6b/runs/70cdab2u" target="_blank">run ↗ ↗</a></td>
+          <td>—</td>
+        </tr></table>
+</div>
+
+<div class="section">
+  <h2>📈 알려진 결과 (MATH-500 pass@1)</h2>
+  <table>
+    <tr><th>모델</th><th>Sparsity</th><th>방법</th><th>MATH-500</th><th>출처</th></tr>
+    
+        <tr>
+          <td>Qwen3-0.6B</td>
+          <td>0%</td>
+          <td>Dense</td>
+          <td><span class="result-good">0.726</span></td>
+          <td>—<div class="note">Job 299607, 28.3min, max_new_tokens=32768</div></td>
+        </tr>
+        <tr>
+          <td>Qwen3-0.6B</td>
+          <td>30%</td>
+          <td>SparseGPT (C4)</td>
+          <td><span class="result-ok">0.542</span></td>
+          <td>—<div class="note">Job 296842, ⚠ max_new_tokens=4096 (낮게 나왔을 수 있음)</div></td>
+        </tr>
+        <tr>
+          <td>DS-R1-Distill-1.5B</td>
+          <td>0%</td>
+          <td>Dense</td>
+          <td><span class="result-good">0.832</span></td>
+          <td>—<div class="note">RAC 논문</div></td>
+        </tr>
+        <tr>
+          <td>DS-R1-Distill-1.5B</td>
+          <td>50%</td>
+          <td>RAC (prompt+CoT)</td>
+          <td><span class="result-ok">0.664</span></td>
+          <td>—<div class="note">RAC 논문</div></td>
+        </tr>
+        <tr>
+          <td>DS-R1-Distill-7B</td>
+          <td>0%</td>
+          <td>Dense</td>
+          <td><span class="result-good">0.936</span></td>
+          <td>—<div class="note">RAC 논문</div></td>
+        </tr>
+        <tr>
+          <td>DS-R1-Distill-7B</td>
+          <td>50%</td>
+          <td>RAC (prompt+CoT)</td>
+          <td><span class="result-good">0.900</span></td>
+          <td>—<div class="note">RAC 논문</div></td>
+        </tr>
+  </table>
+</div>
+
+<div class="section">
+  <h2>📁 주요 경로</h2>
+  <table>
+    <tr><th>설명</th><th>경로</th></tr>
+    <tr><td>ELSA</td><td><span class="path">/home1/doyoonkim/projects/elsa/</span></td></tr>
+    <tr><td>RAC</td><td><span class="path">/home1/doyoonkim/projects/RAC/open-r1-main/</span></td></tr>
+    <tr><td>Math CoT data</td><td><span class="path">/home1/doyoonkim/projects/elsa/data/math_220k_cot.jsonl</span></td></tr>
+    <tr><td>Math Prompts data</td><td><span class="path">/home1/doyoonkim/projects/elsa/data/math_220k_prompts.jsonl</span></td></tr>
+    <tr><td>모델 저장</td><td><span class="path">/home1/doyoonkim/projects/elsa/models/</span></td></tr>
+    <tr><td>ELSA 로그</td><td><span class="path">/home1/doyoonkim/projects/elsa/output_qwen/</span></td></tr>
+    <tr><td>RAC 로그</td><td><span class="path">/home1/doyoonkim/projects/RAC/open-r1-main/output_qwen/</span></td></tr>
+    <tr><td>Sweep config</td><td><span class="path">/home1/doyoonkim/projects/elsa/config/sweep_qwen_ntp_cot.yaml</span></td></tr>
+    <tr><td>대시보드 생성 스크립트</td><td><span class="path">/home1/doyoonkim/projects/elsa/scripts/gen_dashboard.py</span></td></tr>
+    <tr><td>수식 설명</td><td><span class="path">/home1/doyoonkim/projects/elsa/elsa_math.html</span></td></tr>
+    <tr><td>Dense Qwen3-0.6B 캐시</td><td><span class="path">/home1/doyoonkim/.cache/huggingface/hub/models--Qwen--Qwen3-0.6B/snapshots/c1899de289a04d12100db370d81485cdf75e47ca</span></td></tr>
+  </table>
+</div>
+
+</body>
+</html>

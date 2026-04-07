@@ -1,0 +1,10 @@
+wandb/
+output/
+__pycache__/
+*.log
+*.pt
+*.ckpt
+*.bin
+admm*/
+dataset/
+distill_output/

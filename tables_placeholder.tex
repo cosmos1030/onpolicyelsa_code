@@ -1,0 +1,236 @@
+% ============================================================
+%  Placeholder Tables for ELSA Paper
+%  Values marked as \ph{} are to be filled after experiments.
+%  \ph{} = placeholder, \bf{} = best in group (to be bolded).
+% ============================================================
+\documentclass{article}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{xcolor}
+\usepackage{colortbl}
+\usepackage{amsmath}
+\usepackage{makecell}
+\usepackage{caption}
+\usepackage{geometry}
+\geometry{margin=1in}
+
+\newcommand{\ph}[1]{\textcolor{gray}{#1}}   % placeholder value
+\newcommand{\best}[1]{\textbf{#1}}          % best result
+\newcommand{\ours}{\textbf{Ours}}
+\newcommand{\dagger}{$^\dagger$}
+
+\begin{document}
+
+% ============================================================
+% TABLE 1: Main Results
+% Comparison across pruning methods and sparse retrain methods
+% at 50% sparsity. MATH-500 acc@1.
+% ============================================================
+
+\begin{table*}[t]
+\centering
+\caption{
+  \textbf{MATH-500 accuracy (acc@1) at 50\% unstructured sparsity.}
+  We compare one-shot pruning baselines (RAC, SparseGPT) with and without
+  post-pruning sparse retraining, against our proposed ELSA which jointly
+  prunes and trains. All methods use SparseGPT as the base pruning algorithm
+  with 1M calibration tokens. \emph{Retrain} methods apply additional
+  fine-tuning after one-shot RAC pruning. ELSA simultaneously prunes and
+  optimizes via ADMM. $\dagger$ denotes results from \citet{lucas2025rac}.
+}
+\label{tab:main}
+\setlength{\tabcolsep}{5pt}
+\begin{tabular}{llccc}
+\toprule
+\multirow{2}{*}{\textbf{Category}} & \multirow{2}{*}{\textbf{Method}}
+  & \textbf{Qwen3-0.6B} & \textbf{DS-R1-Distill-1.5B} & \textbf{DS-R1-Distill-7B} \\
+  & & MATH-500 & MATH-500 & MATH-500 \\
+\midrule
+Dense (unpruned)
+  & ---
+  & \ph{0.XXX}
+  & 0.832$^\dagger$
+  & 0.936$^\dagger$ \\
+\midrule
+\multirow{3}{*}{\makecell[l]{One-shot\\(no retrain)}}
+  & SparseGPT (C4)
+  & \ph{0.XXX}
+  & 0.356$^\dagger$
+  & 0.744$^\dagger$ \\
+  & SparseGPT (Prompt-only)
+  & \ph{0.XXX}
+  & 0.496$^\dagger$
+  & 0.812$^\dagger$ \\
+  & RAC (Prompt + CoT)
+  & \ph{0.XXX}
+  & 0.664$^\dagger$
+  & 0.900$^\dagger$ \\
+\midrule
+\multirow{4}{*}{\makecell[l]{RAC\\+ Sparse Retrain}}
+  & RAC + SFT
+  & \ph{0.XXX}
+  & \ph{0.XXX}
+  & \ph{0.XXX} \\
+  & RAC + GRPO
+  & \ph{0.XXX}
+  & \ph{0.XXX}
+  & \ph{0.XXX} \\
+  & RAC + KD (offline)
+  & \ph{0.XXX}
+  & \ph{0.XXX}
+  & \ph{0.XXX} \\
+  & RAC + On-Policy KD
+  & \ph{0.XXX}
+  & \ph{0.XXX}
+  & \ph{0.XXX} \\
+\midrule
+\multirow{2}{*}{\ours}
+  & ELSA (NTP)
+  & \ph{0.XXX}
+  & \ph{0.XXX}
+  & \ph{0.XXX} \\
+  & ELSA (NTP + On-Policy KD)
+  & \best{\ph{0.XXX}}
+  & \best{\ph{0.XXX}}
+  & \best{\ph{0.XXX}} \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+
+% ============================================================
+% TABLE 2: Sparsity Ablation
+% Fix method, sweep sparsity: 20 / 30 / 40 / 50 %
+% Model: DS-R1-Distill-7B (matches RAC paper's main model)
+%        + Qwen3-0.6B
+% ============================================================
+
+\begin{table*}[t]
+\centering
+\caption{
+  \textbf{MATH-500 accuracy across sparsity levels.}
+  We report acc@1 for DeepSeek-R1-Distill-7B (top) and Qwen3-0.6B (bottom)
+  under increasing unstructured sparsity. One-shot RAC and RAC+On-Policy KD
+  serve as baselines; ELSA (NTP+KD) is our proposed method.
+  $\dagger$ denotes results from \citet{lucas2025rac}.
+}
+\label{tab:sparsity_ablation}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Method} & \textbf{20\%} & \textbf{30\%} & \textbf{40\%} & \textbf{50\%} \\
+\midrule
+\multicolumn{5}{l}{\textit{DeepSeek-R1-Distill-7B}} \\
+\midrule
+Dense (unpruned)
+  & \multicolumn{4}{c}{0.936$^\dagger$} \\
+SparseGPT (C4)
+  & 0.902$^\dagger$ & 0.904$^\dagger$ & 0.890$^\dagger$ & 0.744$^\dagger$ \\
+RAC (one-shot)
+  & 0.934$^\dagger$ & 0.934$^\dagger$ & 0.912$^\dagger$ & 0.900$^\dagger$ \\
+RAC + SFT
+  & \ph{0.XXX} & \ph{0.XXX} & \ph{0.XXX} & \ph{0.XXX} \\
+RAC + On-Policy KD
+  & \ph{0.XXX} & \ph{0.XXX} & \ph{0.XXX} & \ph{0.XXX} \\
+ELSA (NTP)
+  & \ph{0.XXX} & \ph{0.XXX} & \ph{0.XXX} & \ph{0.XXX} \\
+ELSA (NTP + On-Policy KD) [\ours]
+  & \best{\ph{0.XXX}} & \best{\ph{0.XXX}} & \best{\ph{0.XXX}} & \best{\ph{0.XXX}} \\
+\midrule
+\multicolumn{5}{l}{\textit{Qwen3-0.6B}} \\
+\midrule
+Dense (unpruned)
+  & \multicolumn{4}{c}{\ph{0.XXX}} \\
+SparseGPT (C4)
+  & \ph{0.XXX} & \ph{0.XXX} & \ph{0.XXX} & \ph{0.XXX} \\
+RAC (one-shot)
+  & \ph{0.XXX} & \ph{0.XXX} & \ph{0.XXX} & \ph{0.XXX} \\
+RAC + On-Policy KD
+  & \ph{0.XXX} & \ph{0.XXX} & \ph{0.XXX} & \ph{0.XXX} \\
+ELSA (NTP + On-Policy KD) [\ours]
+  & \best{\ph{0.XXX}} & \best{\ph{0.XXX}} & \best{\ph{0.XXX}} & \best{\ph{0.XXX}} \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+
+% ============================================================
+% TABLE 3: Sparse Retrain Method Ablation
+% Fix: DS-R1-Distill-7B, 50% sparsity, RAC pruning baseline
+% Compare post-pruning retrain strategies
+% ============================================================
+
+\begin{table*}[t]
+\centering
+\caption{
+  \textbf{Ablation on sparse retraining strategy.}
+  DeepSeek-R1-Distill-7B at 50\% unstructured sparsity.
+  All \emph{retrain} methods start from a RAC-pruned checkpoint.
+  ELSA methods perform pruning and training jointly via ADMM.
+  MATH-500 acc@1 reported. Teacher model for KD methods is the
+  corresponding dense model.
+}
+\label{tab:retrain_ablation}
+\begin{tabular}{llc}
+\toprule
+\textbf{Pruning} & \textbf{Training} & \textbf{MATH-500} \\
+\midrule
+\multirow{5}{*}{RAC (one-shot)}
+  & None (pruning only)           & 0.900$^\dagger$ \\
+  & SFT (NTP on CoT traces)       & \ph{0.XXX} \\
+  & GRPO                          & \ph{0.XXX} \\
+  & KD, offline (teacher logits)  & \ph{0.XXX} \\
+  & On-Policy KD (GKD)            & \ph{0.XXX} \\
+\midrule
+\multirow{2}{*}{ELSA (joint, \ours)}
+  & NTP only                      & \ph{0.XXX} \\
+  & NTP + On-Policy KD            & \best{\ph{0.XXX}} \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+
+% ============================================================
+% TABLE 4: DeepSeek-R1-Distill-1.5B Main Ablation
+% Qwen3-0.6B is a new model so focus on 1.5B too
+% to directly extend RAC paper's Table 1
+% ============================================================
+
+\begin{table*}[t]
+\centering
+\caption{
+  \textbf{MATH-500 accuracy for DeepSeek-R1-Distill-1.5B across sparsity levels.}
+  This extends Table~1 of \citet{lucas2025rac} with post-pruning retrain
+  and joint pruning+training (ELSA) baselines.
+  $\dagger$ denotes results from \citet{lucas2025rac}.
+}
+\label{tab:1.5b_main}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Method} & \textbf{20\%} & \textbf{30\%} & \textbf{40\%} & \textbf{50\%} \\
+\midrule
+Dense (unpruned)
+  & \multicolumn{4}{c}{0.832$^\dagger$} \\
+\midrule
+SparseGPT (C4)
+  & 0.822$^\dagger$ & 0.762$^\dagger$ & 0.658$^\dagger$ & 0.356$^\dagger$ \\
+SparseGPT (Prompt-only)
+  & 0.840$^\dagger$ & 0.788$^\dagger$ & 0.728$^\dagger$ & 0.496$^\dagger$ \\
+RAC
+  & 0.832$^\dagger$ & 0.822$^\dagger$ & 0.774$^\dagger$ & 0.664$^\dagger$ \\
+\midrule
+RAC + SFT
+  & \ph{0.XXX} & \ph{0.XXX} & \ph{0.XXX} & \ph{0.XXX} \\
+RAC + GRPO
+  & \ph{0.XXX} & \ph{0.XXX} & \ph{0.XXX} & \ph{0.XXX} \\
+RAC + On-Policy KD
+  & \ph{0.XXX} & \ph{0.XXX} & \ph{0.XXX} & \ph{0.XXX} \\
+\midrule
+ELSA (NTP) [\ours]
+  & \ph{0.XXX} & \ph{0.XXX} & \ph{0.XXX} & \ph{0.XXX} \\
+ELSA (NTP + On-Policy KD) [\ours]
+  & \best{\ph{0.XXX}} & \best{\ph{0.XXX}} & \best{\ph{0.XXX}} & \best{\ph{0.XXX}} \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\end{document}

@@ -1,0 +1,11 @@
+
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+/out/*
+/wandb/*
+dataset/
+/admm_*/*
+/memory/
+/plot_results/

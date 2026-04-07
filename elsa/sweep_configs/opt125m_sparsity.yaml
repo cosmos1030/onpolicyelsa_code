@@ -1,0 +1,51 @@
+# wandb sweep: OPT-125M, sweep over sparsity levels
+# Hyperparameters from ELSA paper Table 4 & 5 (constant schedule)
+# Paper: OPT-125M at 50%: lr=1e-5/λ=1e-2, 70%: lr=1e-4/λ=2e-3, 90%: lr=2e-4/λ=1e-3
+# Here we use 70% values as a compromise for all sparsity levels (3 runs total)
+#
+# Usage:
+#   cd /home1/doyoonkim/projects/elsa
+#   wandb sweep sweep_configs/opt125m_sparsity.yaml   # prints SWEEP_ID
+#   sbatch scripts/slurm_sweep_agent.sh <SWEEP_ID>    # submit 3 agents (one per run)
+
+program: main.py
+command:
+  - ${env}
+  - /home1/doyoonkim/miniconda3/envs/elsa/bin/python
+  - ${program}
+  - --dataset=c4
+  - --seqlen=2048
+  - --sparsity_type=unstructured
+  - --admm_steps=4096
+  - --admm_batch_size=2
+  - --admm_gradient_accumulation_steps=4
+  - --admm_beta1=0.9
+  - --admm_beta2=0.999
+  - --admm_base_optimizer=adamw
+  - --admm_precision=bf16
+  - --admm_interval=32
+  - --admm_lmda_schedule_mode=constant
+  - --admm_lr_scheduler=linear
+  - --admm_logging_steps=10
+  - --admm_eval_steps=256
+  - --save_model=True
+  - --admm_save_path=/home1/doyoonkim/projects/elsa/models
+  - --eval_zero_shot=True
+  - --wandb=True
+  - --wandb_project=elsa_opt125m
+  - ${args}
+
+name: opt125m_c4_50pct_lr_search
+method: grid
+project: elsa_opt125m
+entity: dyk6208-gwangju-institute-of-science-and-technology
+
+parameters:
+  model:
+    value: facebook/opt-125m
+  sparsity_ratio:
+    value: 0.5
+  admm_lr:
+    values: [1e-5, 5e-5]
+  admm_lmda:
+    value: 1e-2

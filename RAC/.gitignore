@@ -1,0 +1,53 @@
+dataset*/
+wandb/
+logs/
+checkpoints/
+.offload_cache/
+.empty/
+data/
+**/__pycache__/
+*.log
+*.pt
+traces/
+dataset*
+*.pyc
+__pycache__/*
+**/*.pyc
+
+open-r1-main/src/open_r1/open_r1_trl/trl/trainer/__pycache__/sft_trainer.cpython-312.pyc
+
+# Python 캐시 파일
+**/__pycache__/
+*.py[cod]
+*$py.class
+
+# 가상 환경
+venv/
+env/
+.venv/
+
+# 패키지 관리
+*.egg-info/
+dist/
+build/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# 환경 설정
+.env
+.env.local
+open-r1-main/src/open_r1/__pycache__/rewards.cpython-312.pyc
+open-r1-main/src/open_r1/__pycache__/__init__.cpython-312.pyc
+
+archive/
+*archive/
+math_trace/
+
+__pycache__/
+*.pyc
+*__pycache__/
+
+
+*results*/
+models/

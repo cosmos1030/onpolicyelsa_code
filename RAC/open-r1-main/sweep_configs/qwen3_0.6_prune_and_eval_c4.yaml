@@ -1,0 +1,36 @@
+# wandb sweep: Qwen3-0.6B pruning (C4 calibration) + evaluation in one run
+#
+# Usage:
+#   cd /home1/doyoonkim/projects/RAC/open-r1-main
+#   wandb sweep sweep_configs/qwen3_0.6_prune_and_eval_c4.yaml
+#   sbatch scripts/slurm_sweep_agent_pruning_qwen3.sh <SWEEP_ID>
+
+program: scripts/prune_and_eval.sh
+command:
+  - ${env}
+  - bash
+  - ${program}
+  - --config
+  - recipes/Qwen3-0.6B/grpo/config_pruning.yaml
+  - --model_name_or_path=Qwen/Qwen3-0.6B
+  - --dataset_name=allenai/c4
+  - --dataset_config_name=en
+  - --dataset_prompt_column=text
+  - --do_train=False
+  - --prune=True
+  - --prune_calib_tokens=1_000_000
+  - --push_to_hub=False
+  - --score_completions=False
+  - --report_to=wandb
+  - ${args}
+
+name: qwen3_0.6_prune_and_eval_c4
+method: grid
+project: rac_qwen3_0.6_pruning
+entity: dyk6208-gwangju-institute-of-science-and-technology
+
+parameters:
+  pruning_method:
+    values: [SparseGPT]
+  prune_sparsity:
+    values: [0.2, 0.3, 0.4, 0.5]

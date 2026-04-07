@@ -1,0 +1,68 @@
+# ── Model weights & checkpoints ──────────────────────────────
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.ckpt
+*.gguf
+
+# ── Large data files ──────────────────────────────────────────
+*.jsonl
+*.json.gz
+*.parquet
+*.arrow
+*.hdf5
+*.h5
+*.npy
+*.npz
+
+# ── Saved model directories ───────────────────────────────────
+elsa/models/
+RAC/open-r1-main/models/
+RAC/open-r1-main/math_trace/
+
+# ── Datasets ──────────────────────────────────────────────────
+elsa/dataset/
+elsa/data/
+RAC/open-r1-main/data/
+
+# ── Eval results (large detail files) ────────────────────────
+elsa/eval_results/
+RAC/open-r1-main/eval_results/
+RAC/open-r1-main/eval_results_retrain/
+eval_results/
+
+# ── wandb local files ─────────────────────────────────────────
+**/wandb/
+elsa/wandb/
+RAC/open-r1-main/wandb/
+
+# ── Job logs (output) ─────────────────────────────────────────
+elsa/output/
+elsa/output_qwen/
+RAC/open-r1-main/output_qwen/
+RAC/open-r1-main/logs/
+RAC/open-r1-main/logs_trace/
+*.out
+*.err
+
+# ── Python cache ──────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+
+# ── Jupyter ───────────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb
+
+# ── ADMM intermediate dirs ────────────────────────────────────
+elsa/admm*/
+
+# ── Misc ──────────────────────────────────────────────────────
+*.log
+.DS_Store
+*.swp
+*.swo
+triton_cache/
+__pycache__
