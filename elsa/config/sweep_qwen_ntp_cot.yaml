@@ -54,5 +54,7 @@ parameters:
     value: false
   wandb_project:
     value: "elsa_qwen3_0.6b"
+  wandb:
+    value: true
   seed:
     value: 42
