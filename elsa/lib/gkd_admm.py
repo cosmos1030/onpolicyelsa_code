@@ -27,14 +27,14 @@ def globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device):
     ADMM pruning with on-policy KD loss.
     Uses GKDADMMTrainer instead of ADMMTrainer.
     """
+    model_name_part = FLAGS.model.split('/')[-1]
+    kd_data_tag = Path(FLAGS.kd_data_path).stem if FLAGS.kd_data_path else "unknown"
+    run_name = (
+        f"{model_name_part}_pruned{FLAGS.sparsity_ratio}"
+        f"_kd_{kd_data_tag}_admm_lr{FLAGS.admm_lr}_lmda{FLAGS.admm_lmda}"
+        f"_{datetime.now().strftime('%Y%m%d_%H%M')}"
+    )
     if FLAGS.admm_save_path:
-        model_name_part = FLAGS.model.split('/')[-1]
-        kd_data_tag = Path(FLAGS.kd_data_path).stem if FLAGS.kd_data_path else "unknown"
-        run_name = (
-            f"{model_name_part}_pruned{FLAGS.sparsity_ratio}"
-            f"_kd_{kd_data_tag}_admm_lr{FLAGS.admm_lr}_lmda{FLAGS.admm_lmda}"
-            f"_{datetime.now().strftime('%Y%m%d_%H%M')}"
-        )
         output_dir = Path(FLAGS.admm_save_path) / run_name
         output_dir.mkdir(parents=True, exist_ok=True)
         output_dir_str = str(output_dir)
