@@ -113,19 +113,20 @@ def _process_and_tokenize(raw_dataset, dataset_name, tokenizer, nsamples, seqlen
         full_text = "\n\n".join(s['prompt'] for s in raw_dataset if s.get('prompt'))
         all_tokens.append(tokenizer(full_text, return_tensors='pt').input_ids)
     elif "math_cot" in dataset_name.lower():
-        # CoT-only: strip the problem (before first \n\n), keep only the generation part
-        cot_texts = []
-        for s in raw_dataset:
+        # CoT-only: strip the problem (before first \n\n), tokenize per-sample
+        for s in tqdm(raw_dataset, desc=f"Tokenizing {dataset_name}"):
             text = s.get('text', '')
             if not text:
                 continue
             # text = "problem\n\ncot_generation" — drop the problem part
             sep = text.find('\n\n')
             cot = text[sep + 2:] if sep != -1 else text
-            if cot.strip():
-                cot_texts.append(cot)
-        full_text = "\n\n".join(cot_texts)
-        all_tokens.append(tokenizer(full_text, return_tensors='pt').input_ids)
+            if not cot.strip():
+                continue
+            tokens = tokenizer(cot, return_tensors='pt').input_ids
+            if tokens.shape[1] > seqlen:
+                all_tokens.append(tokens)
+        assert len(all_tokens) > 0, f"No valid math_cot samples found longer than seqlen={seqlen}"
     else: # wikitext2, ptb
         text_column = "text" if "wikitext" in dataset_name.lower() else "sentence"
         full_text = "\n\n".join(raw_dataset[text_column])
