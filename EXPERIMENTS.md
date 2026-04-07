@@ -29,14 +29,15 @@
 - ADMM: steps=1024, interval=32, BS=8, ACCUM=1
 - Sweep grid: lr ∈ {0.1, 0.01} × λ ∈ {5e-5, 5e-4}
 
-**wandb sweep:** `igmwmiyd` (project: elsa_qwen3_0.6b)
-**slurm jobs:** 309627, 309628, 309629, 309630
+**wandb sweep:** `8ldqrrv6` (project: elsa_qwen3_0.6b)
+**slurm jobs:** 310318, 310319, 310320, 310321
 
 **이전 실패:**
 - sweep 9flioyoy: `command` 블록에서 `${env}` 변수 처리 안됨 → python path 못찾아 crash
 - sweep ynnbj9tq: `/usr/bin/env python`으로 실행 → numpy 없음 crash
 - sweep 1ts6fpg5: HF ID `Qwen/Qwen3-0.6B` → transformers 버전 문제로 Unrecognized model error
-- **Fix:** `command`에 절대경로 python 지정 + model을 로컬 캐시 경로로 변경
+- sweep igmwmiyd (job 309630): `math_cot` 93k 샘플 전체 concat → 556M tokens > 131072 crash
+- **Fix:** per-sample 토크나이즈 (trace 방식), train 캐시 미리 생성 완료
 
 **결과:** (TBD)
 
