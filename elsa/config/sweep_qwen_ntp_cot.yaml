@@ -29,9 +29,9 @@ parameters:
   admm_steps:
     value: 4096
   admm_batch_size:
-    value: 8
-  admm_gradient_accumulation_steps:
     value: 1
+  admm_gradient_accumulation_steps:
+    value: 8
   admm_lmda_schedule_mode:
     value: "cosine"
   admm_beta2:

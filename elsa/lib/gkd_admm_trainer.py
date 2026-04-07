@@ -194,14 +194,17 @@ class GKDADMMTrainer(ADMMTrainer):
         s_logits = student_out.logits[:, prompt_len - 1: -1, :]   # (B, gen_len, V)
         t_logits = teacher_out.logits[:, prompt_len - 1: -1, :]   # (B, gen_len, V)
 
-        # Top-k filtering: restrict KL to teacher's top-k tokens → (B, gen_len, k)
+        # Compute full-vocab log-probs first, then restrict to teacher's top-k
+        s_logp_full = F.log_softmax(s_logits / self.kd_temperature, dim=-1)
+        t_logp_full = F.log_softmax(t_logits / self.kd_temperature, dim=-1)
+
         if self.kd_topk > 0:
             topk_idx = t_logits.topk(self.kd_topk, dim=-1).indices
-            s_logits = s_logits.gather(-1, topk_idx)
-            t_logits = t_logits.gather(-1, topk_idx)
-
-        s_logp = F.log_softmax(s_logits / self.kd_temperature, dim=-1)
-        t_logp = F.log_softmax(t_logits / self.kd_temperature, dim=-1)
+            s_logp = s_logp_full.gather(-1, topk_idx)
+            t_logp = t_logp_full.gather(-1, topk_idx)
+        else:
+            s_logp = s_logp_full
+            t_logp = t_logp_full
 
         # Reverse KL: KL(student || teacher) = sum p_s * (log p_s - log p_t)
         gen_mask = attention_mask[:, prompt_len: prompt_len + gen_len].float()
