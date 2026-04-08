@@ -1,0 +1,35 @@
+# wandb sweep: Qwen3-0.6B SparseGPT pruning with prompt-only calibration
+# Sweeps over sparsity 30~70%
+#
+# Usage:
+#   cd /home1/doyoonkim/projects/RAC/open-r1-main
+#   wandb sweep sweep_configs/qwen3_0.6_prompt_sparsity.yaml
+#   for i in {1..5}; do sbatch scripts/slurm_sweep_agent_qwen3_prompt_sparsity.sh <SWEEP_ID>; done
+
+program: src/open_r1/grpo.py
+command:
+  - ${env}
+  - /home1/doyoonkim/miniconda3/envs/rac/bin/python
+  - ${program}
+  - --config
+  - recipes/Qwen3-0.6B/grpo/config_pruning.yaml
+  - --model_name_or_path=/home1/doyoonkim/.cache/huggingface/hub/models--Qwen--Qwen3-0.6B/snapshots/c1899de289a04d12100db370d81485cdf75e47ca
+  - --dataset_name=open-r1/OpenR1-Math-220k
+  - --dataset_prompt_column=problem
+  - --do_train=False
+  - --prune=True
+  - --pruning_method=SparseGPT
+  - --prune_calib_tokens=1_000_000
+  - --push_to_hub=False
+  - --score_completions=False
+  - --report_to=wandb
+  - ${args}
+
+name: qwen3_0.6_prompt_sparsity
+method: grid
+project: rac_qwen3_0.6_pruning
+entity: dyk6208-gwangju-institute-of-science-and-technology
+
+parameters:
+  prune_sparsity:
+    values: [0.3, 0.4, 0.5, 0.6, 0.7]
