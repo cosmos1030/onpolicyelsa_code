@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=debug_kd_admm
+#SBATCH --job-name=debug_hybrid_admm
 #SBATCH --partition=A100-80GB
 #SBATCH --qos=hpgpu
 #SBATCH --gres=gpu:1
@@ -20,27 +20,32 @@ MODEL=/home1/doyoonkim/.cache/huggingface/hub/models--Qwen--Qwen3-0.6B/snapshots
 
 $PYTHON main.py \
     --model=$MODEL \
-    --dataset=math_prompt \
-    --data_path=/home1/doyoonkim/projects/elsa/data/math_220k_prompts.jsonl \
-    --sparsity_ratio=0.5 \
-    --admm_steps=10 \
+    --dataset=math_cot \
+    --data_path=/home1/doyoonkim/projects/elsa/data/math_220k_cot.jsonl \
+    --sparsity_ratio=0.3 \
+    --admm_steps=20 \
     --admm_batch_size=1 \
     --admm_gradient_accumulation_steps=8 \
     --admm_interval=5 \
-    --admm_lr=0.01 \
-    --admm_lmda=5e-5 \
+    --admm_lr=1e-5 \
+    --admm_lmda=5e-3 \
     --admm_lmda_schedule_mode=cosine \
     --admm_beta2=0.999 \
     --admm_base_optimizer=adamw \
     --admm_precision=bf16 \
     --do_kd_admm=true \
-    --kd_data_path=/home1/doyoonkim/projects/elsa/data/math_220k_prompts.jsonl \
-    --kd_max_new_tokens=128 \
+    --kd_data_path=/home1/doyoonkim/projects/elsa/data/math_220k_cot.jsonl \
+    --kd_use_cot_dataset=true \
+    --kd_max_new_tokens=64 \
+    --kd_max_prompt_len=512 \
+    --kd_nsamples=500 \
     --kd_topk=50 \
+    --kd_interval=4 \
+    --kd_lambda=0.5 \
     --save_model=false \
     --eval_math500=false \
     --eval_zero_shot=false \
-    --wandb_project=elsa_debug \
+    --wandb=false \
     --seed=42
 
 echo "##### END #####"

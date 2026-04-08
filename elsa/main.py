@@ -281,6 +281,9 @@ if __name__ == '__main__':
     flags.DEFINE_integer('kd_nsamples', 0, 'Number of prompts to sample (0 = use all).')
     flags.DEFINE_float('kd_ntp_lambda', 0.0, 'Weight of NTP loss on prompt tokens added to KD loss (0 = KD only).')
     flags.DEFINE_integer('kd_topk', 50, 'Top-k vocab filtering for KD loss (0 = full vocab).')
+    flags.DEFINE_integer('kd_interval', 1, 'Run on-policy KD generation every N steps (1 = every step).')
+    flags.DEFINE_float('kd_lambda', 1.0, 'Weight of KD loss when combined with NTP loss in hybrid mode.')
+    flags.DEFINE_bool('kd_use_cot_dataset', False, 'Use MathCotKDDataset (provides CoT NTP labels + prompt for KD).')
 
     # On-policy distillation (legacy post-ADMM phase)
     flags.DEFINE_bool('do_distill', False, 'Whether to perform on-policy distillation after retraining.')

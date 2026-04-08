@@ -113,14 +113,19 @@ def _process_and_tokenize(raw_dataset, dataset_name, tokenizer, nsamples, seqlen
         full_text = "\n\n".join(s['prompt'] for s in raw_dataset if s.get('prompt'))
         all_tokens.append(tokenizer(full_text, return_tensors='pt').input_ids)
     elif "math_cot" in dataset_name.lower():
-        # CoT-only: strip the problem (before first \n\n), tokenize per-sample
+        # CoT-only: strip the problem, keep from <think> onward
+        # text format: "problem\n\n<think>CoT</think>answer"
+        # Split at <think> — fallback to \n\n only if <think> not found
         for s in tqdm(raw_dataset, desc=f"Tokenizing {dataset_name}"):
             text = s.get('text', '')
             if not text:
                 continue
-            # text = "problem\n\ncot_generation" — drop the problem part
-            sep = text.find('\n\n')
-            cot = text[sep + 2:] if sep != -1 else text
+            idx = text.find('<think>')
+            if idx != -1:
+                cot = text[idx:]
+            else:
+                sep = text.find('\n\n')
+                cot = text[sep + 2:] if sep != -1 else text
             if not cot.strip():
                 continue
             tokens = tokenizer(cot, return_tensors='pt').input_ids

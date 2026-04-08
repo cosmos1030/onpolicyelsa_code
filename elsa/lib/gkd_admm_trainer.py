@@ -79,6 +79,147 @@ def collate_prompts(pad_token_id):
 
 
 # ---------------------------------------------------------------------------
+# Dataset: CoT text for NTP + prompt for KD generation
+# ---------------------------------------------------------------------------
+class MathCotKDDataset(Dataset):
+    """
+    Loads math CoT traces from math_220k_cot.jsonl for hybrid NTP + KD training.
+
+    Each sample provides:
+      - input_ids / attention_mask / labels: full CoT text for NTP loss
+        (problem portion is masked with -100 in labels)
+      - prompt_ids / prompt_mask: problem + '<think>' prefix for on-policy generation
+
+    text format: "problem\n\n<think>CoT</think>answer"
+    Split point: '<think>' tag — prompt = text[:idx+len('<think>')], cot = text[idx:]
+    """
+    THINK_TAG = "<think>"
+
+    def __init__(self, jsonl_path, tokenizer, max_len=2048, max_prompt_len=512,
+                 nsamples=None, seed=42):
+        random.seed(seed)
+
+        with open(jsonl_path) as f:
+            records = [json.loads(line) for line in f if line.strip()]
+
+        if nsamples and nsamples < len(records):
+            records = random.sample(records, nsamples)
+
+        self.samples = []
+        for rec in records:
+            text = rec.get("text", "")
+            if not text:
+                continue
+
+            # Split at <think>
+            idx = text.find(self.THINK_TAG)
+            if idx == -1:
+                # fallback: split at first double-newline
+                idx = text.find("\n\n")
+                if idx == -1:
+                    continue
+                prompt_text = text[:idx]
+                cot_text = text[idx + 2:]
+            else:
+                prompt_text = text[:idx + len(self.THINK_TAG)]
+                cot_text = text[idx:]  # includes <think>CoT</think>answer
+
+            if not cot_text.strip():
+                continue
+
+            # Full sequence for NTP
+            full_enc = tokenizer(
+                text,
+                truncation=True,
+                max_length=max_len,
+                return_tensors="pt",
+                padding=False,
+            )
+            full_ids = full_enc["input_ids"].squeeze(0)
+            full_mask = full_enc["attention_mask"].squeeze(0)
+
+            # Prompt for KD generation
+            prompt_enc = tokenizer(
+                prompt_text,
+                truncation=True,
+                max_length=max_prompt_len,
+                return_tensors="pt",
+                padding=False,
+            )
+            prompt_ids = prompt_enc["input_ids"].squeeze(0)
+            prompt_mask_t = prompt_enc["attention_mask"].squeeze(0)
+            prompt_len = prompt_ids.shape[0]
+
+            # Labels: mask problem tokens with -100, keep CoT tokens
+            labels = full_ids.clone()
+            labels[:prompt_len] = -100
+
+            self.samples.append({
+                "input_ids": full_ids,
+                "attention_mask": full_mask,
+                "labels": labels,
+                "prompt_ids": prompt_ids,
+                "prompt_mask": prompt_mask_t,
+            })
+
+        logging.info(f"MathCotKDDataset: {len(self.samples)} samples loaded from {jsonl_path}")
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        return self.samples[idx]
+
+
+def collate_cot_kd(pad_token_id):
+    """
+    Collate for MathCotKDDataset.
+    - Right-pads full sequences (input_ids/attention_mask/labels)
+    - Left-pads prompts (prompt_ids/prompt_mask) for generation
+    """
+    def _collate(batch):
+        # Full sequence: right-pad
+        max_full = max(x["input_ids"].shape[0] for x in batch)
+        max_prompt = max(x["prompt_ids"].shape[0] for x in batch)
+
+        input_ids_list, mask_list, labels_list = [], [], []
+        prompt_ids_list, prompt_mask_list = [], []
+
+        for x in batch:
+            # Right-pad full sequence
+            pad_len = max_full - x["input_ids"].shape[0]
+            input_ids_list.append(
+                torch.cat([x["input_ids"], torch.full((pad_len,), pad_token_id, dtype=torch.long)])
+            )
+            mask_list.append(
+                torch.cat([x["attention_mask"], torch.zeros(pad_len, dtype=torch.long)])
+            )
+            labels_list.append(
+                torch.cat([x["labels"], torch.full((pad_len,), -100, dtype=torch.long)])
+            )
+            # Left-pad prompt
+            pad_len_p = max_prompt - x["prompt_ids"].shape[0]
+            prompt_ids_list.append(
+                torch.cat([torch.full((pad_len_p,), pad_token_id, dtype=torch.long),
+                           x["prompt_ids"]])
+            )
+            prompt_mask_list.append(
+                torch.cat([torch.zeros(pad_len_p, dtype=torch.long),
+                           x["prompt_mask"]])
+            )
+
+        return {
+            "input_ids": torch.stack(input_ids_list),
+            "attention_mask": torch.stack(mask_list),
+            "labels": torch.stack(labels_list),
+            "prompt_ids": torch.stack(prompt_ids_list),
+            "prompt_mask": torch.stack(prompt_mask_list),
+            "prompt_len": torch.tensor(max_prompt),
+        }
+    return _collate
+
+
+# ---------------------------------------------------------------------------
 # GKDADMMTrainer
 # ---------------------------------------------------------------------------
 class GKDADMMTrainer(ADMMTrainer):
@@ -100,6 +241,8 @@ class GKDADMMTrainer(ADMMTrainer):
         kd_temperature: float = 1.0,
         ntp_lambda: float = 0.0,
         kd_topk: int = 50,
+        kd_interval: int = 1,
+        kd_lambda: float = 1.0,
         *args,
         **kwargs,
     ):
@@ -110,6 +253,8 @@ class GKDADMMTrainer(ADMMTrainer):
         self.kd_temperature = kd_temperature
         self.ntp_lambda = ntp_lambda
         self.kd_topk = kd_topk
+        self.kd_interval = kd_interval  # run KD every N steps; 1 = every step
+        self.kd_lambda = kd_lambda      # weight for KD loss when combined with NTP
 
         self.generation_config = GenerationConfig(
             max_new_tokens=max_new_tokens,
@@ -125,14 +270,27 @@ class GKDADMMTrainer(ADMMTrainer):
         for p in self.teacher_model.parameters():
             p.requires_grad_(False)
 
+        # Per-step state for conditional KD
+        self._kd_inputs = None  # set in training_step, read in compute_loss
+
+    def _is_hybrid_batch(self, inputs):
+        """True if batch contains CoT NTP data (MathCotKDDataset)."""
+        return "prompt_ids" in inputs
+
     def training_step(self, model, inputs, num_items_in_batch=None):
         """Generate on-policy completions, then run standard ADMM step."""
+        if self._is_hybrid_batch(inputs):
+            return self._training_step_hybrid(model, inputs, num_items_in_batch)
+        else:
+            return self._training_step_kd_only(model, inputs, num_items_in_batch)
+
+    def _training_step_kd_only(self, model, inputs, num_items_in_batch=None):
+        """Original behavior: KD-only (no CoT NTP), prompt-only dataset."""
         prompt_ids = inputs["input_ids"]
         prompt_mask = inputs["attention_mask"]
         prompt_len = inputs["prompt_len"].item() if inputs["prompt_len"].dim() == 0 else int(inputs["prompt_len"][0])
 
-        # 1. On-policy generation (student, no grad)
-        # Temporarily enable use_cache and disable gradient checkpointing for fast generation
+        # On-policy generation (student, no grad)
         _gc_enabled = getattr(model, "is_gradient_checkpointing", False)
         if _gc_enabled:
             model.gradient_checkpointing_disable()
@@ -158,18 +316,107 @@ class GKDADMMTrainer(ADMMTrainer):
         if _gc_enabled:
             model.gradient_checkpointing_enable()
 
-        # 2. Build new inputs with full (prompt + completion) sequence
         full_mask = (generated != self.tokenizer.pad_token_id).long()
         updated_inputs = {
             "input_ids": generated,
             "attention_mask": full_mask,
             "prompt_len": inputs["prompt_len"],
         }
+        self._kd_inputs = None  # use updated_inputs directly (original path)
+        return super().training_step(model, updated_inputs, num_items_in_batch)
 
-        return super().training_step(model, updated_inputs)
+    def _training_step_hybrid(self, model, inputs, num_items_in_batch=None):
+        """
+        Hybrid: NTP on CoT every step + on-policy KD every kd_interval steps.
+        inputs keys: input_ids, attention_mask, labels, prompt_ids, prompt_mask, prompt_len
+        """
+        do_kd = (self.state.global_step % self.kd_interval == 0)
+
+        if do_kd:
+            prompt_ids = inputs["prompt_ids"]
+            prompt_mask = inputs["prompt_mask"]
+            prompt_len = int(inputs["prompt_len"].item() if inputs["prompt_len"].dim() == 0 else inputs["prompt_len"][0])
+
+            _gc_enabled = getattr(model, "is_gradient_checkpointing", False)
+            if _gc_enabled:
+                model.gradient_checkpointing_disable()
+            model.config.use_cache = True
+            model.eval()
+            import time as _time
+            _t0 = _time.time()
+            with torch.no_grad():
+                generated = model.generate(
+                    input_ids=prompt_ids,
+                    attention_mask=prompt_mask,
+                    generation_config=self.generation_config,
+                )
+            _elapsed = _time.time() - _t0
+            _gen_tokens = generated.shape[1] - prompt_len
+            logging.info(
+                f"[KD] step={self.state.global_step}, "
+                f"gen_tokens={_gen_tokens}, time={_elapsed:.1f}s"
+            )
+            model.train()
+            model.config.use_cache = False
+            if _gc_enabled:
+                model.gradient_checkpointing_enable()
+
+            full_mask = (generated != self.tokenizer.pad_token_id).long()
+            self._kd_inputs = {
+                "input_ids": generated,
+                "attention_mask": full_mask,
+                "prompt_len": inputs["prompt_len"],
+            }
+        else:
+            self._kd_inputs = None
+
+        # Pass CoT NTP inputs to compute_loss via super()
+        ntp_inputs = {
+            "input_ids": inputs["input_ids"],
+            "attention_mask": inputs["attention_mask"],
+            "labels": inputs["labels"],
+        }
+        return super().training_step(model, ntp_inputs, num_items_in_batch)
 
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
-        """Reverse KL(student || teacher) on generated tokens only."""
+        """
+        Two modes:
+        1. Hybrid (labels in inputs): NTP on CoT always + KD loss when self._kd_inputs is set
+        2. KD-only (no labels): Reverse KL(student || teacher) on generated tokens only
+        """
+        if "labels" in inputs:
+            return self._compute_loss_hybrid(model, inputs, return_outputs)
+        else:
+            return self._compute_loss_kd_only(model, inputs, return_outputs)
+
+    def _compute_loss_hybrid(self, model, inputs, return_outputs=False):
+        """NTP on CoT + optional KD loss."""
+        input_ids = inputs["input_ids"]
+        attention_mask = inputs["attention_mask"]
+        labels = inputs["labels"]
+
+        # Student forward on CoT sequence
+        student_out = model(input_ids=input_ids, attention_mask=attention_mask)
+
+        # NTP loss: cross-entropy on CoT tokens (problem tokens masked with -100 in labels)
+        shift_logits = student_out.logits[:, :-1, :].contiguous()
+        shift_labels = labels[:, 1:].contiguous()
+        ntp_loss = F.cross_entropy(
+            shift_logits.reshape(-1, shift_logits.shape[-1]),
+            shift_labels.reshape(-1),
+            ignore_index=-100,
+        )
+
+        if self._kd_inputs is not None:
+            kd_loss = self._compute_kd_forward(model)
+            loss = ntp_loss + self.kd_lambda * kd_loss
+        else:
+            loss = ntp_loss
+
+        return (loss, student_out) if return_outputs else loss
+
+    def _compute_loss_kd_only(self, model, inputs, return_outputs=False, **kwargs):
+        """Original KD-only path: Reverse KL(student || teacher) on generated tokens."""
         input_ids = inputs["input_ids"]
         attention_mask = inputs["attention_mask"]
         prompt_len = inputs["prompt_len"].item() if inputs["prompt_len"].dim() == 0 else int(inputs["prompt_len"][0])
@@ -177,7 +424,9 @@ class GKDADMMTrainer(ADMMTrainer):
         gen_len = input_ids.shape[1] - prompt_len
         if gen_len <= 0:
             logging.warning("No generated tokens found; skipping KD loss.")
-            return super().compute_loss(model, inputs, return_outputs)
+            student_out = model(input_ids=input_ids, attention_mask=attention_mask)
+            loss = torch.tensor(0.0, device=input_ids.device, requires_grad=True)
+            return (loss, student_out) if return_outputs else loss
 
         # Student forward
         student_out = model(input_ids=input_ids, attention_mask=attention_mask)
@@ -189,31 +438,14 @@ class GKDADMMTrainer(ADMMTrainer):
                 attention_mask=attention_mask,
             )
 
-        # Logit at position t predicts token t+1.
-        # Generated tokens start at prompt_len, so we need logits [prompt_len-1 : -1].
-        s_logits = student_out.logits[:, prompt_len - 1: -1, :]   # (B, gen_len, V)
-        t_logits = teacher_out.logits[:, prompt_len - 1: -1, :]   # (B, gen_len, V)
-
-        # Compute full-vocab log-probs first, then restrict to teacher's top-k
-        s_logp_full = F.log_softmax(s_logits / self.kd_temperature, dim=-1)
-        t_logp_full = F.log_softmax(t_logits / self.kd_temperature, dim=-1)
-
-        if self.kd_topk > 0:
-            topk_idx = t_logits.topk(self.kd_topk, dim=-1).indices
-            s_logp = s_logp_full.gather(-1, topk_idx)
-            t_logp = t_logp_full.gather(-1, topk_idx)
-        else:
-            s_logp = s_logp_full
-            t_logp = t_logp_full
-
-        # Reverse KL: KL(student || teacher) = sum p_s * (log p_s - log p_t)
-        gen_mask = attention_mask[:, prompt_len: prompt_len + gen_len].float()
-        kl = (s_logp.exp() * (s_logp - t_logp)).sum(dim=-1)  # (B, gen_len)
-        kd_loss = (kl * gen_mask).sum() / gen_mask.sum().clamp(min=1)
+        kd_loss = self._kl_loss(
+            student_out.logits, teacher_out.logits,
+            attention_mask, prompt_len, gen_len,
+        )
 
         # NTP loss on prompt tokens (optional, controlled by ntp_lambda)
         if self.ntp_lambda > 0.0 and prompt_len > 1:
-            ntp_logits = student_out.logits[:, :prompt_len - 1, :]  # predicts tokens 1..prompt_len
+            ntp_logits = student_out.logits[:, :prompt_len - 1, :]
             ntp_labels = input_ids[:, 1:prompt_len]
             ntp_mask = attention_mask[:, 1:prompt_len].float()
             ntp_loss_per_tok = F.cross_entropy(
@@ -227,3 +459,45 @@ class GKDADMMTrainer(ADMMTrainer):
             loss = kd_loss
 
         return (loss, student_out) if return_outputs else loss
+
+    def _compute_kd_forward(self, model):
+        """Run student+teacher on self._kd_inputs, return KD loss."""
+        kd = self._kd_inputs
+        input_ids = kd["input_ids"]
+        attention_mask = kd["attention_mask"]
+        prompt_len = int(kd["prompt_len"].item() if kd["prompt_len"].dim() == 0 else kd["prompt_len"][0])
+        gen_len = input_ids.shape[1] - prompt_len
+
+        if gen_len <= 0:
+            logging.warning("KD: no generated tokens, skipping.")
+            return torch.tensor(0.0, device=input_ids.device)
+
+        student_out = model(input_ids=input_ids, attention_mask=attention_mask)
+        with torch.no_grad():
+            teacher_out = self.teacher_model(input_ids=input_ids, attention_mask=attention_mask)
+
+        return self._kl_loss(
+            student_out.logits, teacher_out.logits,
+            attention_mask, prompt_len, gen_len,
+        )
+
+    def _kl_loss(self, s_logits, t_logits, attention_mask, prompt_len, gen_len):
+        """Reverse KL(student || teacher) on generated tokens."""
+        s_logits_gen = s_logits[:, prompt_len - 1: -1, :]   # (B, gen_len, V)
+        t_logits_gen = t_logits[:, prompt_len - 1: -1, :]
+
+        s_logp_full = F.log_softmax(s_logits_gen / self.kd_temperature, dim=-1)
+        t_logp_full = F.log_softmax(t_logits_gen / self.kd_temperature, dim=-1)
+
+        if self.kd_topk > 0:
+            topk_idx = t_logits_gen.topk(self.kd_topk, dim=-1).indices
+            s_logp = s_logp_full.gather(-1, topk_idx)
+            t_logp = t_logp_full.gather(-1, topk_idx)
+        else:
+            s_logp = s_logp_full
+            t_logp = t_logp_full
+
+        # Reverse KL: sum p_s * (log p_s - log p_t)
+        gen_mask = attention_mask[:, prompt_len: prompt_len + gen_len].float()
+        kl = (s_logp.exp() * (s_logp - t_logp)).sum(dim=-1)  # (B, gen_len)
+        return (kl * gen_mask).sum() / gen_mask.sum().clamp(min=1)

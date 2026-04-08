@@ -33,7 +33,7 @@ command:
   - --wandb_project=elsa_qwen3_0.6
   - ${args}
 
-name: qwen3_0.6_math_cot
+name: qwen3_0.6b_math_cot_trace_30pct
 method: grid
 project: elsa_qwen3_0.6
 entity: dyk6208-gwangju-institute-of-science-and-technology
@@ -42,7 +42,7 @@ parameters:
   model:
     value: Qwen/Qwen3-0.6B
   sparsity_ratio:
-    value: 0.2
+    value: 0.3
   admm_lr:
     values: [5e-6, 1e-5, 5e-5, 1e-4]
   admm_lmda:

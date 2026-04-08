@@ -12,7 +12,11 @@ from absl import logging
 from functools import partial
 
 from .trainer import ADMMTrainer
-from .gkd_admm_trainer import GKDADMMTrainer, MathPromptDataset, collate_prompts
+from .gkd_admm_trainer import (
+    GKDADMMTrainer,
+    MathPromptDataset, collate_prompts,
+    MathCotKDDataset, collate_cot_kd,
+)
 from .prune import AdmmTrainingArguments  # reuse same args dataclass
 
 try:
@@ -85,21 +89,36 @@ def globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device):
         tokenizer.pad_token = tokenizer.eos_token
         model.config.pad_token_id = model.config.eos_token_id
 
-    # Dataset: math 220k prompts
     local_rank = training_args.local_rank
-    if local_rank == 0:
-        logging.info(f"Loading math prompts from {FLAGS.kd_data_path}")
 
-    train_dataset = MathPromptDataset(
-        jsonl_path=FLAGS.kd_data_path,
-        tokenizer=tokenizer,
-        max_prompt_len=FLAGS.kd_max_prompt_len,
-        nsamples=FLAGS.kd_nsamples if FLAGS.kd_nsamples > 0 else None,
-        seed=FLAGS.seed,
-    )
+    # Dataset: use hybrid CoT+KD dataset when kd_interval > 1 or kd_data is cot-format
+    use_hybrid = getattr(FLAGS, "kd_interval", 1) > 1 or getattr(FLAGS, "kd_use_cot_dataset", False)
+    if use_hybrid:
+        if local_rank == 0:
+            logging.info(f"Loading CoT KD dataset from {FLAGS.kd_data_path}")
+        train_dataset = MathCotKDDataset(
+            jsonl_path=FLAGS.kd_data_path,
+            tokenizer=tokenizer,
+            max_len=getattr(FLAGS, "seqlen", 2048),
+            max_prompt_len=FLAGS.kd_max_prompt_len,
+            nsamples=FLAGS.kd_nsamples if FLAGS.kd_nsamples > 0 else None,
+            seed=FLAGS.seed,
+        )
+        data_collator = collate_cot_kd(tokenizer.pad_token_id)
+    else:
+        if local_rank == 0:
+            logging.info(f"Loading math prompts from {FLAGS.kd_data_path}")
+        train_dataset = MathPromptDataset(
+            jsonl_path=FLAGS.kd_data_path,
+            tokenizer=tokenizer,
+            max_prompt_len=FLAGS.kd_max_prompt_len,
+            nsamples=FLAGS.kd_nsamples if FLAGS.kd_nsamples > 0 else None,
+            seed=FLAGS.seed,
+        )
+        data_collator = collate_prompts(tokenizer.pad_token_id)
 
     if local_rank == 0:
-        logging.info(f"KD-ADMM dataset: {len(train_dataset)} prompts")
+        logging.info(f"KD-ADMM dataset: {len(train_dataset)} samples")
 
     model.train()
     teacher_model.eval()
@@ -112,12 +131,14 @@ def globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device):
         kd_temperature=FLAGS.kd_temperature,
         ntp_lambda=FLAGS.kd_ntp_lambda,
         kd_topk=FLAGS.kd_topk,
+        kd_interval=getattr(FLAGS, "kd_interval", 1),
+        kd_lambda=getattr(FLAGS, "kd_lambda", 1.0),
         model=model,
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=None,
         tokenizer=tokenizer,
-        data_collator=collate_prompts(tokenizer.pad_token_id),
+        data_collator=data_collator,
         compute_metrics=None,
     )
 
