@@ -12,6 +12,7 @@ from absl import logging
 from functools import partial
 
 from .trainer import ADMMTrainer
+from .data import get_dataset
 from .gkd_admm_trainer import (
     GKDADMMTrainer,
     MathPromptDataset, collate_prompts,
@@ -62,12 +63,17 @@ def globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device):
         fp16=(FLAGS.admm_precision == 'fp16'),
         bf16=(FLAGS.admm_precision == 'bf16' and torch.cuda.is_bf16_supported()),
         logging_steps=FLAGS.admm_logging_steps,
-        eval_strategy="no",
+        eval_strategy="steps",
+        logging_strategy="steps",
+        eval_steps=FLAGS.admm_eval_steps,
         save_strategy="no",
+        load_best_model_at_end=False,
+        metric_for_best_model="eval_loss",
+        greater_is_better=False,
         report_to="wandb" if has_wandb and FLAGS.wandb else "none",
         remove_unused_columns=False,
         do_train=True,
-        do_eval=False,
+        do_eval=True,
         # ADMM args
         admm_lmda=FLAGS.admm_lmda,
         admm_init_lmda=FLAGS.admm_init_lmda,
@@ -120,6 +126,20 @@ def globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device):
     if local_rank == 0:
         logging.info(f"KD-ADMM dataset: {len(train_dataset)} samples")
 
+    # Validation dataset (same source as NTP training data, for sparse eval)
+    valid_inputs = get_dataset(
+        dataset_name=FLAGS.dataset,
+        tokenizer=tokenizer,
+        nsamples=FLAGS.admm_num_eval_samples,
+        seed=FLAGS.seed,
+        seqlen=getattr(FLAGS, "seqlen", 2048),
+        data_type="validation",
+        save_to_cache=False,
+        data_path=FLAGS.data_path,
+    )
+    if local_rank == 0:
+        logging.info(f"KD-ADMM eval dataset: {len(valid_inputs)} samples")
+
     model.train()
     teacher_model.eval()
     teacher_model.to(device)
@@ -136,7 +156,7 @@ def globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device):
         model=model,
         args=training_args,
         train_dataset=train_dataset,
-        eval_dataset=None,
+        eval_dataset=valid_inputs,
         tokenizer=tokenizer,
         data_collator=data_collator,
         compute_metrics=None,
