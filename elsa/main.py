@@ -154,56 +154,7 @@ def main(argv):
         logging.info([(key,ppl) for key,ppl in ppl_test.items()])
         if FLAGS.wandb:
             wandb.log({"sparsity_ratio": sparsity_ratio, **{f"ppl_test({key})": value for key, value in ppl_test.items()}})
-        ## MATH-500 evaluation via lighteval+vLLM
-        if FLAGS.eval_math500:
-            logging.info(f"--- Evaluating After Pruning (MATH-500, lighteval+vLLM) ---")
-            # Need saved model path. Save now if not already saved.
-            if FLAGS.math500_model_path:
-                _math500_model_path = FLAGS.math500_model_path
-            elif FLAGS.save_model and FLAGS.admm_save_path:
-                # admm_save_path is the parent dir; actual model saved to a timestamped subdir
-                import glob as _glob
-                _subdirs = sorted(
-                    _glob.glob(os.path.join(FLAGS.admm_save_path, "*pruned*")),
-                    key=os.path.getmtime,
-                )
-                if _subdirs:
-                    _math500_model_path = _subdirs[-1]
-                    logging.info(f"Found pruned model dir: {_math500_model_path}")
-                else:
-                    # fallback: save manually
-                    import tempfile as _tmpfile
-                    _math500_model_path = _tmpfile.mkdtemp(prefix="elsa_eval_")
-                    logging.info(f"No pruned subdir found; saving to temp: {_math500_model_path}")
-                    model.save_pretrained(_math500_model_path)
-                    tokenizer.save_pretrained(_math500_model_path)
-            else:
-                # Save to a temp path
-                import tempfile as _tmpfile
-                _math500_model_path = _tmpfile.mkdtemp(prefix="elsa_eval_")
-                logging.info(f"Saving model to temp path for eval: {_math500_model_path}")
-                model.save_pretrained(_math500_model_path)
-                tokenizer.save_pretrained(_math500_model_path)
-
-            # Free GPU before vLLM subprocess
-            model.to("cpu")
-            torch.cuda.empty_cache()
-
-            pass_at_1 = run_lighteval_math500(
-                model_path=_math500_model_path,
-                output_dir=os.path.join(_math500_model_path, "lighteval_math500"),
-                max_new_tokens=FLAGS.math500_max_new_tokens,
-                log_to_wandb=FLAGS.wandb,
-                wandb_step=0,
-            )
-            logging.info(f"MATH-500 pass@1 = {pass_at_1:.4f}")
-            if FLAGS.wandb:
-                wandb.log({"math500_pass@1": pass_at_1})
-
-            # Restore model to GPU for subsequent evals (zero-shot etc.)
-            model.to(device)
-
-        ## zero-shot evaluation
+        ## zero-shot evaluation (runs before math500 so model is still in GPU)
         if FLAGS.eval_zero_shot:
             logging.info(f"--- Evaluating After Pruning (global_admm, Zero-Shot) ---")
             accelerate = "70b" in FLAGS.model
@@ -224,6 +175,51 @@ def main(argv):
                     except Exception as log_e:
                         logging.warning(f"Could not log zero-shot metric for {task_name}: {log_e}")
 
+        ## MATH-500 evaluation via lighteval+vLLM (runs last — deletes model to free VRAM for vLLM)
+        if FLAGS.eval_math500:
+            logging.info(f"--- Evaluating After Pruning (MATH-500, lighteval+vLLM) ---")
+            # Resolve saved model path
+            if FLAGS.math500_model_path:
+                _math500_model_path = FLAGS.math500_model_path
+            elif FLAGS.save_model and FLAGS.admm_save_path:
+                import glob as _glob
+                _subdirs = sorted(
+                    _glob.glob(os.path.join(FLAGS.admm_save_path, "*pruned*")),
+                    key=os.path.getmtime,
+                )
+                if _subdirs:
+                    _math500_model_path = _subdirs[-1]
+                    logging.info(f"Found pruned model dir: {_math500_model_path}")
+                else:
+                    import tempfile as _tmpfile
+                    _math500_model_path = _tmpfile.mkdtemp(prefix="elsa_eval_")
+                    logging.info(f"No pruned subdir found; saving to temp: {_math500_model_path}")
+                    model.save_pretrained(_math500_model_path)
+                    tokenizer.save_pretrained(_math500_model_path)
+            else:
+                import tempfile as _tmpfile
+                _math500_model_path = _tmpfile.mkdtemp(prefix="elsa_eval_")
+                logging.info(f"Saving model to temp path for eval: {_math500_model_path}")
+                model.save_pretrained(_math500_model_path)
+                tokenizer.save_pretrained(_math500_model_path)
+
+            # Delete model to free all VRAM for vLLM subprocess
+            model.to("cpu")
+            import gc as _gc
+            del model
+            _gc.collect()
+            torch.cuda.empty_cache()
+
+            pass_at_1 = run_lighteval_math500(
+                model_path=_math500_model_path,
+                output_dir=os.path.join(_math500_model_path, "lighteval_math500"),
+                max_new_tokens=FLAGS.math500_max_new_tokens,
+                log_to_wandb=FLAGS.wandb,
+                wandb_step=0,
+            )
+            logging.info(f"MATH-500 pass@1 = {pass_at_1:.4f}")
+            if FLAGS.wandb:
+                wandb.log({"math500_pass@1": pass_at_1})
 
 
 if __name__ == '__main__':
