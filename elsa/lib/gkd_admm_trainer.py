@@ -410,8 +410,10 @@ class GKDADMMTrainer(ADMMTrainer):
         if self._kd_inputs is not None:
             kd_loss = self._compute_kd_forward(model)
             loss = ntp_loss + self.kd_lambda * kd_loss
+            self.log({"train/ntp_loss": ntp_loss.item(), "train/kd_loss": kd_loss.item()})
         else:
             loss = ntp_loss
+            self.log({"train/ntp_loss": ntp_loss.item()})
 
         return (loss, student_out) if return_outputs else loss
 
