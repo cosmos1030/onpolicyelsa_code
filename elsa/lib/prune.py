@@ -218,3 +218,6 @@ def globalprune_admm(FLAGS, model, tokenizer, device, prune_n=0, prune_m=0):
                 cfg["architectures"] = [cfg["architectures"][0][len("FSDP"):]]
                 cfg_path.write_text(_json.dumps(cfg, indent=2))
         logging.info(f"ADMM pruned model saved to {admm_output_dir_str}")
+        return admm_output_dir_str
+
+    return None

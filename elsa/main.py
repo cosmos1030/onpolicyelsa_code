@@ -92,16 +92,17 @@ def main(argv):
 
     logging.info(f"Process {local_rank} uses device {device}")
 
+    saved_pruned_model_path = None
     if FLAGS.sparsity_ratio != 0:
         logging.info("pruning starts")
         if FLAGS.do_kd_admm:
             teacher_model = get_llm(FLAGS.model, FLAGS.seqlen)
             teacher_model.to(torch.bfloat16).to(device)
-            globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device)
+            saved_pruned_model_path = globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device)
             del teacher_model
             torch.cuda.empty_cache()
         else:
-            globalprune_admm(FLAGS, model, tokenizer, device, prune_n=prune_n, prune_m=prune_m)
+            saved_pruned_model_path = globalprune_admm(FLAGS, model, tokenizer, device, prune_n=prune_n, prune_m=prune_m)
 
     if local_rank == 0:
         logging.info("Pruning finished")
@@ -181,12 +182,16 @@ def main(argv):
             # Resolve saved model path
             if FLAGS.math500_model_path:
                 _math500_model_path = FLAGS.math500_model_path
+            elif saved_pruned_model_path and os.path.isfile(os.path.join(saved_pruned_model_path, "config.json")):
+                _math500_model_path = saved_pruned_model_path
+                logging.info(f"Using current run's saved pruned model dir: {_math500_model_path}")
             elif FLAGS.save_model and FLAGS.admm_save_path:
                 import glob as _glob
-                _subdirs = sorted(
-                    _glob.glob(os.path.join(FLAGS.admm_save_path, "*pruned*")),
-                    key=os.path.getmtime,
-                )
+                _subdirs = [
+                    p for p in _glob.glob(os.path.join(FLAGS.admm_save_path, "*pruned*"))
+                    if os.path.isfile(os.path.join(p, "config.json"))
+                ]
+                _subdirs = sorted(_subdirs, key=os.path.getmtime)
                 if _subdirs:
                     _math500_model_path = _subdirs[-1]
                     logging.info(f"Found pruned model dir: {_math500_model_path}")

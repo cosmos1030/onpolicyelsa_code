@@ -182,3 +182,6 @@ def globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device):
                 cfg["architectures"] = [cfg["architectures"][0][len("FSDP"):]]
                 cfg_path.write_text(_json.dumps(cfg, indent=2))
         logging.info(f"KD-ADMM pruned model saved to {output_dir_str}")
+        return output_dir_str
+
+    return None
