@@ -42,6 +42,8 @@ $PYTHON main.py \
     --kd_topk=50 \
     --kd_interval=4 \
     --kd_lambda=0.5 \
+    --admm_eval_steps=10 \
+    --admm_logging_steps=1 \
     --save_model=false \
     --eval_math500=false \
     --eval_zero_shot=false \
