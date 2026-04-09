@@ -96,7 +96,13 @@ def _process_and_tokenize(raw_dataset, dataset_name, tokenizer, nsamples, seqlen
                     continue # Skip samples that cause tokenization errors
     elif "trace" in dataset_name.lower():
         # Support both Arrow format (generations list) and JSONL format (completion string)
-        for sample in tqdm(raw_dataset, desc=f"Tokenizing {dataset_name}"):
+        rng = random.Random(seed)
+        indices = list(range(len(raw_dataset)))
+        rng.shuffle(indices)
+        for idx in tqdm(indices, desc=f"Tokenizing {dataset_name}"):
+            if len(all_tokens) >= nsamples:
+                break
+            sample = raw_dataset[idx]
             if sample.get('generations'):
                 gen = sample['generations'][0]
             elif sample.get('completion'):
