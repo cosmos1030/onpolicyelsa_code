@@ -48,6 +48,12 @@ RAC/open-r1-main/logs_trace/
 
 # ── Python cache ──────────────────────────────────────────────
 __pycache__/
+
+# ── Local tool/editor settings ────────────────────────────────
+.claude/
+.codex
+.codex/
+.vscode/
 *.py[cod]
 *.pyo
 .pytest_cache/
