@@ -220,6 +220,12 @@ def main(script_args, training_args, model_args):
             except ImportError:
                 pass
 
+        # Free GPU memory before launching vLLM (vLLM loads from disk independently)
+        del trainer.model
+        import gc as _gc
+        _gc.collect()
+        torch.cuda.empty_cache()
+
         run_lighteval_math500(
             model_path=pruned_model_path,
             output_dir=str(Path(pruned_model_path) / "lighteval_math500"),
