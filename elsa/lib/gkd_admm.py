@@ -12,7 +12,7 @@ from absl import logging
 from functools import partial
 
 from .trainer import ADMMTrainer
-from .data import get_dataset
+
 from .gkd_admm_trainer import (
     GKDADMMTrainer,
     MathPromptDataset, collate_prompts,
@@ -126,17 +126,24 @@ def globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device):
     if local_rank == 0:
         logging.info(f"KD-ADMM dataset: {len(train_dataset)} samples")
 
-    # Validation dataset (same source as NTP training data, for sparse eval)
-    valid_inputs = get_dataset(
-        dataset_name=FLAGS.dataset,
-        tokenizer=tokenizer,
-        nsamples=FLAGS.admm_num_eval_samples,
-        seed=FLAGS.seed,
-        seqlen=getattr(FLAGS, "seqlen", 2048),
-        data_type="validation",
-        save_to_cache=False,
-        data_path=FLAGS.data_path,
-    )
+    # Validation dataset: same format as train_dataset (shares collator)
+    if use_hybrid:
+        valid_inputs = MathCotKDDataset(
+            jsonl_path=FLAGS.kd_data_path,
+            tokenizer=tokenizer,
+            max_len=getattr(FLAGS, "seqlen", 2048),
+            max_prompt_len=FLAGS.kd_max_prompt_len,
+            nsamples=FLAGS.admm_num_eval_samples,
+            seed=FLAGS.seed + 1,  # different seed to get different samples
+        )
+    else:
+        valid_inputs = MathPromptDataset(
+            jsonl_path=FLAGS.kd_data_path,
+            tokenizer=tokenizer,
+            max_prompt_len=FLAGS.kd_max_prompt_len,
+            nsamples=FLAGS.admm_num_eval_samples,
+            seed=FLAGS.seed + 1,
+        )
     if local_rank == 0:
         logging.info(f"KD-ADMM eval dataset: {len(valid_inputs)} samples")
 
