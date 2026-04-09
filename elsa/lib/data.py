@@ -35,13 +35,16 @@ def _get_raw_dataset(dataset_name, data_type="train", data_path=None):
             )
         else:
             if local_rank == 0:
-                logging.info("Loading C4 raw data from Hugging Face Hub.")
+                logging.info("Loading C4 raw data from Hugging Face Hub (single shard only).")
+            # Load via direct URL as a plain json dataset — downloads only this one shard (~300MB).
+            # Using 'allenai/c4' as dataset name triggers the HF loading script which caches
+            # ALL 1637 shards as Arrow files (~2.4TB). Loading via URL avoids this.
+            hf_base = "https://huggingface.co/datasets/allenai/c4/resolve/main"
+            url = f"{hf_base}/{data_files_config[split_name]}"
             return load_dataset(
-                'allenai/c4',
-                data_files={split_name: data_files_config[split_name]},
+                'json',
+                data_files={split_name: url},
                 split=split_name,
-                trust_remote_code=True,
-                cache_dir='~/.cache/huggingface/datasets'
             )
             
     elif "wikitext2" in dataset_name.lower():
