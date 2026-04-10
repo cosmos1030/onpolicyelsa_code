@@ -63,9 +63,10 @@ def main(argv):
             logging.info('\n' + '\n'.join([f'{k} = {v}' for k, v in arguments.items()]))
 
 
-    # If admm_final_lmda not explicitly set (0.0 default), use admm_lmda (sweep-friendly)
-    if getattr(FLAGS, 'admm_final_lmda', 0.0) == 0.0:
-        FLAGS.admm_final_lmda = FLAGS.admm_lmda
+    # admm_final_lmda should always follow admm_lmda unless explicitly overridden via command line.
+    # The absl default is 0.01 and the dataclass default is also 0.01, so we can't distinguish
+    # "user set it" from "it's just the default". Always override with admm_lmda to be sweep-safe.
+    FLAGS.admm_final_lmda = FLAGS.admm_lmda
 
     # Setting seeds for reproducibility
     np.random.seed(FLAGS.seed)
