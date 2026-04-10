@@ -14,7 +14,7 @@ metric:
 
 parameters:
   admm_lr:
-    values: [5.0e-6, 1.0e-5, 5.0e-5]
+    values: [1.0e-5, 5.0e-5, 1e-4]
   admm_lmda:
     values: [1.0e-3, 5.0e-3, 1.0e-2]
   # fixed params

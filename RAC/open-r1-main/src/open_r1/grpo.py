@@ -47,6 +47,78 @@ from open_r1_trl import GRPOTrainer, ModelConfig, TrlParser, get_peft_config
 logger = logging.getLogger(__name__)
 
 
+def to_conversation(
+    example,
+    *,
+    prompt_column: str,
+    system_prompt: str | None,
+):
+    # If the prompt column is already a list of messages, leave untouched
+    if isinstance(example.get(prompt_column), list):
+        return {"prompt": example[prompt_column]}
+
+    # Else wrap in (system, user) two-turn chat
+    prompt = []
+    if system_prompt is not None:
+        prompt.append({"role": "system", "content": system_prompt})
+    prompt.append({"role": "user", "content": example[prompt_column]})
+    return {"prompt": prompt}
+
+
+def _resolve_current_run_pruned_model_path(model_args, training_args, script_args) -> str:
+    """Resolve the pruned model directory for *this* run.
+
+    Prefer the deterministic path pattern used by GRPOTrainer pruning save logic.
+    Fall back to a filtered glob only when needed.
+    """
+    model_stem = Path(model_args.model_name_or_path).stem
+    dataset_tag = (script_args.dataset_name or "data").split("/")[-1]
+
+    thirds = getattr(training_args, "prune_thirds_to_prune", None)
+    if isinstance(thirds, (list, tuple)):
+        thirds_tag = "_".join(str(t) for t in thirds) if len(thirds) > 0 else "none"
+    elif isinstance(thirds, str):
+        thirds_tag = "1_2_3" if thirds.lower() == "all" else thirds.replace(",", "_")
+    else:
+        thirds_tag = "none"
+
+    prune_n = getattr(training_args, "prune_N", None)
+    prune_m = getattr(training_args, "prune_M", None)
+    nm_tag = f"N{prune_n}_M{prune_m}" if prune_n and prune_m else ""
+
+    expected = (
+        Path(training_args.save_dir)
+        / (
+            f"{model_stem}"
+            f"_pruned_{int(training_args.prune_sparsity * 100)}"
+            f"_{training_args.prune_scope}"
+            f"_tokens{training_args.prune_calib_tokens}"
+            f"_prunemethod_{training_args.pruning_method}"
+            f"_thirds_{thirds_tag}"
+            f"_{nm_tag}"
+            f"_{dataset_tag}"
+        )
+    )
+    if (expected / "config.json").is_file():
+        return str(expected)
+
+    # Fallback: restrict candidates to this run's sparsity + dataset tag + valid config
+    import glob as _glob
+
+    pattern = f"{model_stem}_pruned_{int(training_args.prune_sparsity * 100)}_*_{dataset_tag}"
+    candidates = [
+        p
+        for p in _glob.glob(str(Path(training_args.save_dir) / pattern))
+        if (Path(p) / "config.json").is_file()
+    ]
+    if candidates:
+        candidates.sort(key=os.path.getmtime)
+        return candidates[-1]
+
+    # Last-resort fallback to previous behavior output dir.
+    return str(training_args.output_dir)
+
+
 # ════════════════════════════════════════════════════════════════════════════
 #  Main
 # ════════════════════════════════════════════════════════════════════════════
@@ -97,19 +169,13 @@ def main(script_args, training_args, model_args):
     reward_funcs = get_reward_funcs(script_args)
 
     # ── Convert rows to conversation format if needed ──────────────────────
-    def to_conversation(example, prompt_column: str = script_args.dataset_prompt_column):
-        # If the prompt column is already a list of messages, leave untouched
-        if isinstance(example.get(prompt_column), list):
-            return {"prompt": example[prompt_column]}
-
-        # Else wrap in (system, user) two‑turn chat
-        prompt = []
-        if training_args.system_prompt is not None:
-            prompt.append({"role": "system", "content": training_args.system_prompt})
-        prompt.append({"role": "user", "content": example[prompt_column]})
-        return {"prompt": prompt}
-
-    dataset = dataset.map(to_conversation)
+    dataset = dataset.map(
+        to_conversation,
+        fn_kwargs={
+            "prompt_column": script_args.dataset_prompt_column,
+            "system_prompt": training_args.system_prompt,
+        },
+    )
     for split in dataset:
         if "messages" in dataset[split].column_names:
             dataset[split] = dataset[split].remove_columns("messages")
@@ -193,16 +259,12 @@ def main(script_args, training_args, model_args):
     # do_train / trace_only flags.
     if getattr(training_args, "prune", False) and trainer.accelerator.is_main_process:
         logger.info("*** Running MATH-500 eval on pruned model (lighteval+vLLM) ***")
-        # The pruned model is already saved by the Trainer (inside SFTTrainer.__init__)
-        # to a path derived from model name + sparsity. Find it.
-        pruned_model_path = training_args.output_dir  # fallback
-
-        # SFTTrainer saves to models/<stem>_pruned_... relative to cwd
-        import glob as _glob
-        model_stem = Path(model_args.model_name_or_path).stem
-        candidates = sorted(_glob.glob(f"models/{model_stem}_pruned_*"))
-        if candidates:
-            pruned_model_path = candidates[-1]
+        # Resolve pruned model path for the current run only.
+        pruned_model_path = _resolve_current_run_pruned_model_path(
+            model_args=model_args,
+            training_args=training_args,
+            script_args=script_args,
+        )
         logger.info(f"Pruned model path: {pruned_model_path}")
 
         # Init wandb if not already active (do_train=False skips trainer wandb init)

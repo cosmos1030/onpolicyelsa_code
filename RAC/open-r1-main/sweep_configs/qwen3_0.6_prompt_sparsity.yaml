@@ -20,6 +20,7 @@ command:
   - --prune=True
   - --pruning_method=SparseGPT
   - --prune_calib_tokens=1_000_000
+  - --math_eval_max_new_tokens=30000
   - --push_to_hub=False
   - --score_completions=False
   - --report_to=wandb
