@@ -226,6 +226,39 @@ def main(argv):
             if FLAGS.wandb:
                 wandb.log({"math500_pass@1": pass_at_1})
 
+        if getattr(FLAGS, 'push_to_hub', False):
+            _hub_model_path = locals().get('_math500_model_path', None) or saved_pruned_model_path
+            if _hub_model_path and os.path.isfile(os.path.join(_hub_model_path, "config.json")):
+                from huggingface_hub import HfApi
+                # Auto-generate repo id if not specified
+                _hub_repo = FLAGS.hub_model_id if FLAGS.hub_model_id else None
+                if not _hub_repo:
+                    _base_model = FLAGS.model.rstrip('/').split('/')[-1]
+                    _sparsity_tag = f"s{int(FLAGS.sparsity_ratio * 100)}pct"
+                    _method_tag = "elsa-hybrid-kd" if getattr(FLAGS, 'do_kd_admm', False) and getattr(FLAGS, 'kd_use_cot_dataset', False) \
+                        else "elsa-kd" if getattr(FLAGS, 'do_kd_admm', False) \
+                        else "elsa-ntp-cot" if getattr(FLAGS, 'dataset', '') == 'math_cot' \
+                        else "elsa-ntp"
+                    def _fmt_float(v):
+                        s = f"{v:.0e}"  # e.g. "1e-05" → normalize
+                        return s.replace("e-0", "e-").replace("e+0", "e")
+                    _lr_tag = f"lr{_fmt_float(FLAGS.admm_lr)}"
+                    _lmda_tag = f"lmda{_fmt_float(FLAGS.admm_lmda)}"
+                    _hub_repo = f"cosmos1030/{_base_model}-{_method_tag}-{_sparsity_tag}-{_lr_tag}-{_lmda_tag}"
+                logging.info(f"Uploading model to HuggingFace Hub: {_hub_repo}")
+                api = HfApi()
+                api.create_repo(repo_id=_hub_repo, exist_ok=True)
+                api.upload_folder(
+                    folder_path=_hub_model_path,
+                    repo_id=_hub_repo,
+                    commit_message=f"ELSA pruned: sparsity={FLAGS.sparsity_ratio}, lr={FLAGS.admm_lr}, lmda={FLAGS.admm_lmda}",
+                )
+                logging.info(f"Uploaded to https://huggingface.co/{_hub_repo}")
+                if FLAGS.wandb:
+                    wandb.log({"hub_model_id": _hub_repo})
+            else:
+                logging.warning("push_to_hub=True but no saved model path found. Skipping upload.")
+
 
 if __name__ == '__main__':
     flags.DEFINE_string('model', 'facebook/opt-125m', 'model to prune. model name (hf repo) or local path to model snapshot')
@@ -307,4 +340,6 @@ if __name__ == '__main__':
     flags.DEFINE_integer('math500_max_new_tokens', 4096, 'max_new_tokens for MATH-500 generation.')
     flags.DEFINE_bool('wandb', False, 'Whether to use wandb for logging.')
     flags.DEFINE_string('wandb_project', None, 'wandb project name.')
+    flags.DEFINE_bool('push_to_hub', False, 'Whether to push the pruned model to HuggingFace Hub after eval.')
+    flags.DEFINE_string('hub_model_id', None, 'HuggingFace Hub repo id (e.g. username/model-name) to push pruned model.')
     app.run(main)

@@ -1,7 +1,7 @@
 program: main.py
 method: grid
 project: elsa_qwen3_0.6b
-name: sweep_ntp_cot_qwen3
+name: sweep_ntp_cot_qwen3_50pct
 
 command:
   - /home1/doyoonkim/miniconda3/envs/rac/bin/python
@@ -14,7 +14,7 @@ metric:
 
 parameters:
   admm_lr:
-    values: [5.0e-6, 1.0e-5, 5.0e-5, 1.0e-4]
+    values: [5.0e-6, 1.0e-5, 5.0e-5]
   admm_lmda:
     values: [1.0e-3, 5.0e-3, 1.0e-2]
   # fixed params — swept agent reads these from wandb.config, main.py merges them
@@ -25,7 +25,7 @@ parameters:
   data_path:
     value: "/home1/doyoonkim/projects/elsa/data/math_220k_cot.jsonl"
   sparsity_ratio:
-    value: 0.3
+    value: 0.5
   admm_steps:
     value: 4096
   admm_batch_size:
@@ -49,7 +49,7 @@ parameters:
   eval_math500:
     value: true
   math500_max_new_tokens:
-    value: 32768
+    value: 30000
   eval_zero_shot:
     value: false
   wandb_project:
@@ -58,3 +58,5 @@ parameters:
     value: true
   seed:
     value: 42
+  push_to_hub:
+    value: true
