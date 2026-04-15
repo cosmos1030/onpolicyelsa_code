@@ -291,9 +291,7 @@ def main(script_args, training_args, model_args):
         run_lighteval_math500(
             model_path=pruned_model_path,
             output_dir=str(Path(pruned_model_path) / "lighteval_math500"),
-            max_new_tokens=getattr(training_args, "math_eval_max_new_tokens", 4096),
-            gpu_memory_utilization=0.75,
-            max_model_length=30000,
+            max_new_tokens=getattr(training_args, "math_eval_max_new_tokens", 30000),
             wandb_step=0,
         )
 
