@@ -243,6 +243,10 @@ class GKDADMMTrainer(ADMMTrainer):
         kd_topk: int = 50,
         kd_interval: int = 1,
         kd_lambda: float = 1.0,
+        use_vllm: bool = False,
+        vllm_model_name: str = None,
+        vllm_gpu_memory_utilization: float = 0.3,
+        vllm_max_model_len: int = None,
         *args,
         **kwargs,
     ):
@@ -273,6 +277,102 @@ class GKDADMMTrainer(ADMMTrainer):
         # Per-step state for conditional KD
         self._kd_inputs = None  # set in training_step, read in compute_loss
 
+        # vLLM rollout engine (optional)
+        self.use_vllm = use_vllm
+        self.vllm_engine = None
+        self.vllm_sampling_params = None
+        if use_vllm:
+            if vllm_model_name is None:
+                raise ValueError("vllm_model_name must be set when use_vllm=True")
+            # max_model_len = prompt + generation (no need for model's full context)
+            _vllm_max_model_len = vllm_max_model_len or (max_new_tokens + 1024)
+            self._init_vllm_engine(vllm_model_name, vllm_gpu_memory_utilization, _vllm_max_model_len)
+
+    def _init_vllm_engine(self, model_name: str, gpu_memory_utilization: float, max_model_len: int):
+        """Initialize vLLM LLM engine for fast student rollout generation."""
+        import os
+        os.environ["VLLM_USE_V1"] = "0"  # use V0 engine for direct weight access
+        from vllm import LLM, SamplingParams
+        logging.info(f"[vLLM] Initializing engine from {model_name}, "
+                     f"gpu_memory_utilization={gpu_memory_utilization}, "
+                     f"max_model_len={max_model_len}")
+        self.vllm_engine = LLM(
+            model=model_name,
+            dtype="bfloat16",
+            gpu_memory_utilization=gpu_memory_utilization,
+            max_model_len=max_model_len,
+            enforce_eager=True,  # weights change each kd_interval, skip CUDA graph
+            trust_remote_code=True,
+        )
+        self.vllm_sampling_params = SamplingParams(
+            max_tokens=self.max_new_tokens,
+            temperature=self.gen_temperature,
+        )
+        logging.info("[vLLM] Engine initialized.")
+
+    def _sync_weights_to_vllm(self, model):
+        """Copy current student weights (float32) into vLLM engine (bfloat16)."""
+        import time as _time
+        _t0 = _time.time()
+
+        vllm_model = (self.vllm_engine.llm_engine
+                      .model_executor.driver_worker
+                      .model_runner.model)
+
+        vllm_state = {k: v for k, v in vllm_model.named_parameters()}
+        for name, param in model.named_parameters():
+            if name in vllm_state:
+                vllm_state[name].data.copy_(param.data.to(vllm_state[name].dtype))
+
+        _elapsed = _time.time() - _t0
+        logging.info(f"[vLLM] Weight sync done in {_elapsed:.2f}s")
+
+    def _generate_with_vllm(self, prompt_ids: torch.Tensor,
+                             prompt_mask: torch.Tensor,
+                             model) -> torch.Tensor:
+        """
+        Generate rollout using vLLM engine.
+        Syncs student weights first, then generates.
+        Returns tensor of shape (B, prompt_len + gen_len), same as model.generate().
+        """
+        import time as _time
+        _t0 = _time.time()
+
+        self._sync_weights_to_vllm(model)
+
+        # Convert token IDs to list of lists (vLLM input format)
+        prompt_lens = prompt_mask.sum(dim=1).tolist()
+        prompts_token_ids = []
+        for i, plen in enumerate(prompt_lens):
+            plen = int(plen)
+            prompts_token_ids.append(prompt_ids[i, -plen:].tolist())
+
+        outputs = self.vllm_engine.generate(
+            prompt_token_ids=prompts_token_ids,
+            sampling_params=self.vllm_sampling_params,
+        )
+
+        # Reconstruct full sequences (prompt + generated) as padded tensor
+        device = prompt_ids.device
+        results = []
+        for i, output in enumerate(outputs):
+            gen_ids = list(output.outputs[0].token_ids)
+            full_ids = prompts_token_ids[i] + gen_ids
+            results.append(torch.tensor(full_ids, dtype=torch.long, device=device))
+
+        # Right-pad to same length
+        max_len = max(t.shape[0] for t in results)
+        pad_id = self.tokenizer.pad_token_id
+        padded = torch.full((len(results), max_len), pad_id, dtype=torch.long, device=device)
+        for i, t in enumerate(results):
+            padded[i, :t.shape[0]] = t
+
+        _elapsed = _time.time() - _t0
+        _gen_tokens = padded.shape[1] - int(min(prompt_lens))
+        logging.info(f"[vLLM] generation done: {_gen_tokens} tokens in {_elapsed:.2f}s "
+                     f"({_gen_tokens/_elapsed:.1f} tok/s)")
+        return padded
+
     def _is_hybrid_batch(self, inputs):
         """True if batch contains CoT NTP data (MathCotKDDataset)."""
         return "prompt_ids" in inputs
@@ -291,30 +391,33 @@ class GKDADMMTrainer(ADMMTrainer):
         prompt_len = inputs["prompt_len"].item() if inputs["prompt_len"].dim() == 0 else int(inputs["prompt_len"][0])
 
         # On-policy generation (student, no grad)
-        _gc_enabled = getattr(model, "is_gradient_checkpointing", False)
-        if _gc_enabled:
-            model.gradient_checkpointing_disable()
-        model.config.use_cache = True
-        model.eval()
-        import time as _time
-        _t0 = _time.time()
-        with torch.no_grad():
-            generated = model.generate(
-                input_ids=prompt_ids,
-                attention_mask=prompt_mask,
-                generation_config=self.generation_config,
+        if self.use_vllm:
+            generated = self._generate_with_vllm(prompt_ids, prompt_mask, model)
+        else:
+            _gc_enabled = getattr(model, "is_gradient_checkpointing", False)
+            if _gc_enabled:
+                model.gradient_checkpointing_disable()
+            model.config.use_cache = True
+            model.eval()
+            import time as _time
+            _t0 = _time.time()
+            with torch.no_grad():
+                generated = model.generate(
+                    input_ids=prompt_ids,
+                    attention_mask=prompt_mask,
+                    generation_config=self.generation_config,
+                )
+            _elapsed = _time.time() - _t0
+            _gen_tokens = generated.shape[1] - prompt_len
+            logging.info(
+                f"[KV-DEBUG] use_cache={model.config.use_cache}, "
+                f"gen_tokens={_gen_tokens}, time={_elapsed:.1f}s, "
+                f"tok/s={_gen_tokens/_elapsed:.1f}"
             )
-        _elapsed = _time.time() - _t0
-        _gen_tokens = generated.shape[1] - prompt_len
-        logging.info(
-            f"[KV-DEBUG] use_cache={model.config.use_cache}, "
-            f"gen_tokens={_gen_tokens}, time={_elapsed:.1f}s, "
-            f"tok/s={_gen_tokens/_elapsed:.1f}"
-        )
-        model.train()
-        model.config.use_cache = False
-        if _gc_enabled:
-            model.gradient_checkpointing_enable()
+            model.train()
+            model.config.use_cache = False
+            if _gc_enabled:
+                model.gradient_checkpointing_enable()
 
         full_mask = (generated != self.tokenizer.pad_token_id).long()
         updated_inputs = {
@@ -337,29 +440,32 @@ class GKDADMMTrainer(ADMMTrainer):
             prompt_mask = inputs["prompt_mask"]
             prompt_len = int(inputs["prompt_len"].item() if inputs["prompt_len"].dim() == 0 else inputs["prompt_len"][0])
 
-            _gc_enabled = getattr(model, "is_gradient_checkpointing", False)
-            if _gc_enabled:
-                model.gradient_checkpointing_disable()
-            model.config.use_cache = True
-            model.eval()
-            import time as _time
-            _t0 = _time.time()
-            with torch.no_grad():
-                generated = model.generate(
-                    input_ids=prompt_ids,
-                    attention_mask=prompt_mask,
-                    generation_config=self.generation_config,
+            if self.use_vllm:
+                generated = self._generate_with_vllm(prompt_ids, prompt_mask, model)
+            else:
+                _gc_enabled = getattr(model, "is_gradient_checkpointing", False)
+                if _gc_enabled:
+                    model.gradient_checkpointing_disable()
+                model.config.use_cache = True
+                model.eval()
+                import time as _time
+                _t0 = _time.time()
+                with torch.no_grad():
+                    generated = model.generate(
+                        input_ids=prompt_ids,
+                        attention_mask=prompt_mask,
+                        generation_config=self.generation_config,
+                    )
+                _elapsed = _time.time() - _t0
+                _gen_tokens = generated.shape[1] - prompt_len
+                logging.info(
+                    f"[KD] step={self.state.global_step}, "
+                    f"gen_tokens={_gen_tokens}, time={_elapsed:.1f}s"
                 )
-            _elapsed = _time.time() - _t0
-            _gen_tokens = generated.shape[1] - prompt_len
-            logging.info(
-                f"[KD] step={self.state.global_step}, "
-                f"gen_tokens={_gen_tokens}, time={_elapsed:.1f}s"
-            )
-            model.train()
-            model.config.use_cache = False
-            if _gc_enabled:
-                model.gradient_checkpointing_enable()
+                model.train()
+                model.config.use_cache = False
+                if _gc_enabled:
+                    model.gradient_checkpointing_enable()
 
             full_mask = (generated != self.tokenizer.pad_token_id).long()
             self._kd_inputs = {

@@ -318,6 +318,9 @@ if __name__ == '__main__':
     flags.DEFINE_integer('kd_topk', 50, 'Top-k vocab filtering for KD loss (0 = full vocab).')
     flags.DEFINE_integer('kd_interval', 1, 'Run on-policy KD generation every N steps (1 = every step).')
     flags.DEFINE_float('kd_lambda', 1.0, 'Weight of KD loss when combined with NTP loss in hybrid mode.')
+    flags.DEFINE_bool('kd_use_vllm', False, 'Use vLLM for on-policy student rollout generation (faster for large models).')
+    flags.DEFINE_float('kd_vllm_gpu_memory_utilization', 0.3, 'vLLM gpu_memory_utilization for rollout engine.')
+    flags.DEFINE_integer('kd_vllm_max_model_len', 0, 'vLLM max_model_len (0 = auto: kd_max_new_tokens + 1024).')
     flags.DEFINE_bool('kd_use_cot_dataset', False, 'Use MathCotKDDataset (provides CoT NTP labels + prompt for KD).')
 
     # On-policy distillation (legacy post-ADMM phase)
