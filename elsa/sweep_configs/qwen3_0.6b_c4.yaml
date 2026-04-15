@@ -43,6 +43,6 @@ parameters:
   sparsity_ratio:
     value: 0.3
   admm_lr:
-    values: [5e-6, 1e-5, 5e-5, 1e-4]
+    values: [1e-5, 5e-5, 1e-4]
   admm_lmda:
     values: [1e-3, 5e-3, 1e-2]

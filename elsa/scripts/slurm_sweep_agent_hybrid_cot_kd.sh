@@ -8,6 +8,7 @@
 #SBATCH --cpus-per-task=10
 #SBATCH --output=/home1/doyoonkim/projects/elsa/output_qwen/%j.out
 #SBATCH -t 3-00:00:00
+#SBATCH --exclude=n3
 
 # Usage:
 #   1. Create sweep (one time):
