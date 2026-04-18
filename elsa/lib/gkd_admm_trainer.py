@@ -270,9 +270,10 @@ class GKDADMMTrainer(ADMMTrainer):
         )
 
         # Move teacher to same device as student; keep frozen
-        self.teacher_model.eval()
-        for p in self.teacher_model.parameters():
-            p.requires_grad_(False)
+        if self.teacher_model is not None:
+            self.teacher_model.eval()
+            for p in self.teacher_model.parameters():
+                p.requires_grad_(False)
 
         # Per-step state for conditional KD
         self._kd_inputs = None  # set in training_step, read in compute_loss
@@ -433,7 +434,7 @@ class GKDADMMTrainer(ADMMTrainer):
         Hybrid: NTP on CoT every step + on-policy KD every kd_interval steps.
         inputs keys: input_ids, attention_mask, labels, prompt_ids, prompt_mask, prompt_len
         """
-        do_kd = (self.state.global_step % self.kd_interval == 0)
+        do_kd = (self.teacher_model is not None) and (self.state.global_step % self.kd_interval == 0)
 
         if do_kd:
             prompt_ids = inputs["prompt_ids"]

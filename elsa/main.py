@@ -1,3 +1,4 @@
+import time
 import numpy as np
 import torch
 from transformers import AutoTokenizer
@@ -94,16 +95,23 @@ def main(argv):
     logging.info(f"Process {local_rank} uses device {device}")
 
     saved_pruned_model_path = None
+    _train_time_sec = 0.0
     if FLAGS.sparsity_ratio != 0:
         logging.info("pruning starts")
+        _t_train_start = time.time()
         if FLAGS.do_kd_admm:
             teacher_model = get_llm(FLAGS.model, FLAGS.seqlen)
             teacher_model.to(torch.bfloat16).to(device)
             saved_pruned_model_path = globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device)
             del teacher_model
             torch.cuda.empty_cache()
+        elif getattr(FLAGS, 'dataset', '') == 'math_cot':
+            # NTP with full problem context: no teacher, no KD, uses MathCotKDDataset
+            saved_pruned_model_path = globalprune_admm_kd(FLAGS, model, None, tokenizer, device)
         else:
             saved_pruned_model_path = globalprune_admm(FLAGS, model, tokenizer, device, prune_n=prune_n, prune_m=prune_m)
+        _train_time_sec = time.time() - _t_train_start
+        logging.info(f"Training time: {_train_time_sec/3600:.2f}h")
 
     if local_rank == 0:
         logging.info("Pruning finished")
@@ -216,6 +224,7 @@ def main(argv):
             _gc.collect()
             torch.cuda.empty_cache()
 
+            _t_eval_start = time.time()
             pass_at_1 = run_lighteval_math500(
                 model_path=_math500_model_path,
                 output_dir=os.path.join(_math500_model_path, "lighteval_math500"),
@@ -223,7 +232,15 @@ def main(argv):
                 log_to_wandb=FLAGS.wandb,
                 wandb_step=0,
             )
+            _eval_time_sec = time.time() - _t_eval_start
             logging.info(f"MATH-500 pass@1 = {pass_at_1:.4f}")
+            logging.info(f"Eval time: {_eval_time_sec/3600:.2f}h")
+            if FLAGS.wandb:
+                wandb.log({
+                    "train_time_sec": _train_time_sec,
+                    "eval_time_sec": _eval_time_sec,
+                    "total_time_sec": _train_time_sec + _eval_time_sec,
+                })
             if FLAGS.wandb:
                 wandb.log({"math500_pass@1": pass_at_1})
 

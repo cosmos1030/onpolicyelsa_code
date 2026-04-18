@@ -97,8 +97,12 @@ def globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device):
 
     local_rank = training_args.local_rank
 
-    # Dataset: use hybrid CoT+KD dataset when kd_interval > 1 or kd_data is cot-format
-    use_hybrid = getattr(FLAGS, "kd_interval", 1) > 1 or getattr(FLAGS, "kd_use_cot_dataset", False)
+    # Dataset: use hybrid CoT+KD dataset when teacher is None (NTP-only with context),
+    # kd_interval > 1, or kd_data is cot-format
+    use_hybrid = teacher_model is None or getattr(FLAGS, "kd_interval", 1) > 1 or getattr(FLAGS, "kd_use_cot_dataset", False)
+    # Fallback: use data_path as kd_data_path if not explicitly set (NTP-with-context mode)
+    if not getattr(FLAGS, "kd_data_path", None):
+        FLAGS.kd_data_path = FLAGS.data_path
     if use_hybrid:
         if local_rank == 0:
             logging.info(f"Loading CoT KD dataset from {FLAGS.kd_data_path}")
@@ -148,8 +152,9 @@ def globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device):
         logging.info(f"KD-ADMM eval dataset: {len(valid_inputs)} samples")
 
     model.train()
-    teacher_model.eval()
-    teacher_model.to(device)
+    if teacher_model is not None:
+        teacher_model.eval()
+        teacher_model.to(device)
 
     trainer = GKDADMMTrainer(
         teacher_model=teacher_model,
@@ -174,6 +179,14 @@ def globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device):
     )
 
     trainer.train()
+
+    # Free vLLM engine from GPU before saving/eval (lighteval needs the memory)
+    if getattr(trainer, "vllm_engine", None) is not None:
+        del trainer.vllm_engine
+        trainer.vllm_engine = None
+        import gc as _gc
+        _gc.collect()
+        torch.cuda.empty_cache()
 
     if FLAGS.save_model:
         trainer.save_model(output_dir_str)

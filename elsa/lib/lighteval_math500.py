@@ -50,6 +50,7 @@ def run_lighteval_math500(
         f"tensor_parallel_size={tensor_parallel_size},"
         f"gpu_memory_utilization={gpu_memory_utilization},"
         f"max_model_length={max_model_length},"
+        f"max_num_batched_tokens={max_model_length},"
         f"override_chat_template=true,"
         f"generation_parameters={{max_new_tokens:{max_new_tokens},temperature:{temperature},top_p:{top_p}}}"
     )
@@ -70,10 +71,10 @@ def run_lighteval_math500(
         logger.warning(f"[lighteval_math500] lighteval exited with code {result.returncode}")
 
     # Parse results JSON
-    pass_at_1 = _parse_results(output_dir, model_path)
+    pass_at_1, stderr = _parse_results(output_dir, model_path)
 
     if log_to_wandb:
-        _log_wandb(pass_at_1, wandb_step, wandb_metric_name)
+        _log_wandb(pass_at_1, stderr, wandb_step, wandb_metric_name)
 
     return pass_at_1
 
@@ -91,33 +92,76 @@ def _find_lighteval() -> str:
     raise RuntimeError("lighteval not found. Install it or pass lighteval_bin=")
 
 
-def _parse_results(output_dir: str, model_path: str) -> float:
+def _parse_results(output_dir: str, model_path: str):
     # lighteval writes results under output_dir/<model_name_path>/results_*.json
     results_files = sorted(Path(output_dir).rglob("results_*.json"))
     if not results_files:
         logger.warning(f"[lighteval_math500] No results_*.json found in {output_dir}")
-        return float("nan")
+        return float("nan"), float("nan")
     result_json = results_files[-1]
     print(f"[lighteval_math500] Parsing {result_json}", flush=True)
     with open(result_json) as f:
         d = json.load(f)
-    score = (
-        d.get("results", {})
-         .get("lighteval|math_500|0", {})
-         .get("pass@k:k=1&n=1", float("nan"))
-    )
-    print(f"[lighteval_math500] MATH-500 pass@1 = {score}", flush=True)
-    return score
+    task = d.get("results", {}).get("lighteval|math_500|0", {})
+    score = task.get("pass@k:k=1&n=1", float("nan"))
+    stderr = task.get("pass@k:k=1&n=1_stderr", float("nan"))
+    print(f"[lighteval_math500] MATH-500 pass@1 = {score:.4f} ± {stderr:.4f}", flush=True)
+
+    # Log first 10 samples as wandb Table
+    _log_sample_table(output_dir)
+
+    return score, stderr
 
 
-def _log_wandb(pass_at_1: float, wandb_step: Optional[int], metric_name: str):
+def _log_sample_table(output_dir: str, n_samples: int = 10):
+    try:
+        import numpy as np
+        import pandas as pd
+        import wandb
+        if wandb.run is None:
+            return
+        detail_files = sorted(Path(output_dir).rglob("details_lighteval|math_500|0_*.parquet"))
+        if not detail_files:
+            return
+        df = pd.read_parquet(detail_files[-1])
+
+        # Per-sample token stats
+        out_lens = [len(r["output_tokens"][0]) for r in df["model_response"]]
+        in_lens = [len(r["input_tokens"]) for r in df["model_response"]]
+        truncated = [int(r["truncated_tokens_count"]) for r in df["model_response"]]
+
+        wandb.log({
+            "math500_avg_output_tokens": float(np.mean(out_lens)),
+            "math500_avg_input_tokens": float(np.mean(in_lens)),
+            "math500_max_output_tokens": float(np.max(out_lens)),
+            "math500_truncation_rate": float(np.mean([t > 0 for t in truncated])),
+        })
+
+        # First N samples table
+        table = wandb.Table(columns=["idx", "problem", "model_answer", "gold_answer", "correct", "output_tokens"])
+        for i, row in df.head(n_samples).iterrows():
+            problem = str(row["doc"].get("query", ""))[:1000]
+            model_ans = str(row["model_response"].get("text", [""])[0])[:2000]
+            gold_ans = str(row["doc"].get("choices", [""])[0])[:500]
+            correct = bool(row["metric"].get("pass@k:k=1&n=1", 0))
+            n_out = len(row["model_response"]["output_tokens"][0])
+            table.add_data(i, problem, model_ans, gold_ans, correct, n_out)
+        wandb.log({"math500_samples": table})
+    except Exception as e:
+        logger.warning(f"[lighteval_math500] Could not log sample table: {e}")
+
+
+def _log_wandb(pass_at_1: float, stderr: float, wandb_step: Optional[int], metric_name: str):
     try:
         import wandb
         if wandb.run is None:
             return
         wandb.define_metric("eval/step")
         wandb.define_metric("eval/*", step_metric="eval/step")
-        payload = {metric_name: pass_at_1}
+        payload = {
+            metric_name: pass_at_1,
+            metric_name + "_stderr": stderr,
+        }
         if wandb_step is not None:
             payload["eval/step"] = wandb_step
         wandb.log(payload)
