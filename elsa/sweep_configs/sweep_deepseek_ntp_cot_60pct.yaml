@@ -1,0 +1,61 @@
+program: main.py
+method: grid
+project: elsa_deepseek_1.5b
+name: sweep_ntp_cot_deepseek_60pct
+
+command:
+  - /home1/doyoonkim/miniconda3/envs/rac/bin/python
+  - ${program}
+  - ${args}
+
+metric:
+  name: math500_pass@1
+  goal: maximize
+
+parameters:
+  admm_lr:
+    values: [1.0e-5, 5.0e-5, 1e-4]
+  admm_lmda:
+    values: [1.0e-3, 5.0e-3, 1.0e-2]
+  model:
+    value: "/home1/doyoonkim/.cache/huggingface/hub/models--deepseek-ai--DeepSeek-R1-Distill-Qwen-1.5B/snapshots/ad9f0ae0864d7fbcd1cd905e3c6c5b069cc8b562"
+  dataset:
+    value: "math_cot"
+  data_path:
+    value: "/home1/doyoonkim/projects/elsa/data/math_220k_cot.jsonl"
+  sparsity_ratio:
+    value: 0.60
+  admm_steps:
+    value: 4096
+  admm_batch_size:
+    value: 1
+  admm_gradient_accumulation_steps:
+    value: 8
+  admm_lmda_schedule_mode:
+    value: "cosine"
+  admm_beta2:
+    value: 0.999
+  admm_interval:
+    value: 32
+  admm_base_optimizer:
+    value: "adamw"
+  admm_precision:
+    value: "bf16"
+  save_model:
+    value: true
+  admm_save_path:
+    value: "/home1/doyoonkim/projects/elsa/models"
+  eval_math500:
+    value: true
+  math500_max_new_tokens:
+    value: 30000
+  eval_zero_shot:
+    value: false
+  wandb_project:
+    value: "elsa_deepseek_1.5b"
+  wandb:
+    value: true
+  seed:
+    value: 42
+  push_to_hub:
+    value: true
