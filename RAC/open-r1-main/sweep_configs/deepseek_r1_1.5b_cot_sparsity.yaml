@@ -13,7 +13,8 @@ command:
   - ${program}
   - --config
   - recipes/DeepSeek-R1-Distill-Qwen-1.5B/grpo/config_pruning.yaml
-  - --dataset_name=/home1/doyoonkim/projects/RAC/open-r1-main/math_trace/dataset_DeepSeek-R1-Distill-Qwen-1_trace_OpenR1-Math-220k
+  - --dataset_name=/home1/doyoonkim/projects/RAC/open-r1-main/math_trace/dataset_DeepSeek-R1-Distill-Qwen-1_trace_OpenR1-Math-220k_.jsonl
+  - --dataset_prompt_column=prompt
   - --do_train=False
   - --prune=True
   - --pruning_method=SparseGPT

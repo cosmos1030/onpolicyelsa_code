@@ -168,17 +168,18 @@ def main(script_args, training_args, model_args):
     # ── Reward functions ───────────────────────────────────────────────────
     reward_funcs = get_reward_funcs(script_args)
 
-    # ── Convert rows to conversation format if needed ──────────────────────
-    dataset = dataset.map(
-        to_conversation,
-        fn_kwargs={
-            "prompt_column": script_args.dataset_prompt_column,
-            "system_prompt": training_args.system_prompt,
-        },
-    )
-    for split in dataset:
-        if "messages" in dataset[split].column_names:
-            dataset[split] = dataset[split].remove_columns("messages")
+    # Pruning on JSONL trace datasets expects prompt text to stay as-is.
+    if not training_args.prune:
+        dataset = dataset.map(
+            to_conversation,
+            fn_kwargs={
+                "prompt_column": script_args.dataset_prompt_column,
+                "system_prompt": training_args.system_prompt,
+            },
+        )
+        for split in dataset:
+            if "messages" in dataset[split].column_names:
+                dataset[split] = dataset[split].remove_columns("messages")
 
     # ── Trainer ────────────────────────────────────────────────────────────
     for fld in ("dataset_name", "dataset_config_name", "dataset_split"):
@@ -284,6 +285,8 @@ def main(script_args, training_args, model_args):
 
         # Free GPU memory before launching vLLM (vLLM loads from disk independently)
         del trainer.model
+        del trainer
+        del model
         import gc as _gc
         _gc.collect()
         torch.cuda.empty_cache()
