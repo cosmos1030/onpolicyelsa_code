@@ -63,6 +63,10 @@ parameters:
     value: true
   kd_vllm_gpu_memory_utilization:
     value: 0.15
+  kd_buffer_size:
+    value: 32
+  kd_buffer_refresh_interval:
+    value: 32
   save_model:
     value: true
   admm_save_path:
