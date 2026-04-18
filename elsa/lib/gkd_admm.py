@@ -169,6 +169,8 @@ def globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device):
         vllm_model_name=getattr(FLAGS, "model", None),
         vllm_gpu_memory_utilization=getattr(FLAGS, "kd_vllm_gpu_memory_utilization", 0.3),
         vllm_max_model_len=getattr(FLAGS, "kd_vllm_max_model_len", 0) or None,
+        kd_buffer_size=getattr(FLAGS, "kd_buffer_size", 0),
+        kd_buffer_refresh_interval=getattr(FLAGS, "kd_buffer_refresh_interval", 32),
         model=model,
         args=training_args,
         train_dataset=train_dataset,

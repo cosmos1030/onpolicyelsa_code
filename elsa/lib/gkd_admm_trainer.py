@@ -2,6 +2,9 @@
 GKDADMMTrainer: ADMM pruning with on-policy knowledge distillation loss.
 Inherits ADMMTrainer to keep ADMM mechanics intact, replaces NTP loss with KD.
 """
+import collections
+import random
+
 import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset
@@ -9,7 +12,6 @@ from transformers import GenerationConfig
 from .trainer import ADMMTrainer
 from absl import logging
 import json
-import random
 
 
 # ---------------------------------------------------------------------------
@@ -247,6 +249,8 @@ class GKDADMMTrainer(ADMMTrainer):
         vllm_model_name: str = None,
         vllm_gpu_memory_utilization: float = 0.3,
         vllm_max_model_len: int = None,
+        kd_buffer_size: int = 0,
+        kd_buffer_refresh_interval: int = 32,
         *args,
         **kwargs,
     ):
@@ -257,8 +261,12 @@ class GKDADMMTrainer(ADMMTrainer):
         self.kd_temperature = kd_temperature
         self.ntp_lambda = ntp_lambda
         self.kd_topk = kd_topk
-        self.kd_interval = kd_interval  # run KD every N steps; 1 = every step
+        self.kd_interval = kd_interval  # run KD every N steps; 1 = every step (ignored when buffer active)
         self.kd_lambda = kd_lambda      # weight for KD loss when combined with NTP
+        self.kd_buffer_size = kd_buffer_size                        # 0 = disabled
+        self.kd_buffer_refresh_interval = kd_buffer_refresh_interval  # refresh every N steps (align with admm_interval)
+        self._rollout_buffer: collections.deque = collections.deque()
+        self._prompt_pool = None  # lazily built from train_dataset
 
         self.generation_config = GenerationConfig(
             max_new_tokens=max_new_tokens,
@@ -327,6 +335,59 @@ class GKDADMMTrainer(ADMMTrainer):
 
         _elapsed = _time.time() - _t0
         logging.info(f"[vLLM] Weight sync done in {_elapsed:.2f}s")
+
+    def _get_prompt_pool(self):
+        """Lazily build a list of raw prompt_ids tensors from the training dataset."""
+        if self._prompt_pool is None:
+            pool = []
+            for sample in self.train_dataset:
+                if "prompt_ids" in sample:
+                    p = sample["prompt_ids"]
+                    if not isinstance(p, torch.Tensor):
+                        p = torch.tensor(p, dtype=torch.long)
+                    pool.append(p)
+            self._prompt_pool = pool
+            logging.info(f"[Buffer] Prompt pool built: {len(pool)} prompts")
+        return self._prompt_pool
+
+    def _fill_rollout_buffer(self, model):
+        """Sample kd_buffer_size prompts, generate as one vLLM batch, store in buffer."""
+        import time as _time
+        pool = self._get_prompt_pool()
+        if not pool:
+            logging.warning("[Buffer] Prompt pool empty, skipping buffer fill.")
+            return
+
+        n = min(self.kd_buffer_size, len(pool))
+        sampled = random.sample(pool, n)
+
+        # Left-pad to same length for vLLM batch input
+        max_plen = max(p.shape[0] for p in sampled)
+        pad_id = self.tokenizer.pad_token_id
+        device = next(model.parameters()).device
+
+        batch_ids = torch.full((n, max_plen), pad_id, dtype=torch.long, device=device)
+        batch_mask = torch.zeros(n, max_plen, dtype=torch.long, device=device)
+        prompt_lens = []
+        for i, p in enumerate(sampled):
+            plen = p.shape[0]
+            batch_ids[i, -plen:] = p.to(device)
+            batch_mask[i, -plen:] = 1
+            prompt_lens.append(plen)
+
+        _t0 = _time.time()
+        generated = self._generate_with_vllm(batch_ids, batch_mask, model)
+        full_mask = (generated != pad_id).long()
+
+        self._rollout_buffer.clear()
+        for i in range(generated.shape[0]):
+            self._rollout_buffer.append({
+                "input_ids": generated[i:i+1],
+                "attention_mask": full_mask[i:i+1],
+                "prompt_len": torch.tensor(prompt_lens[i]),
+            })
+        logging.info(f"[Buffer] Filled {len(self._rollout_buffer)} rollouts in "
+                     f"{_time.time()-_t0:.1f}s at step {self.state.global_step}")
 
     def _generate_with_vllm(self, prompt_ids: torch.Tensor,
                              prompt_mask: torch.Tensor,
@@ -431,12 +492,23 @@ class GKDADMMTrainer(ADMMTrainer):
 
     def _training_step_hybrid(self, model, inputs, num_items_in_batch=None):
         """
-        Hybrid: NTP on CoT every step + on-policy KD every kd_interval steps.
-        inputs keys: input_ids, attention_mask, labels, prompt_ids, prompt_mask, prompt_len
-        """
-        do_kd = (self.teacher_model is not None) and (self.state.global_step % self.kd_interval == 0)
+        Hybrid: NTP on CoT every step + on-policy KD.
 
-        if do_kd:
+        Two KD modes:
+        - Buffered (kd_buffer_size > 0): generate kd_buffer_size rollouts in one vLLM
+          batch every kd_buffer_refresh_interval steps; consume one per step (kd every step).
+        - Original (kd_buffer_size == 0): generate one rollout every kd_interval steps.
+        """
+        if self.teacher_model is None:
+            self._kd_inputs = None
+        elif self.use_vllm and self.kd_buffer_size > 0:
+            # --- Buffered rollout mode ---
+            step = self.state.global_step
+            if len(self._rollout_buffer) == 0 or step % self.kd_buffer_refresh_interval == 0:
+                self._fill_rollout_buffer(model)
+            self._kd_inputs = self._rollout_buffer.popleft() if self._rollout_buffer else None
+        elif self.state.global_step % self.kd_interval == 0:
+            # --- Original: one generation per kd_interval steps ---
             prompt_ids = inputs["prompt_ids"]
             prompt_mask = inputs["prompt_mask"]
             prompt_len = int(inputs["prompt_len"].item() if inputs["prompt_len"].dim() == 0 else inputs["prompt_len"][0])
