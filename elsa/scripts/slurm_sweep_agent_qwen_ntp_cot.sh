@@ -8,7 +8,7 @@
 #SBATCH --cpus-per-task=10
 #SBATCH --output=/home1/doyoonkim/projects/elsa/output_qwen/%j.out
 #SBATCH -t 3-00:00:00
-#SBATCH --exclude=n3
+#SBATCH --exclude=n3,n80
 
 # Usage:
 #   1. Create sweep (one time):
@@ -34,6 +34,7 @@ export TRITON_CACHE_DIR=/tmp/triton_cache_doyoon
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export HF_TOKEN=$(cat ~/.hf_token 2>/dev/null || echo "")
 
+echo "Node: $(hostname)"
 echo "Starting wandb sweep agent: ${SWEEP_ID}"
 /home1/doyoonkim/miniconda3/envs/rac/bin/wandb agent \
     dyk6208-gwangju-institute-of-science-and-technology/elsa_qwen3_0.6b/${SWEEP_ID}

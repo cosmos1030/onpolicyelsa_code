@@ -26,6 +26,7 @@ export TRITON_CACHE_DIR=/tmp/triton_cache_doyoon
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export HF_TOKEN=$(cat ~/.hf_token 2>/dev/null || echo "")
 
+echo "Node: $(hostname)"
 echo "Starting wandb sweep agent: ${SWEEP_ID}"
 /home1/doyoonkim/miniconda3/envs/rac/bin/wandb agent \
     dyk6208-gwangju-institute-of-science-and-technology/elsa_deepseek_1.5b/${SWEEP_ID}

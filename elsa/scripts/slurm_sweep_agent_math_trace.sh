@@ -23,6 +23,7 @@ cd /home1/doyoonkim/projects/elsa
 export TRITON_CACHE_DIR=/tmp/triton_cache_doyoon
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
+echo "Node: $(hostname)"
 echo "Starting wandb sweep agent: ${SWEEP_ID}"
 /home1/doyoonkim/miniconda3/envs/rac/bin/wandb agent \
     dyk6208-gwangju-institute-of-science-and-technology/elsa_qwen3_0.6/${SWEEP_ID}
