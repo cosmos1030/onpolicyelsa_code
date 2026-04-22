@@ -1,0 +1,66 @@
+command:
+- /home1/doyoonkim/miniconda3/envs/rac/bin/python
+- ${program}
+- ${args}
+method: grid
+metric:
+  goal: maximize
+  name: math500_pass@1
+name: retry_ntp_ctx_cot_qwen_50pct
+parameters:
+  admm_base_optimizer:
+    value: adamw
+  admm_batch_size:
+    value: 1
+  admm_beta2:
+    value: 0.999
+  admm_gradient_accumulation_steps:
+    value: 8
+  admm_interval:
+    value: 32
+  admm_lmda:
+    values:
+    - 0.001
+    - 0.005
+    - 0.01
+  admm_lmda_schedule_mode:
+    value: cosine
+  admm_lr:
+    values:
+    - 1.0e-05
+    - 5.0e-05
+    - 0.0001
+  admm_precision:
+    value: bf16
+  admm_save_path:
+    value: /home1/doyoonkim/projects/elsa/models
+  admm_steps:
+    value: 4096
+  data_path:
+    value: /home1/doyoonkim/projects/elsa/data/math_220k_cot.jsonl
+  dataset:
+    value: math_cot
+  eval_math500:
+    value: true
+  eval_zero_shot:
+    value: false
+  kd_max_prompt_len:
+    value: 512
+  math500_max_new_tokens:
+    value: 30000
+  model:
+    value: /home1/doyoonkim/.cache/huggingface/hub/models--Qwen--Qwen3-0.6B/snapshots/c1899de289a04d12100db370d81485cdf75e47ca
+  push_to_hub:
+    value: true
+  save_model:
+    value: true
+  seed:
+    value: 42
+  sparsity_ratio:
+    value: 0.5
+  wandb:
+    value: true
+  wandb_project:
+    value: elsa_qwen3_0.6b
+program: main.py
+project: elsa_qwen3_0.6b
