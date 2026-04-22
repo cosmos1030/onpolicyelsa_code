@@ -267,6 +267,7 @@ class GKDADMMTrainer(ADMMTrainer):
         self.kd_buffer_refresh_interval = kd_buffer_refresh_interval  # refresh every N steps (align with admm_interval)
         self._rollout_buffer: collections.deque = collections.deque()
         self._prompt_pool = None  # lazily built from train_dataset
+        self._last_kd_step = -1   # tracks last optimizer step that popped from buffer
 
         self.generation_config = GenerationConfig(
             max_new_tokens=max_new_tokens,
@@ -503,10 +504,14 @@ class GKDADMMTrainer(ADMMTrainer):
             self._kd_inputs = None
         elif self.use_vllm and self.kd_buffer_size > 0:
             # --- Buffered rollout mode ---
+            # Pop once per optimizer step (global_step increments after accumulation),
+            # reuse the same kd_inputs for all micro-batches within the same step.
             step = self.state.global_step
-            if len(self._rollout_buffer) == 0 or step % self.kd_buffer_refresh_interval == 0:
-                self._fill_rollout_buffer(model)
-            self._kd_inputs = self._rollout_buffer.popleft() if self._rollout_buffer else None
+            if step != self._last_kd_step:
+                if len(self._rollout_buffer) == 0 or step % self.kd_buffer_refresh_interval == 0:
+                    self._fill_rollout_buffer(model)
+                self._kd_inputs = self._rollout_buffer.popleft() if self._rollout_buffer else None
+                self._last_kd_step = step
         elif self.state.global_step % self.kd_interval == 0:
             # --- Original: one generation per kd_interval steps ---
             prompt_ids = inputs["prompt_ids"]
