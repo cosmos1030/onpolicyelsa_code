@@ -676,14 +676,13 @@ class GKDADMMTrainer(ADMMTrainer):
         t_logp_full = F.log_softmax(t_logits_gen / self.kd_temperature, dim=-1)
 
         if self.kd_topk > 0:
-            topk_idx = t_logits_gen.topk(self.kd_topk, dim=-1).indices
+            topk_idx = s_logits_gen.topk(self.kd_topk, dim=-1).indices
             s_logp = s_logp_full.gather(-1, topk_idx)
             t_logp = t_logp_full.gather(-1, topk_idx)
         else:
             s_logp = s_logp_full
             t_logp = t_logp_full
 
-        # Reverse KL: sum p_s * (log p_s - log p_t)
         gen_mask = attention_mask[:, prompt_len: prompt_len + gen_len].float()
         kl = (s_logp.exp() * (s_logp - t_logp)).sum(dim=-1)  # (B, gen_len)
         return (kl * gen_mask).sum() / gen_mask.sum().clamp(min=1)

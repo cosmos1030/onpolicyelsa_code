@@ -8,7 +8,7 @@
 #SBATCH --cpus-per-task=10
 #SBATCH --output=/home1/doyoonkim/projects/elsa/output_qwen/%j_vllm_kd_0.6b.out
 #SBATCH -t 0-01:00:00
-#SBATCH --exclude=n3
+#SBATCH --exclude=n3,n80
 
 set -euo pipefail
 echo "Node: $(hostname)"
@@ -42,7 +42,7 @@ nvidia-smi --query-gpu=memory.total,memory.free --format=csv,noheader
   --kd_max_new_tokens 512 \
   --kd_max_prompt_len 512 \
   --kd_nsamples 200 \
-  --kd_topk 50 \
+  --kd_topk 256 \
   --kd_temperature 1.0 \
   --kd_use_vllm true \
   --kd_vllm_gpu_memory_utilization 0.15 \
