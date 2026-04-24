@@ -613,10 +613,11 @@ class GKDADMMTrainer(ADMMTrainer):
             student_out.logits, teacher_out.logits,
             attention_mask, prompt_len, gen_len,
         )
+        loss = self.kd_lambda * kd_loss
         log_dict = {"train/offpolicy_kd_loss": kd_loss.item()}
         log_dict.update({k: v.item() for k, v in opd_metrics.items()})
         self.log(log_dict)
-        return (kd_loss, student_out) if return_outputs else kd_loss
+        return (loss, student_out) if return_outputs else loss
 
     def _compute_loss_hybrid(self, model, inputs, return_outputs=False):
         """NTP on CoT + optional KD loss."""
