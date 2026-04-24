@@ -37,6 +37,9 @@ def main(argv):
         if FLAGS.do_kd_admm:
             group = "kd_admm"
             run_name = f"kd_admm_s{FLAGS.sparsity_ratio}_steps{FLAGS.admm_steps}_tok{FLAGS.kd_max_new_tokens}_lr{FLAGS.admm_lr}"
+        elif getattr(FLAGS, 'do_offpolicy_kd_admm', False):
+            group = "offpolicy_kd_admm"
+            run_name = f"offpolicy_kd_admm_s{FLAGS.sparsity_ratio}_steps{FLAGS.admm_steps}_lr{FLAGS.admm_lr}"
         else:
             group = "ntp_admm"
             run_name = f"ntp_admm_s{FLAGS.sparsity_ratio}_steps{FLAGS.admm_steps}_lr{FLAGS.admm_lr}"
@@ -103,6 +106,12 @@ def main(argv):
             teacher_model = get_llm(FLAGS.model, FLAGS.seqlen)
             teacher_model.to(torch.bfloat16).to(device)
             saved_pruned_model_path = globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device)
+            del teacher_model
+            torch.cuda.empty_cache()
+        elif getattr(FLAGS, 'do_offpolicy_kd_admm', False):
+            teacher_model = get_llm(FLAGS.model, FLAGS.seqlen)
+            teacher_model.to(torch.bfloat16).to(device)
+            saved_pruned_model_path = globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device, offpolicy_kd=True)
             del teacher_model
             torch.cuda.empty_cache()
         elif getattr(FLAGS, 'dataset', '') == 'math_cot':
@@ -255,6 +264,7 @@ def main(argv):
                     _sparsity_tag = f"s{int(FLAGS.sparsity_ratio * 100)}pct"
                     _method_tag = "elsa-hybrid-kd" if getattr(FLAGS, 'do_kd_admm', False) and getattr(FLAGS, 'kd_use_cot_dataset', False) \
                         else "elsa-kd" if getattr(FLAGS, 'do_kd_admm', False) \
+                        else "elsa-offpolicy-kd" if getattr(FLAGS, 'do_offpolicy_kd_admm', False) \
                         else "elsa-ntp-cot" if getattr(FLAGS, 'dataset', '') == 'math_cot' \
                         else "elsa-ntp"
                     def _fmt_float(v):
@@ -326,6 +336,7 @@ if __name__ == '__main__':
 
     # KD-ADMM: on-policy distillation inside ADMM loop
     flags.DEFINE_bool('do_kd_admm', False, 'Use on-policy KD loss inside ADMM instead of NTP.')
+    flags.DEFINE_bool('do_offpolicy_kd_admm', False, 'Use off-policy KD (dataset CoT as teacher targets) inside ADMM instead of NTP.')
     flags.DEFINE_string('kd_data_path', None, 'Path to math prompts JSONL for KD-ADMM.')
     flags.DEFINE_integer('kd_max_prompt_len', 512, 'Max prompt length for KD-ADMM.')
     flags.DEFINE_integer('kd_max_new_tokens', 512, 'Max new tokens for on-policy generation.')

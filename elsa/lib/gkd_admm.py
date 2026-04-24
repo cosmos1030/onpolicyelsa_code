@@ -27,7 +27,7 @@ except ImportError:
     has_wandb = False
 
 
-def globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device):
+def globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device, offpolicy_kd=False):
     """
     ADMM pruning with on-policy KD loss.
     Uses GKDADMMTrainer instead of ADMMTrainer.
@@ -98,8 +98,8 @@ def globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device):
     local_rank = training_args.local_rank
 
     # Dataset: use hybrid CoT+KD dataset when teacher is None (NTP-only with context),
-    # kd_interval > 1, or kd_data is cot-format
-    use_hybrid = teacher_model is None or getattr(FLAGS, "kd_interval", 1) > 1 or getattr(FLAGS, "kd_use_cot_dataset", False)
+    # kd_interval > 1, kd_data is cot-format, or off-policy KD mode
+    use_hybrid = teacher_model is None or getattr(FLAGS, "kd_interval", 1) > 1 or getattr(FLAGS, "kd_use_cot_dataset", False) or offpolicy_kd
     # Fallback: use data_path as kd_data_path if not explicitly set (NTP-with-context mode)
     if not getattr(FLAGS, "kd_data_path", None):
         FLAGS.kd_data_path = FLAGS.data_path
@@ -171,6 +171,7 @@ def globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device):
         vllm_max_model_len=getattr(FLAGS, "kd_vllm_max_model_len", 0) or None,
         kd_buffer_size=getattr(FLAGS, "kd_buffer_size", 0),
         kd_buffer_refresh_interval=getattr(FLAGS, "kd_buffer_refresh_interval", 32),
+        offpolicy_kd=offpolicy_kd,
         model=model,
         args=training_args,
         train_dataset=train_dataset,

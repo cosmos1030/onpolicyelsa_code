@@ -251,6 +251,7 @@ class GKDADMMTrainer(ADMMTrainer):
         vllm_max_model_len: int = None,
         kd_buffer_size: int = 0,
         kd_buffer_refresh_interval: int = 32,
+        offpolicy_kd: bool = False,
         *args,
         **kwargs,
     ):
@@ -265,6 +266,7 @@ class GKDADMMTrainer(ADMMTrainer):
         self.kd_lambda = kd_lambda      # weight for KD loss when combined with NTP
         self.kd_buffer_size = kd_buffer_size                        # 0 = disabled
         self.kd_buffer_refresh_interval = kd_buffer_refresh_interval  # refresh every N steps (align with admm_interval)
+        self.offpolicy_kd = offpolicy_kd
         self._rollout_buffer: collections.deque = collections.deque()
         self._prompt_pool = None  # lazily built from train_dataset
         self._last_kd_step = -1   # tracks last optimizer step that popped from buffer
@@ -442,7 +444,9 @@ class GKDADMMTrainer(ADMMTrainer):
 
     def training_step(self, model, inputs, num_items_in_batch=None):
         """Generate on-policy completions, then run standard ADMM step."""
-        if self._is_hybrid_batch(inputs):
+        if self.offpolicy_kd and self._is_hybrid_batch(inputs):
+            return self._training_step_offpolicy_kd(model, inputs, num_items_in_batch)
+        elif self._is_hybrid_batch(inputs):
             return self._training_step_hybrid(model, inputs, num_items_in_batch)
         else:
             return self._training_step_kd_only(model, inputs, num_items_in_batch)
@@ -490,6 +494,15 @@ class GKDADMMTrainer(ADMMTrainer):
         }
         self._kd_inputs = None  # use updated_inputs directly (original path)
         return super().training_step(model, updated_inputs, num_items_in_batch)
+
+    def _training_step_offpolicy_kd(self, model, inputs, num_items_in_batch=None):
+        """Off-policy KD: student+teacher forward on dataset CoT sequences. No vLLM, no buffer."""
+        cot_inputs = {
+            "input_ids": inputs["input_ids"],
+            "attention_mask": inputs["attention_mask"],
+            "labels": inputs["labels"],
+        }
+        return super().training_step(model, cot_inputs, num_items_in_batch)
 
     def _training_step_hybrid(self, model, inputs, num_items_in_batch=None):
         """
@@ -564,14 +577,46 @@ class GKDADMMTrainer(ADMMTrainer):
 
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         """
-        Two modes:
-        1. Hybrid (labels in inputs): NTP on CoT always + KD loss when self._kd_inputs is set
-        2. KD-only (no labels): Reverse KL(student || teacher) on generated tokens only
+        Three modes:
+        1. Off-policy KD (labels in inputs, offpolicy_kd=True): KL on dataset CoT tokens, no NTP
+        2. Hybrid (labels in inputs): NTP on CoT always + KD loss when self._kd_inputs is set
+        3. KD-only (no labels): Reverse KL(student || teacher) on generated tokens only
         """
-        if "labels" in inputs:
+        if self.offpolicy_kd and "labels" in inputs:
+            return self._compute_loss_offpolicy_kd(model, inputs, return_outputs)
+        elif "labels" in inputs:
             return self._compute_loss_hybrid(model, inputs, return_outputs)
         else:
             return self._compute_loss_kd_only(model, inputs, return_outputs)
+
+    def _compute_loss_offpolicy_kd(self, model, inputs, return_outputs=False):
+        """KL(student || teacher) on dataset CoT answer tokens. No NTP, no vLLM."""
+        input_ids = inputs["input_ids"]
+        attention_mask = inputs["attention_mask"]
+        labels = inputs["labels"]
+
+        # Derive answer boundary from labels (-100 = problem tokens or padding)
+        answer_pos = (labels[0] != -100).nonzero(as_tuple=False)
+        if len(answer_pos) == 0:
+            student_out = model(input_ids=input_ids, attention_mask=attention_mask)
+            loss = torch.tensor(0.0, device=input_ids.device, requires_grad=True)
+            return (loss, student_out) if return_outputs else loss
+
+        prompt_len = answer_pos[0].item()
+        gen_len = len(answer_pos)
+
+        student_out = model(input_ids=input_ids, attention_mask=attention_mask)
+        with torch.no_grad():
+            teacher_out = self.teacher_model(input_ids=input_ids, attention_mask=attention_mask)
+
+        kd_loss, opd_metrics = self._kl_loss(
+            student_out.logits, teacher_out.logits,
+            attention_mask, prompt_len, gen_len,
+        )
+        log_dict = {"train/offpolicy_kd_loss": kd_loss.item()}
+        log_dict.update({k: v.item() for k, v in opd_metrics.items()})
+        self.log(log_dict)
+        return (kd_loss, student_out) if return_outputs else kd_loss
 
     def _compute_loss_hybrid(self, model, inputs, return_outputs=False):
         """NTP on CoT + optional KD loss."""
@@ -592,9 +637,11 @@ class GKDADMMTrainer(ADMMTrainer):
         )
 
         if self._kd_inputs is not None:
-            kd_loss = self._compute_kd_forward(model)
+            kd_loss, opd_metrics = self._compute_kd_forward(model)
             loss = ntp_loss + self.kd_lambda * kd_loss
-            self.log({"train/ntp_loss": ntp_loss.item(), "train/kd_loss": kd_loss.item()})
+            log_dict = {"train/ntp_loss": ntp_loss.item(), "train/kd_loss": kd_loss.item()}
+            log_dict.update({k: v.item() for k, v in opd_metrics.items()})
+            self.log(log_dict)
         else:
             loss = ntp_loss
             self.log({"train/ntp_loss": ntp_loss.item()})
@@ -624,7 +671,7 @@ class GKDADMMTrainer(ADMMTrainer):
                 attention_mask=attention_mask,
             )
 
-        kd_loss = self._kl_loss(
+        kd_loss, _ = self._kl_loss(
             student_out.logits, teacher_out.logits,
             attention_mask, prompt_len, gen_len,
         )
@@ -647,7 +694,7 @@ class GKDADMMTrainer(ADMMTrainer):
         return (loss, student_out) if return_outputs else loss
 
     def _compute_kd_forward(self, model):
-        """Run student+teacher on self._kd_inputs, return KD loss."""
+        """Run student+teacher on self._kd_inputs, return KD loss and OPD metrics."""
         kd = self._kd_inputs
         input_ids = kd["input_ids"]
         attention_mask = kd["attention_mask"]
@@ -656,7 +703,7 @@ class GKDADMMTrainer(ADMMTrainer):
 
         if gen_len <= 0:
             logging.warning("KD: no generated tokens, skipping.")
-            return torch.tensor(0.0, device=input_ids.device)
+            return torch.tensor(0.0, device=input_ids.device), {}
 
         student_out = model(input_ids=input_ids, attention_mask=attention_mask)
         with torch.no_grad():
@@ -668,21 +715,53 @@ class GKDADMMTrainer(ADMMTrainer):
         )
 
     def _kl_loss(self, s_logits, t_logits, attention_mask, prompt_len, gen_len):
-        """Reverse KL(student || teacher) on generated tokens."""
+        """Reverse KL(student || teacher) on generated tokens. Returns (loss, opd_metrics)."""
         s_logits_gen = s_logits[:, prompt_len - 1: -1, :]   # (B, gen_len, V)
         t_logits_gen = t_logits[:, prompt_len - 1: -1, :]
-
-        s_logp_full = F.log_softmax(s_logits_gen / self.kd_temperature, dim=-1)
-        t_logp_full = F.log_softmax(t_logits_gen / self.kd_temperature, dim=-1)
+        gen_mask = attention_mask[:, prompt_len: prompt_len + gen_len].float()
+        opd_metrics = {}
 
         if self.kd_topk > 0:
-            topk_idx = s_logits_gen.topk(self.kd_topk, dim=-1).indices
-            s_logp = s_logp_full.gather(-1, topk_idx)
-            t_logp = t_logp_full.gather(-1, topk_idx)
-        else:
-            s_logp = s_logp_full
-            t_logp = t_logp_full
+            # Gather top-k logits first — avoids allocating full-vocab (B, gen_len, V) softmax tensors
+            s_topk = s_logits_gen.topk(self.kd_topk, dim=-1)
+            s_topk_idx = s_topk.indices                              # (B, gen_len, K)
+            s_logp = F.log_softmax(s_topk.values / self.kd_temperature, dim=-1)
 
-        gen_mask = attention_mask[:, prompt_len: prompt_len + gen_len].float()
-        kl = (s_logp.exp() * (s_logp - t_logp)).sum(dim=-1)  # (B, gen_len)
-        return (kl * gen_mask).sum() / gen_mask.sum().clamp(min=1)
+            t_topk = t_logits_gen.topk(self.kd_topk, dim=-1)
+            t_topk_idx = t_topk.indices
+            # Teacher logits at student top-K positions for KL; renormalized over those K
+            t_at_s = t_logits_gen.gather(-1, s_topk_idx)
+            t_logp = F.log_softmax(t_at_s / self.kd_temperature, dim=-1)
+
+            kl = (s_logp.exp() * (s_logp - t_logp)).sum(dim=-1)
+            loss = (kl * gen_mask).sum() / gen_mask.sum().clamp(min=1)
+
+            with torch.no_grad():
+                # Overlap Ratio: |S_t ∩ T_t| / K
+                overlap_mask = (s_topk_idx.unsqueeze(-1) == t_topk_idx.unsqueeze(-2)).any(dim=-1)
+                overlap_ratio = overlap_mask.float().mean(dim=-1)
+                opd_metrics["kd/overlap_ratio"] = (overlap_ratio * gen_mask).sum() / gen_mask.sum().clamp(min=1)
+
+                # Entropy Gap: approximate over top-K distributions
+                s_ent = -(s_logp.exp() * s_logp).sum(dim=-1)
+                t_logp_topk = F.log_softmax(t_topk.values / self.kd_temperature, dim=-1)
+                t_ent = -(t_logp_topk.exp() * t_logp_topk).sum(dim=-1)
+                opd_metrics["kd/entropy_gap"] = ((s_ent - t_ent).abs() * gen_mask).sum() / gen_mask.sum().clamp(min=1)
+
+                # Overlap-Token Advantage: within intersection, renormalize and compute KL
+                inter_mask = overlap_mask.float()
+                s_logp_inter = s_logp.masked_fill(inter_mask == 0, float('-inf'))
+                t_logp_inter = t_logp.masked_fill(inter_mask == 0, float('-inf'))
+                s_logp_inter_norm = s_logp_inter - torch.logsumexp(s_logp_inter, dim=-1, keepdim=True)
+                t_logp_inter_norm = t_logp_inter - torch.logsumexp(t_logp_inter, dim=-1, keepdim=True)
+                adv = (s_logp_inter_norm.exp() * (t_logp_inter_norm - s_logp_inter_norm)).sum(dim=-1)
+                has_overlap = (inter_mask.sum(dim=-1) > 0).float()
+                adv = torch.nan_to_num(adv, nan=0.0)
+                opd_metrics["kd/overlap_token_advantage"] = (adv * has_overlap * gen_mask).sum() / (has_overlap * gen_mask).sum().clamp(min=1)
+        else:
+            s_logp = F.log_softmax(s_logits_gen / self.kd_temperature, dim=-1)
+            t_logp = F.log_softmax(t_logits_gen / self.kd_temperature, dim=-1)
+            kl = (s_logp.exp() * (s_logp - t_logp)).sum(dim=-1)
+            loss = (kl * gen_mask).sum() / gen_mask.sum().clamp(min=1)
+
+        return loss, opd_metrics
