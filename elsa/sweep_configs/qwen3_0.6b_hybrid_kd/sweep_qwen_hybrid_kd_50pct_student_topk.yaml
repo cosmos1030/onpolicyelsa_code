@@ -16,7 +16,7 @@ parameters:
   admm_lr:
     value: 5.0e-5
   kd_lambda:
-    values: [0.01, 0.05, 0.1]
+    values: [0.01, 0.05]
   model:
     value: "/home1/doyoonkim/.cache/huggingface/hub/models--Qwen--Qwen3-0.6B/snapshots/c1899de289a04d12100db370d81485cdf75e47ca"
   dataset:
