@@ -34,10 +34,11 @@ def globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device, offpolic
     """
     model_name_part = FLAGS.model.split('/')[-1]
     kd_data_tag = Path(FLAGS.kd_data_path).stem if FLAGS.kd_data_path else "unknown"
+    kd_lambda_tag = f"_kdlam{FLAGS.kd_lambda}" if getattr(FLAGS, 'kd_lambda', None) else ""
     run_name = (
         f"{model_name_part}_pruned{FLAGS.sparsity_ratio}"
-        f"_kd_{kd_data_tag}_admm_lr{FLAGS.admm_lr}_lmda{FLAGS.admm_lmda}"
-        f"_{datetime.now().strftime('%Y%m%d_%H%M')}"
+        f"_kd_{kd_data_tag}_admm_lr{FLAGS.admm_lr}_lmda{FLAGS.admm_lmda}{kd_lambda_tag}"
+        f"_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     )
     if FLAGS.admm_save_path:
         output_dir = Path(FLAGS.admm_save_path) / run_name
