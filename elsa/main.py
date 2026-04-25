@@ -35,14 +35,35 @@ def main(argv):
 
     if FLAGS.wandb and local_rank == 0:
         if FLAGS.do_kd_admm:
-            group = "kd_admm"
-            run_name = f"kd_admm_s{FLAGS.sparsity_ratio}_steps{FLAGS.admm_steps}_tok{FLAGS.kd_max_new_tokens}_lr{FLAGS.admm_lr}"
+            group = "onpolicy_kd_admm"
+            run_name = (
+                f"onpolicy_kd_admm"
+                f"_s{FLAGS.sparsity_ratio}"
+                f"_lr{FLAGS.admm_lr}"
+                f"_lmda{FLAGS.admm_lmda}"
+                f"_kdlam{FLAGS.kd_lambda}"
+                f"_topk{FLAGS.kd_topk}"
+                f"_steps{FLAGS.admm_steps}"
+            )
         elif getattr(FLAGS, 'do_offpolicy_kd_admm', False):
             group = "offpolicy_kd_admm"
-            run_name = f"offpolicy_kd_admm_s{FLAGS.sparsity_ratio}_steps{FLAGS.admm_steps}_lr{FLAGS.admm_lr}"
+            run_name = (
+                f"offpolicy_kd_admm"
+                f"_s{FLAGS.sparsity_ratio}"
+                f"_lr{FLAGS.admm_lr}"
+                f"_lmda{FLAGS.admm_lmda}"
+                f"_topk{FLAGS.kd_topk}"
+                f"_steps{FLAGS.admm_steps}"
+            )
         else:
             group = "ntp_admm"
-            run_name = f"ntp_admm_s{FLAGS.sparsity_ratio}_steps{FLAGS.admm_steps}_lr{FLAGS.admm_lr}"
+            run_name = (
+                f"ntp_admm"
+                f"_s{FLAGS.sparsity_ratio}"
+                f"_lr{FLAGS.admm_lr}"
+                f"_lmda{FLAGS.admm_lmda}"
+                f"_steps{FLAGS.admm_steps}"
+            )
 
         if FLAGS.do_distill:
             kl_type = "ForwardKL" if FLAGS.distill_alpha == 0.0 else ("ReverseKL" if FLAGS.distill_alpha == 1.0 else f"Alpha{FLAGS.distill_alpha}")
