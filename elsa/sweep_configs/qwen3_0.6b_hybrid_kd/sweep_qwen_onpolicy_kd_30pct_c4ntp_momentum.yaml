@@ -24,7 +24,7 @@ parameters:
   dataset:
     value: "c4"
   data_path:
-    value: "/home1/doyoonkim/projects/elsa/data"
+    value: "/home1/doyoonkim/.cache/huggingface/hub/datasets--allenai--c4/snapshots/1588ec454efa1a09f29cd18ddd04fe05fc8653a2"
   sparsity_ratio:
     value: 0.30
   admm_steps:
