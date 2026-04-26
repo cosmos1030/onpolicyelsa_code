@@ -723,33 +723,34 @@ class GKDADMMTrainer(ADMMTrainer):
         opd_metrics = {}
 
         if self.kd_topk > 0:
-            # Gather top-k logits first — avoids allocating full-vocab (B, gen_len, V) softmax tensors
+            # Full vocab softmax first, gather at student top-K — partial KL, faithful to true reverse KL
+            s_logp_full = F.log_softmax(s_logits_gen / self.kd_temperature, dim=-1)
+            t_logp_full = F.log_softmax(t_logits_gen / self.kd_temperature, dim=-1)
+
             s_topk = s_logits_gen.topk(self.kd_topk, dim=-1)
             s_topk_idx = s_topk.indices                              # (B, gen_len, K)
-            s_logp = F.log_softmax(s_topk.values / self.kd_temperature, dim=-1)
-
-            t_topk = t_logits_gen.topk(self.kd_topk, dim=-1)
-            t_topk_idx = t_topk.indices
-            # Teacher logits at student top-K positions for KL; renormalized over those K
-            t_at_s = t_logits_gen.gather(-1, s_topk_idx)
-            t_logp = F.log_softmax(t_at_s / self.kd_temperature, dim=-1)
+            s_logp = s_logp_full.gather(-1, s_topk_idx)
+            t_logp = t_logp_full.gather(-1, s_topk_idx)
 
             kl = (s_logp.exp() * (s_logp - t_logp)).sum(dim=-1)
             loss = (kl * gen_mask).sum() / gen_mask.sum().clamp(min=1)
 
             with torch.no_grad():
+                t_topk = t_logits_gen.topk(self.kd_topk, dim=-1)
+                t_topk_idx = t_topk.indices
+
                 # Overlap Ratio: |S_t ∩ T_t| / K
                 overlap_mask = (s_topk_idx.unsqueeze(-1) == t_topk_idx.unsqueeze(-2)).any(dim=-1)
                 overlap_ratio = overlap_mask.float().mean(dim=-1)
                 opd_metrics["kd/overlap_ratio"] = (overlap_ratio * gen_mask).sum() / gen_mask.sum().clamp(min=1)
 
-                # Entropy Gap: approximate over top-K distributions
+                # Entropy Gap: H(T_top-K) - H(S_top-K) approximation
                 s_ent = -(s_logp.exp() * s_logp).sum(dim=-1)
-                t_logp_topk = F.log_softmax(t_topk.values / self.kd_temperature, dim=-1)
+                t_logp_topk = t_logp_full.gather(-1, t_topk_idx)
                 t_ent = -(t_logp_topk.exp() * t_logp_topk).sum(dim=-1)
                 opd_metrics["kd/entropy_gap"] = ((s_ent - t_ent).abs() * gen_mask).sum() / gen_mask.sum().clamp(min=1)
 
-                # Overlap-Token Advantage: within intersection, renormalize and compute KL
+                # Overlap-Token Advantage: within intersection, compute KL advantage
                 inter_mask = overlap_mask.float()
                 s_logp_inter = s_logp.masked_fill(inter_mask == 0, float('-inf'))
                 t_logp_inter = t_logp.masked_fill(inter_mask == 0, float('-inf'))

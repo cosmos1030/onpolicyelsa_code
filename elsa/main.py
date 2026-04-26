@@ -73,6 +73,7 @@ def main(argv):
             project=FLAGS.wandb_project,
             group=group,
             name=run_name,
+            save_code=True,
         )
 
         if not dict(wandb.config):
