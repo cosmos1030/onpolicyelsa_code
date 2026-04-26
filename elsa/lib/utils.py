@@ -70,12 +70,11 @@ def _proj_impl_dense(
     new_z = weight.detach().clone()
 
     if a is not None:
-        if isinstance(a,OptimState8bit):
+        if isinstance(a, OptimState8bit):
             a = a.dequantize()
-        elif isinstance(a,OptimState4bit):
+        elif isinstance(a, OptimState4bit):
             a = a.dequantize()
-        
-            z_metric = a * (weight**2)
+        z_metric = a * (weight**2)
     else:
         # Standard projection: metric is |x|
         z_metric = weight.abs()
