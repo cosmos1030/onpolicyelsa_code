@@ -110,29 +110,31 @@ def globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device, offpolic
     prompt_dataset = None
 
     if use_random_cot_ntp:
-        # NTP: random 2048-token CoT windows (no prompt masking, all tokens contribute)
+        # NTP: random 2048-token windows (no prompt masking, all tokens contribute)
         # KD prompts: separate MathPromptDataset
         seqlen = getattr(FLAGS, "seqlen", 2048)
         nsamples = FLAGS.kd_nsamples if FLAGS.kd_nsamples > 0 else 4096
+        ntp_dataset = getattr(FLAGS, "kd_ntp_dataset", "math_cot")
+        ntp_data_path = FLAGS.data_path if ntp_dataset == "c4" else FLAGS.kd_data_path
         if local_rank == 0:
-            logging.info(f"Loading random CoT NTP dataset ({nsamples} samples, seqlen={seqlen})")
+            logging.info(f"Loading random {ntp_dataset} NTP dataset ({nsamples} samples, seqlen={seqlen})")
         train_dataset = get_dataset(
-            dataset_name="math_cot",
+            dataset_name=ntp_dataset,
             tokenizer=tokenizer,
             nsamples=nsamples,
             seed=FLAGS.seed,
             seqlen=seqlen,
             data_type="train",
-            data_path=FLAGS.kd_data_path,
+            data_path=ntp_data_path,
         )
         valid_inputs = get_dataset(
-            dataset_name="math_cot",
+            dataset_name=ntp_dataset,
             tokenizer=tokenizer,
             nsamples=FLAGS.admm_num_eval_samples,
             seed=FLAGS.seed + 1,
             seqlen=seqlen,
             data_type="train",
-            data_path=FLAGS.kd_data_path,
+            data_path=ntp_data_path,
         )
         data_collator = default_data_collator
         prompt_dataset = MathPromptDataset(

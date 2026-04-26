@@ -374,6 +374,7 @@ if __name__ == '__main__':
     flags.DEFINE_bool('kd_use_cot_dataset', False, 'Use MathCotKDDataset (provides CoT NTP labels + prompt for KD).')
     flags.DEFINE_bool('kd_use_random_cot_ntp', False, 'Use random 2048-token CoT windows for NTP; use separate MathPromptDataset for KD prompts.')
     flags.DEFINE_integer('kd_step_interval', 1, 'Apply KD loss every N optimizer steps (1=every step). Reduces teacher forward cost.')
+    flags.DEFINE_string('kd_ntp_dataset', 'math_cot', 'Dataset for NTP in random CoT mode: math_cot or c4.')
     flags.DEFINE_integer('kd_buffer_size', 0, 'Rollout buffer size: generate this many prompts in one vLLM batch (0 = disabled).')
     flags.DEFINE_integer('kd_buffer_refresh_interval', 32, 'Refresh rollout buffer every N steps (default: align with admm_interval).')
 
