@@ -251,7 +251,9 @@ class GKDADMMTrainer(ADMMTrainer):
         vllm_max_model_len: int = None,
         kd_buffer_size: int = 0,
         kd_buffer_refresh_interval: int = 32,
+        kd_step_interval: int = 1,
         offpolicy_kd: bool = False,
+        prompt_dataset=None,
         *args,
         **kwargs,
     ):
@@ -266,9 +268,11 @@ class GKDADMMTrainer(ADMMTrainer):
         self.kd_lambda = kd_lambda      # weight for KD loss when combined with NTP
         self.kd_buffer_size = kd_buffer_size                        # 0 = disabled
         self.kd_buffer_refresh_interval = kd_buffer_refresh_interval  # refresh every N steps (align with admm_interval)
+        self.kd_step_interval = kd_step_interval                    # apply KD every N steps (1 = every step)
         self.offpolicy_kd = offpolicy_kd
+        self.prompt_dataset = prompt_dataset  # separate prompt source for vLLM buffer (optional)
         self._rollout_buffer: collections.deque = collections.deque()
-        self._prompt_pool = None  # lazily built from train_dataset
+        self._prompt_pool = None  # lazily built from prompt_dataset or train_dataset
         self._last_kd_step = -1   # tracks last optimizer step that popped from buffer
 
         self.generation_config = GenerationConfig(
@@ -340,10 +344,11 @@ class GKDADMMTrainer(ADMMTrainer):
         logging.info(f"[vLLM] Weight sync done in {_elapsed:.2f}s")
 
     def _get_prompt_pool(self):
-        """Lazily build a list of raw prompt_ids tensors from the training dataset."""
+        """Lazily build a list of raw prompt_ids tensors from prompt_dataset or train_dataset."""
         if self._prompt_pool is None:
             pool = []
-            for sample in self.train_dataset:
+            source = self.prompt_dataset if self.prompt_dataset is not None else self.train_dataset
+            for sample in source:
                 if "prompt_ids" in sample:
                     p = sample["prompt_ids"]
                     if not isinstance(p, torch.Tensor):
@@ -439,8 +444,8 @@ class GKDADMMTrainer(ADMMTrainer):
         return padded
 
     def _is_hybrid_batch(self, inputs):
-        """True if batch contains CoT NTP data (MathCotKDDataset)."""
-        return "prompt_ids" in inputs
+        """True if batch contains NTP labels (MathCotKDDataset or random CoT windows)."""
+        return "labels" in inputs
 
     def training_step(self, model, inputs, num_items_in_batch=None):
         """Generate on-policy completions, then run standard ADMM step."""
@@ -521,9 +526,12 @@ class GKDADMMTrainer(ADMMTrainer):
             # reuse the same kd_inputs for all micro-batches within the same step.
             step = self.state.global_step
             if step != self._last_kd_step:
-                if len(self._rollout_buffer) == 0 or step % self.kd_buffer_refresh_interval == 0:
-                    self._fill_rollout_buffer(model)
-                self._kd_inputs = self._rollout_buffer.popleft() if self._rollout_buffer else None
+                if step % self.kd_step_interval == 0:
+                    if len(self._rollout_buffer) == 0 or step % self.kd_buffer_refresh_interval == 0:
+                        self._fill_rollout_buffer(model)
+                    self._kd_inputs = self._rollout_buffer.popleft() if self._rollout_buffer else None
+                else:
+                    self._kd_inputs = None
                 self._last_kd_step = step
         elif self.state.global_step % self.kd_interval == 0:
             # --- Original: one generation per kd_interval steps ---
