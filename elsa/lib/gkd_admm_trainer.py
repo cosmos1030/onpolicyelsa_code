@@ -253,6 +253,7 @@ class GKDADMMTrainer(ADMMTrainer):
         kd_buffer_refresh_interval: int = 32,
         kd_step_interval: int = 1,
         offpolicy_kd: bool = False,
+        generate_with_teacher: bool = False,
         prompt_dataset=None,
         *args,
         **kwargs,
@@ -270,6 +271,7 @@ class GKDADMMTrainer(ADMMTrainer):
         self.kd_buffer_refresh_interval = kd_buffer_refresh_interval  # refresh every N steps (align with admm_interval)
         self.kd_step_interval = kd_step_interval                    # apply KD every N steps (1 = every step)
         self.offpolicy_kd = offpolicy_kd
+        self.generate_with_teacher = generate_with_teacher
         self.prompt_dataset = prompt_dataset  # separate prompt source for vLLM buffer (optional)
         self._rollout_buffer: collections.deque = collections.deque()
         self._prompt_pool = None  # lazily built from prompt_dataset or train_dataset
@@ -402,13 +404,14 @@ class GKDADMMTrainer(ADMMTrainer):
                              model) -> torch.Tensor:
         """
         Generate rollout using vLLM engine.
-        Syncs student weights first, then generates.
+        Syncs student weights first (unless generate_with_teacher=True), then generates.
         Returns tensor of shape (B, prompt_len + gen_len), same as model.generate().
         """
         import time as _time
         _t0 = _time.time()
 
-        self._sync_weights_to_vllm(model)
+        if not self.generate_with_teacher:
+            self._sync_weights_to_vllm(model)
 
         # Convert token IDs to list of lists (vLLM input format)
         prompt_lens = prompt_mask.sum(dim=1).tolist()
@@ -462,19 +465,20 @@ class GKDADMMTrainer(ADMMTrainer):
         prompt_mask = inputs["attention_mask"]
         prompt_len = inputs["prompt_len"].item() if inputs["prompt_len"].dim() == 0 else int(inputs["prompt_len"][0])
 
-        # On-policy generation (student, no grad)
+        # Generation (student on-policy, or teacher if generate_with_teacher=True)
         if self.use_vllm:
             generated = self._generate_with_vllm(prompt_ids, prompt_mask, model)
         else:
+            gen_model = self.teacher_model if self.generate_with_teacher and self.teacher_model is not None else model
             _gc_enabled = getattr(model, "is_gradient_checkpointing", False)
             if _gc_enabled:
                 model.gradient_checkpointing_disable()
-            model.config.use_cache = True
-            model.eval()
+            gen_model.config.use_cache = True
+            gen_model.eval()
             import time as _time
             _t0 = _time.time()
             with torch.no_grad():
-                generated = model.generate(
+                generated = gen_model.generate(
                     input_ids=prompt_ids,
                     attention_mask=prompt_mask,
                     generation_config=self.generation_config,
@@ -482,11 +486,12 @@ class GKDADMMTrainer(ADMMTrainer):
             _elapsed = _time.time() - _t0
             _gen_tokens = generated.shape[1] - prompt_len
             logging.info(
-                f"[KV-DEBUG] use_cache={model.config.use_cache}, "
+                f"[KV-DEBUG] use_cache={gen_model.config.use_cache}, "
                 f"gen_tokens={_gen_tokens}, time={_elapsed:.1f}s, "
                 f"tok/s={_gen_tokens/_elapsed:.1f}"
             )
-            model.train()
+            if gen_model is model:
+                model.train()
             model.config.use_cache = False
             if _gc_enabled:
                 model.gradient_checkpointing_enable()
@@ -542,15 +547,16 @@ class GKDADMMTrainer(ADMMTrainer):
             if self.use_vllm:
                 generated = self._generate_with_vllm(prompt_ids, prompt_mask, model)
             else:
+                gen_model = self.teacher_model if self.generate_with_teacher and self.teacher_model is not None else model
                 _gc_enabled = getattr(model, "is_gradient_checkpointing", False)
                 if _gc_enabled:
                     model.gradient_checkpointing_disable()
-                model.config.use_cache = True
-                model.eval()
+                gen_model.config.use_cache = True
+                gen_model.eval()
                 import time as _time
                 _t0 = _time.time()
                 with torch.no_grad():
-                    generated = model.generate(
+                    generated = gen_model.generate(
                         input_ids=prompt_ids,
                         attention_mask=prompt_mask,
                         generation_config=self.generation_config,
@@ -561,7 +567,8 @@ class GKDADMMTrainer(ADMMTrainer):
                     f"[KD] step={self.state.global_step}, "
                     f"gen_tokens={_gen_tokens}, time={_elapsed:.1f}s"
                 )
-                model.train()
+                if gen_model is model:
+                    model.train()
                 model.config.use_cache = False
                 if _gc_enabled:
                     model.gradient_checkpointing_enable()
