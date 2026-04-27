@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=elsa_deepseek_ntp
-#SBATCH --partition=H200-ZT-PCIe
+#SBATCH --partition=H200
 #SBATCH --qos=hpgpu
 #SBATCH --gres=gpu:1
 #SBATCH --nodes=1
