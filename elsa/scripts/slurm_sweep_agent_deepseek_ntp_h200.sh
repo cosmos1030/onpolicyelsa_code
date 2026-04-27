@@ -8,6 +8,7 @@
 #SBATCH --cpus-per-task=10
 #SBATCH --output=/home1/doyoonkim/projects/elsa/output_deepseek/%j.out
 #SBATCH -t 3-00:00:00
+#SBATCH --exclude=n87
 
 SWEEP_ID=$1
 if [ -z "$SWEEP_ID" ]; then
