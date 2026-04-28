@@ -155,8 +155,11 @@ def main(argv):
             model = get_llm(FLAGS.model, FLAGS.seqlen)
             model.load_state_dict(full_state)
         dist.destroy_process_group()
+        import gc as _gc
+        _gc.collect()
+        torch.cuda.empty_cache()
 
-    
+
     if FLAGS.do_distill:
         if local_rank == 0:
             logging.info("--- Starting On-Policy Distillation Phase ---")
@@ -255,11 +258,22 @@ def main(argv):
             _gc.collect()
             torch.cuda.empty_cache()
 
+            for _k in ['MASTER_ADDR', 'MASTER_PORT', 'WORLD_SIZE', 'LOCAL_RANK', 'RANK',
+                       'TORCHELASTIC_RESTART_COUNT', 'TORCHELASTIC_MAX_RESTARTS', 'TORCHELASTIC_RUN_ID']:
+                os.environ.pop(_k, None)
+            os.environ['VLLM_USE_V1'] = '0'
+
+            _free_mem, _total_mem = torch.cuda.mem_get_info(0)
+            _vllm_gpu_util = (_free_mem / _total_mem) * 0.95
+            logging.info(f"vLLM gpu_memory_utilization (dynamic): {_vllm_gpu_util:.3f} ({_free_mem/1e9:.1f}/{_total_mem/1e9:.1f} GB free)")
+
             _t_eval_start = time.time()
             pass_at_1 = run_lighteval_math500(
                 model_path=_math500_model_path,
                 output_dir=os.path.join(_math500_model_path, "lighteval_math500"),
                 max_new_tokens=FLAGS.math500_max_new_tokens,
+                tensor_parallel_size=world_size,
+                gpu_memory_utilization=_vllm_gpu_util,
                 log_to_wandb=FLAGS.wandb,
                 wandb_step=0,
             )
