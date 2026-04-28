@@ -1,7 +1,7 @@
 program: main.py
 method: grid
 project: elsa_qwen3_0.6b
-name: sweep_hybrid_kd_qwen3_50pct
+name: sweep_onpolicy_kd_qwen3_50pct_random_ntp_momentum_lr1e5
 
 command:
   - /home1/doyoonkim/miniconda3/envs/rac/bin/python
@@ -14,9 +14,11 @@ metric:
 
 parameters:
   admm_lr:
-    values: [1.0e-5, 5.0e-5, 1e-4]
+    value: 1.0e-5
+  admm_lmda:
+    values: [1.0e-3, 5.0e-3, 1.0e-2]
   kd_lambda:
-    values: [0.1, 0.5, 1.0]
+    value: 0.05
   model:
     value: "/home1/doyoonkim/.cache/huggingface/hub/models--Qwen--Qwen3-0.6B/snapshots/c1899de289a04d12100db370d81485cdf75e47ca"
   dataset:
@@ -31,8 +33,6 @@ parameters:
     value: 1
   admm_gradient_accumulation_steps:
     value: 8
-  admm_lmda:
-    value: 0.01
   admm_lmda_schedule_mode:
     value: "cosine"
   admm_beta2:
@@ -43,14 +43,16 @@ parameters:
     value: "adamw"
   admm_precision:
     value: "bf16"
+  admm_projection_mode:
+    value: "momentum"
   do_kd_admm:
     value: true
   kd_data_path:
     value: "/home1/doyoonkim/projects/elsa/data/math_220k_cot.jsonl"
-  kd_use_cot_dataset:
+  kd_use_random_cot_ntp:
     value: true
   kd_max_new_tokens:
-    value: 1024
+    value: 512
   kd_max_prompt_len:
     value: 512
   kd_topk:

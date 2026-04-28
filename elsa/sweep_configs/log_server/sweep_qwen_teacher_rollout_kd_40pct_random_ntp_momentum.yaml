@@ -76,7 +76,7 @@ parameters:
   eval_math500:
     value: true
   math500_max_new_tokens:
-    value: 30000
+    value: 32768
   eval_zero_shot:
     value: false
   wandb_project:

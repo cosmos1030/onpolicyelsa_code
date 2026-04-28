@@ -14,7 +14,7 @@ metric:
 
 parameters:
   admm_lr:
-    values: [1.0e-4, 5.0e-4]
+    values: [1.0e-5, 5.0e-5]
   admm_lmda:
     values: [1.0e-3, 5.0e-3, 1.0e-2]
   kd_lambda:
@@ -74,7 +74,7 @@ parameters:
   eval_math500:
     value: true
   math500_max_new_tokens:
-    value: 30000
+    value: 32768
   eval_zero_shot:
     value: false
   wandb_project:
