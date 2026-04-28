@@ -128,13 +128,16 @@ def _log_sample_table(output_dir: str, n_samples: int = 10):
         # Per-sample token stats
         out_lens = [len(r["output_tokens"][0]) for r in df["model_response"]]
         in_lens = [len(r["input_tokens"]) for r in df["model_response"]]
-        truncated = [int(r["truncated_tokens_count"]) for r in df["model_response"]]
+        max_out = max(out_lens) if out_lens else 1
+        # truncated_tokens_count only tracks input truncation (always 0 for output);
+        # detect output truncation by checking if generation hit the token limit
+        output_truncation_rate = float(np.mean([l >= max_out * 0.999 for l in out_lens]))
 
         wandb.log({
             "math500_avg_output_tokens": float(np.mean(out_lens)),
             "math500_avg_input_tokens": float(np.mean(in_lens)),
             "math500_max_output_tokens": float(np.max(out_lens)),
-            "math500_truncation_rate": float(np.mean([t > 0 for t in truncated])),
+            "math500_truncation_rate": output_truncation_rate,
         })
 
         # First N samples table
