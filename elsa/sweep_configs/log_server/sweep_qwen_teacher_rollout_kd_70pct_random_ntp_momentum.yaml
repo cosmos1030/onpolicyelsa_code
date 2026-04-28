@@ -1,0 +1,89 @@
+program: main.py
+method: grid
+project: elsa_qwen3_0.6b
+name: sweep_teacher_rollout_kd_qwen3_70pct_random_ntp_momentum
+
+command:
+  - /home/doyoonkim/.conda/envs/rac/bin/python
+  - ${program}
+  - ${args}
+
+metric:
+  name: math500_pass@1
+  goal: maximize
+
+parameters:
+  admm_lr:
+    values: [1.0e-5, 5.0e-5]
+  admm_lmda:
+    values: [1.0e-3, 5.0e-3, 1.0e-2]
+  kd_lambda:
+    value: 0.05
+  model:
+    value: "/home/shared/huggingface/hub/models--Qwen--Qwen3-0.6B/snapshots/c1899de289a04d12100db370d81485cdf75e47ca"
+  dataset:
+    value: "math_cot"
+  data_path:
+    value: "/home/shared/dataset/math_220k_cot.jsonl"
+  sparsity_ratio:
+    value: 0.70
+  admm_steps:
+    value: 4096
+  admm_batch_size:
+    value: 1
+  admm_gradient_accumulation_steps:
+    value: 8
+  admm_lmda_schedule_mode:
+    value: "cosine"
+  admm_beta2:
+    value: 0.999
+  admm_interval:
+    value: 32
+  admm_base_optimizer:
+    value: "adamw"
+  admm_precision:
+    value: "bf16"
+  admm_projection_mode:
+    value: "momentum"
+  do_kd_admm:
+    value: true
+  kd_data_path:
+    value: "/home/shared/dataset/math_220k_cot.jsonl"
+  kd_use_random_cot_ntp:
+    value: true
+  kd_max_new_tokens:
+    value: 512
+  kd_max_prompt_len:
+    value: 512
+  kd_topk:
+    value: 50
+  kd_temperature:
+    value: 1.0
+  kd_use_vllm:
+    value: true
+  kd_generate_with_teacher:
+    value: true
+  kd_vllm_gpu_memory_utilization:
+    value: 0.15
+  kd_buffer_size:
+    value: 32
+  kd_buffer_refresh_interval:
+    value: 32
+  save_model:
+    value: true
+  admm_save_path:
+    value: "/home/doyoonkim/projects/elsa/models"
+  eval_math500:
+    value: true
+  math500_max_new_tokens:
+    value: 30000
+  eval_zero_shot:
+    value: false
+  wandb_project:
+    value: "elsa_qwen3_0.6b"
+  wandb:
+    value: true
+  seed:
+    value: 42
+  push_to_hub:
+    value: true
