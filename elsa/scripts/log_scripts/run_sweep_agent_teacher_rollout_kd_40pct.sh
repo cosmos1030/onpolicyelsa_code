@@ -15,7 +15,7 @@ cd /home/doyoonkim/onpolicyelsa_code/elsa
 export TRITON_CACHE_DIR=/tmp/triton_cache_doyoon
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export LD_PRELOAD=/home/doyoonkim/.conda/envs/rac/lib/glibc_compat.so
-export HF_TOKEN=$(cat ~/.hf_token 2>/dev/null || echo "")
+export HF_TOKEN=$(cat ~/.cache/huggingface/token 2>/dev/null || echo "")
 
 echo "Job ID: $SLURM_JOB_ID  Node: $SLURMD_NODENAME"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
