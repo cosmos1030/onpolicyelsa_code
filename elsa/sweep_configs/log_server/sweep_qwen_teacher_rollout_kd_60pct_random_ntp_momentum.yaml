@@ -14,7 +14,7 @@ metric:
 
 parameters:
   admm_lr:
-    values: [1.0e-5, 5.0e-5]
+    values: [5e-6, 1e-5]
   admm_lmda:
     values: [1.0e-3, 5.0e-3, 1.0e-2]
   kd_lambda:
