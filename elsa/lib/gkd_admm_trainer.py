@@ -3,6 +3,9 @@ GKDADMMTrainer: ADMM pruning with on-policy knowledge distillation loss.
 Inherits ADMMTrainer to keep ADMM mechanics intact, replaces NTP loss with KD.
 """
 import collections
+import hashlib
+import os
+import pickle
 import random
 
 import torch
@@ -14,6 +17,13 @@ from absl import logging
 import json
 
 
+def _dataset_cache_path(cache_dir, jsonl_path, tokenizer_name, **kwargs):
+    key = f"{jsonl_path}|{tokenizer_name}|" + "|".join(f"{k}={v}" for k, v in sorted(kwargs.items()))
+    h = hashlib.md5(key.encode()).hexdigest()[:12]
+    os.makedirs(cache_dir, exist_ok=True)
+    return os.path.join(cache_dir, f"{h}.pkl")
+
+
 # ---------------------------------------------------------------------------
 # Dataset: prompt-only from math 220k JSONL
 # ---------------------------------------------------------------------------
@@ -22,9 +32,18 @@ class MathPromptDataset(Dataset):
     Loads math prompts from a JSONL file (uses 'prompt' field, chat-template applied).
     Returns tokenized prompt tensors for on-policy generation.
     """
-    def __init__(self, jsonl_path, tokenizer, max_prompt_len=512, nsamples=None, seed=42):
-        random.seed(seed)
+    def __init__(self, jsonl_path, tokenizer, max_prompt_len=512, nsamples=None, seed=42,
+                 cache_dir="/tmp/elsa_dataset_cache"):
+        cache_path = _dataset_cache_path(cache_dir, jsonl_path, tokenizer.name_or_path,
+                                         cls="MathPrompt", max_prompt_len=max_prompt_len,
+                                         nsamples=nsamples, seed=seed)
+        if os.path.exists(cache_path):
+            with open(cache_path, "rb") as f:
+                self.samples = pickle.load(f)
+            logging.info(f"MathPromptDataset: loaded {len(self.samples)} samples from cache {cache_path}")
+            return
 
+        random.seed(seed)
         with open(jsonl_path) as f:
             records = [json.loads(line) for line in f if line.strip()]
 
@@ -48,7 +67,9 @@ class MathPromptDataset(Dataset):
                 "attention_mask": enc["attention_mask"].squeeze(0),
             })
 
-        logging.info(f"MathPromptDataset: {len(self.samples)} prompts loaded from {jsonl_path}")
+        with open(cache_path, "wb") as f:
+            pickle.dump(self.samples, f)
+        logging.info(f"MathPromptDataset: {len(self.samples)} prompts loaded and cached to {cache_path}")
 
     def __len__(self):
         return len(self.samples)
@@ -98,9 +119,18 @@ class MathCotKDDataset(Dataset):
     THINK_TAG = "<think>"
 
     def __init__(self, jsonl_path, tokenizer, max_len=2048, max_prompt_len=512,
-                 nsamples=None, seed=42):
-        random.seed(seed)
+                 nsamples=None, seed=42, cache_dir="/tmp/elsa_dataset_cache"):
+        cache_path = _dataset_cache_path(cache_dir, jsonl_path, tokenizer.name_or_path,
+                                         cls="MathCotKD", max_len=max_len,
+                                         max_prompt_len=max_prompt_len,
+                                         nsamples=nsamples, seed=seed)
+        if os.path.exists(cache_path):
+            with open(cache_path, "rb") as f:
+                self.samples = pickle.load(f)
+            logging.info(f"MathCotKDDataset: loaded {len(self.samples)} samples from cache {cache_path}")
+            return
 
+        random.seed(seed)
         with open(jsonl_path) as f:
             records = [json.loads(line) for line in f if line.strip()]
 
@@ -164,7 +194,9 @@ class MathCotKDDataset(Dataset):
                 "prompt_mask": prompt_mask_t,
             })
 
-        logging.info(f"MathCotKDDataset: {len(self.samples)} samples loaded from {jsonl_path}")
+        with open(cache_path, "wb") as f:
+            pickle.dump(self.samples, f)
+        logging.info(f"MathCotKDDataset: {len(self.samples)} samples loaded and cached to {cache_path}")
 
     def __len__(self):
         return len(self.samples)
