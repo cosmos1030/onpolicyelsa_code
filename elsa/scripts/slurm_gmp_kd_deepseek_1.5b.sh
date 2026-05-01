@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=gmp_ds1.5b
+#SBATCH --job-name=gmp_kd_ds1.5b
 #SBATCH --partition=4A100
 #SBATCH --qos=hpgpu
 #SBATCH --gres=gpu:1
@@ -45,6 +45,9 @@ echo "LOCAL_JOB_BASE: $LOCAL_JOB_BASE"
     --gmp_warmup_ratio=0.05 \
     --gmp_mask_interval=32 \
     --gmp_fisher_beta=0.999 \
+    --gmp_kd_lambda=0.5 \
+    --gmp_kd_temperature=2.0 \
+    --gmp_kd_topk=100 \
     --gmp_save_path=/home1/doyoonkim/projects/elsa/models \
     --gmp_max_prompt_len=512 \
     --gmp_max_seq_len=2048 \

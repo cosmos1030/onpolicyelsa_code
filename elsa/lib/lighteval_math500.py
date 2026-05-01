@@ -155,15 +155,30 @@ def _log_sample_table(output_dir: str, n_samples: int = 10):
         }
         wandb.log(log_dict)
 
-        # First N samples table
+        # Full CSV upload as wandb artifact
+        csv_rows = []
+        for i, row in df.iterrows():
+            csv_rows.append({
+                "idx": i,
+                "problem": str(row["doc"].get("query", "")),
+                "model_answer": str(row["model_response"].get("text", [""])[0]),
+                "gold_answer": str(row["doc"].get("choices", [""])[0]),
+                "correct": bool(row["metric"].get("pass@k:k=1&n=1", 0)),
+                "output_tokens": len(row["model_response"]["output_tokens"][0]),
+                "input_tokens": len(row["model_response"]["input_tokens"]),
+            })
+        csv_df = pd.DataFrame(csv_rows)
+        csv_path = str(detail_files[-1]).replace(".parquet", ".csv")
+        csv_df.to_csv(csv_path, index=False)
+        artifact = wandb.Artifact("math500_results", type="dataset")
+        artifact.add_file(csv_path)
+        wandb.log_artifact(artifact)
+
+        # First N samples table (for quick preview)
         table = wandb.Table(columns=["idx", "problem", "model_answer", "gold_answer", "correct", "output_tokens"])
-        for i, row in df.head(n_samples).iterrows():
-            problem = str(row["doc"].get("query", ""))[:1000]
-            model_ans = str(row["model_response"].get("text", [""])[0])[:2000]
-            gold_ans = str(row["doc"].get("choices", [""])[0])[:500]
-            correct = bool(row["metric"].get("pass@k:k=1&n=1", 0))
-            n_out = len(row["model_response"]["output_tokens"][0])
-            table.add_data(i, problem, model_ans, gold_ans, correct, n_out)
+        for row in csv_rows[:n_samples]:
+            table.add_data(row["idx"], row["problem"][:1000], row["model_answer"][:2000],
+                           row["gold_answer"][:500], row["correct"], row["output_tokens"])
         wandb.log({"math500_samples": table})
     except Exception as e:
         logger.warning(f"[lighteval_math500] Could not log sample table: {e}")
@@ -179,6 +194,8 @@ def _log_wandb(pass_at_1: float, stderr: float, wandb_step: Optional[int], metri
         payload = {
             metric_name: pass_at_1,
             metric_name + "_stderr": stderr,
+            metric_name + "_upper": pass_at_1 + stderr,
+            metric_name + "_lower": pass_at_1 - stderr,
         }
         if wandb_step is not None:
             payload["eval/step"] = wandb_step
