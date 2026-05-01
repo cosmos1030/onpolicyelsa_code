@@ -27,11 +27,14 @@ from torch.utils.data import DataLoader, Dataset
 # ---------------------------------------------------------------------------
 
 def _find_linear_weights(model):
-    """Return {name: param} for all Linear weight tensors."""
+    """Return {name: param} for all Linear weight tensors, excluding lm_head and embeddings."""
+    skip = {"lm_head", "embed_tokens", "embed_out"}
     result = {}
     for name, module in model.named_modules():
         if isinstance(module, nn.Linear):
-            result[name + ".weight"] = module.weight
+            leaf = name.split(".")[-1]
+            if leaf not in skip:
+                result[name + ".weight"] = module.weight
     return result
 
 
@@ -129,17 +132,64 @@ class GradualMaskManager:
 # Main training function
 # ---------------------------------------------------------------------------
 
+def _kl_loss(s_logits, t_logits, labels, temperature, topk):
+    """Token-level forward KL D(teacher||student) on CoT positions (labels != -100).
+
+    Applies the same shift as HuggingFace NTP: logits[:-1] predicts labels[1:].
+    Returns (loss, diag_dict) where diag_dict has overlap/entropy metrics for topk > 0.
+    """
+    # align: logit at position t predicts token at t+1
+    s_logits = s_logits[:, :-1, :]       # (B, T-1, V)
+    t_logits = t_logits[:, :-1, :]
+    labels   = labels[:, 1:]             # (B, T-1)
+    mask = (labels != -100).float()
+    denom = mask.sum().clamp(min=1)
+    if mask.sum() == 0:
+        return s_logits.new_tensor(0.0), {}
+
+    s_logp_full = F.log_softmax(s_logits / temperature, dim=-1)
+    t_logp_full = F.log_softmax(t_logits / temperature, dim=-1)
+    diag = {}
+
+    if topk > 0:
+        t_topk = t_logits.topk(topk, dim=-1)
+        t_topk_idx = t_topk.indices                          # (B, T-1, K)
+        s_topk_idx = s_logits.topk(topk, dim=-1).indices
+
+        t_logp = t_logp_full.gather(-1, t_topk_idx)
+        s_logp = s_logp_full.gather(-1, t_topk_idx)
+
+        kl = (t_logp.exp() * (t_logp - s_logp)).sum(dim=-1)
+
+        with torch.no_grad():
+            # Overlap ratio: |S_topK ∩ T_topK| / K
+            overlap = (s_topk_idx.unsqueeze(-1) == t_topk_idx.unsqueeze(-2)).any(dim=-1)
+            diag["kd/overlap_ratio"] = ((overlap.float().mean(dim=-1) * mask).sum() / denom).item()
+
+            # Entropy gap: H(T_topK) - H(S_topK)
+            s_logp_s = s_logp_full.gather(-1, s_topk_idx)
+            s_ent = -(s_logp_s.exp() * s_logp_s).sum(dim=-1)
+            t_ent = -(t_logp.exp() * t_logp).sum(dim=-1)
+            diag["kd/entropy_gap"] = (((s_ent - t_ent).abs() * mask).sum() / denom).item()
+    else:
+        kl = (t_logp_full.exp() * (t_logp_full - s_logp_full)).sum(dim=-1)
+
+    loss = (kl * mask).sum() / denom
+    return loss, diag
+
+
 def globalprune_gmp(
     model: AutoModelForCausalLM,
     tokenizer: AutoTokenizer,
     train_dataset: Dataset,
     FLAGS,
+    teacher_model: AutoModelForCausalLM = None,
     eval_fn=None,        # optional callable(model) → dict of metrics
 ):
     """
-    BEST-style GMP training loop.
+    BEST-style GMP training loop with optional token-level KD.
 
-    FLAGS expected attributes (add to main.py):
+    FLAGS expected attributes:
       gmp_steps               int    total training steps
       gmp_batch_size          int    per-device batch size
       gmp_grad_accum          int    gradient accumulation steps
@@ -147,6 +197,9 @@ def globalprune_gmp(
       gmp_warmup_ratio        float  fraction of steps for LR warmup
       gmp_mask_interval       int    steps between mask updates
       gmp_fisher_beta         float  EMA beta for Fisher accumulation (0.999)
+      gmp_kd_lambda           float  weight for KD loss (0 = NTP only)
+      gmp_kd_temperature      float  KD temperature
+      gmp_kd_topk             int    top-k for KL (0 = full vocab)
       sparsity_ratio          float  final target sparsity
       gmp_save_path           str    directory to save pruned model
       save_model              bool
@@ -165,6 +218,15 @@ def globalprune_gmp(
     final_sparsity = FLAGS.sparsity_ratio
     warmup_steps   = int(total_steps * warmup_ratio)
     use_wandb      = getattr(FLAGS, 'wandb', False)
+    kd_lambda      = getattr(FLAGS, 'gmp_kd_lambda', 0.0)
+    kd_temperature = getattr(FLAGS, 'gmp_kd_temperature', 2.0)
+    kd_topk        = getattr(FLAGS, 'gmp_kd_topk', 0)
+    use_kd         = (teacher_model is not None) and (kd_lambda > 0.0)
+
+    if use_kd:
+        teacher_model.eval()
+        for p in teacher_model.parameters():
+            p.requires_grad_(False)
 
     fisher  = FisherAccumulator(named_params, beta=fisher_beta)
     maskmgr = GradualMaskManager(named_params)
@@ -190,21 +252,41 @@ def globalprune_gmp(
     start_time = time.time()
     step = 0
     accum_loss = 0.0
+    accum_ntp  = 0.0
+    accum_kd   = 0.0
+    accum_diag: dict = {}
+    accum_diag_n = 0
 
     logging.info("***** Running GMP Training *****")
     logging.info(f"  Total steps = {total_steps}")
     logging.info(f"  Batch size  = {batch_size}, grad_accum = {grad_accum}")
     logging.info(f"  LR = {lr}, warmup = {warmup_steps} steps")
     logging.info(f"  Target sparsity = {final_sparsity}, mask_interval = {mask_interval}")
+    if use_kd:
+        logging.info(f"  KD: lambda={kd_lambda}, temperature={kd_temperature}, topk={kd_topk}")
 
     while step < total_steps:
         for micro_step in range(grad_accum):
             batch = next(data_iter)
             batch = {k: v.to(device) for k, v in batch.items()}
 
-            with torch.cuda.amp.autocast(dtype=torch.bfloat16):
+            with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                 out = model(**batch)
-                loss = out.loss / grad_accum
+                ntp_loss = out.loss
+
+                if use_kd:
+                    with torch.no_grad():
+                        t_out = teacher_model(**{k: v for k, v in batch.items() if k != 'labels'})
+                    kl, kd_diag = _kl_loss(out.logits, t_out.logits, batch['labels'],
+                                           kd_temperature, kd_topk)
+                    loss = (ntp_loss + kd_lambda * kl) / grad_accum
+                    accum_ntp += ntp_loss.item() / grad_accum
+                    accum_kd  += kl.item() / grad_accum
+                    for k, v in kd_diag.items():
+                        accum_diag[k] = accum_diag.get(k, 0.0) + v
+                    accum_diag_n += 1
+                else:
+                    loss = ntp_loss / grad_accum
 
             loss.backward()
             fisher.update()
@@ -234,11 +316,20 @@ def globalprune_gmp(
                 "train/lr": scheduler.get_last_lr()[0],
                 "step": step,
             }
+            if use_kd:
+                log_dict["train/ntp_loss"] = accum_ntp
+                log_dict["train/kd_loss"]  = accum_kd
+                if accum_diag_n > 0:
+                    log_dict.update({k: v / accum_diag_n for k, v in accum_diag.items()})
             logging.info(f"Step {step}/{total_steps} | loss={accum_loss:.4f} | "
                          f"sparsity={real_sparsity:.3f} | lr={scheduler.get_last_lr()[0]:.2e}")
             if use_wandb and wandb.run is not None:
                 wandb.log(log_dict, step=step)
             accum_loss = 0.0
+            accum_ntp  = 0.0
+            accum_kd   = 0.0
+            accum_diag = {}
+            accum_diag_n = 0
 
     # final mask at full sparsity
     maskmgr.update(fisher, final_sparsity)
