@@ -355,7 +355,8 @@ def main(argv):
                 _hub_url = f"https://huggingface.co/{_hub_repo}"
                 logging.info(f"Uploaded to {_hub_url}")
                 if FLAGS.wandb:
-                    wandb.log({"hub_model_id": _hub_repo, "hub_model_url": _hub_url})
+                    wandb.run.summary["hub_model_id"] = _hub_repo
+                    wandb.run.summary["hub_model_url"] = _hub_url
             else:
                 logging.warning("push_to_hub=True but no saved model path found. Skipping upload.")
 
