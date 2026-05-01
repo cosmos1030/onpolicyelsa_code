@@ -8,6 +8,7 @@ import os
 import pickle
 import random
 
+import wandb
 import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset
@@ -286,6 +287,7 @@ class GKDADMMTrainer(ADMMTrainer):
         kd_step_interval: int = 1,
         offpolicy_kd: bool = False,
         generate_with_teacher: bool = False,
+        forward_kl: bool = False,
         prompt_dataset=None,
         *args,
         **kwargs,
@@ -300,9 +302,13 @@ class GKDADMMTrainer(ADMMTrainer):
         self.kd_interval = kd_interval  # run KD every N steps; 1 = every step (ignored when buffer active)
         self.kd_lambda = kd_lambda      # weight for KD loss when combined with NTP
         self.kd_buffer_size = kd_buffer_size                        # 0 = disabled
-        self.kd_buffer_refresh_interval = kd_buffer_refresh_interval  # refresh every N steps (align with admm_interval)
+        # default refresh = buffer drains naturally (buffer_size * step_interval steps)
+        if kd_buffer_refresh_interval == 32 and kd_buffer_size > 0 and kd_step_interval > 1:
+            kd_buffer_refresh_interval = kd_buffer_size * kd_step_interval
+        self.kd_buffer_refresh_interval = kd_buffer_refresh_interval
         self.kd_step_interval = kd_step_interval                    # apply KD every N steps (1 = every step)
         self.offpolicy_kd = offpolicy_kd
+        self.forward_kl = forward_kl
         self.generate_with_teacher = generate_with_teacher
         self.prompt_dataset = prompt_dataset  # separate prompt source for vLLM buffer (optional)
         self._rollout_buffer: collections.deque = collections.deque()
@@ -690,6 +696,8 @@ class GKDADMMTrainer(ADMMTrainer):
             log_dict = {"train/ntp_loss": ntp_loss.item(), "train/kd_loss": kd_loss.item()}
             log_dict.update({k: v.item() for k, v in opd_metrics.items()})
             self.log(log_dict)
+            if wandb.run is not None:
+                wandb.log({"train/kd_loss": kd_loss.item()}, commit=False)
         else:
             loss = ntp_loss
             self.log({"train/ntp_loss": ntp_loss.item()})
@@ -770,16 +778,22 @@ class GKDADMMTrainer(ADMMTrainer):
         opd_metrics = {}
 
         if self.kd_topk > 0:
-            # Full vocab softmax first, gather at student top-K — partial KL, faithful to true reverse KL
             s_logp_full = F.log_softmax(s_logits_gen / self.kd_temperature, dim=-1)
             t_logp_full = F.log_softmax(t_logits_gen / self.kd_temperature, dim=-1)
 
-            s_topk = s_logits_gen.topk(self.kd_topk, dim=-1)
-            s_topk_idx = s_topk.indices                              # (B, gen_len, K)
-            s_logp = s_logp_full.gather(-1, s_topk_idx)
-            t_logp = t_logp_full.gather(-1, s_topk_idx)
-
-            kl = (s_logp.exp() * (s_logp - t_logp)).sum(dim=-1)
+            if self.forward_kl:
+                # Forward KL: D(teacher || student) = E_teacher[log t/s], gather at teacher top-K
+                t_topk_idx = t_logits_gen.topk(self.kd_topk, dim=-1).indices
+                s_logp = s_logp_full.gather(-1, t_topk_idx)
+                t_logp = t_logp_full.gather(-1, t_topk_idx)
+                kl = (t_logp.exp() * (t_logp - s_logp)).sum(dim=-1)
+            else:
+                # Reverse KL: D(student || teacher), gather at student top-K
+                s_topk = s_logits_gen.topk(self.kd_topk, dim=-1)
+                s_topk_idx = s_topk.indices                          # (B, gen_len, K)
+                s_logp = s_logp_full.gather(-1, s_topk_idx)
+                t_logp = t_logp_full.gather(-1, s_topk_idx)
+                kl = (s_logp.exp() * (s_logp - t_logp)).sum(dim=-1)
             loss = (kl * gen_mask).sum() / gen_mask.sum().clamp(min=1)
 
             with torch.no_grad():
@@ -810,7 +824,10 @@ class GKDADMMTrainer(ADMMTrainer):
         else:
             s_logp = F.log_softmax(s_logits_gen / self.kd_temperature, dim=-1)
             t_logp = F.log_softmax(t_logits_gen / self.kd_temperature, dim=-1)
-            kl = (s_logp.exp() * (s_logp - t_logp)).sum(dim=-1)
+            if self.forward_kl:
+                kl = (t_logp.exp() * (t_logp - s_logp)).sum(dim=-1)
+            else:
+                kl = (s_logp.exp() * (s_logp - t_logp)).sum(dim=-1)
             loss = (kl * gen_mask).sum() / gen_mask.sum().clamp(min=1)
 
         return loss, opd_metrics

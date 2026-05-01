@@ -210,6 +210,7 @@ def globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device, offpolic
         kd_step_interval=getattr(FLAGS, "kd_step_interval", 1),
         offpolicy_kd=offpolicy_kd,
         generate_with_teacher=getattr(FLAGS, "kd_generate_with_teacher", False),
+        forward_kl=getattr(FLAGS, "kd_forward_kl", False),
         prompt_dataset=prompt_dataset,
         model=model,
         args=training_args,
