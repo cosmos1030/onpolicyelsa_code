@@ -25,6 +25,7 @@ def run_lighteval_math500(
     gpu_memory_utilization: float = 0.9,
     max_model_length: int = 32768,
     max_new_tokens: int = 32768,
+    max_samples: Optional[int] = None,
     temperature: float = 0.6,
     top_p: float = 0.95,
     lighteval_bin: Optional[str] = None,
@@ -62,6 +63,8 @@ def run_lighteval_math500(
         "--output-dir", output_dir,
         "--save-details",
     ]
+    if max_samples is not None:
+        cmd += ["--max-samples", str(max_samples)]
 
     print(f"[lighteval_math500] Running: {' '.join(cmd)}", flush=True)
 
@@ -128,17 +131,29 @@ def _log_sample_table(output_dir: str, n_samples: int = 10):
         # Per-sample token stats
         out_lens = [len(r["output_tokens"][0]) for r in df["model_response"]]
         in_lens = [len(r["input_tokens"]) for r in df["model_response"]]
-        max_out = max(out_lens) if out_lens else 1
-        # truncated_tokens_count only tracks input truncation (always 0 for output);
-        # detect output truncation by checking if generation hit the token limit
-        output_truncation_rate = float(np.mean([l >= max_out * 0.999 for l in out_lens]))
+        correct = [bool(m.get("pass@k:k=1&n=1", 0)) for m in df["metric"]]
 
-        wandb.log({
-            "math500_avg_output_tokens": float(np.mean(out_lens)),
-            "math500_avg_input_tokens": float(np.mean(in_lens)),
-            "math500_max_output_tokens": float(np.max(out_lens)),
-            "math500_truncation_rate": output_truncation_rate,
-        })
+        # generation_size is the max_new_tokens cap used for this run
+        gen_size = df["doc"].iloc[0].get("generation_size", max(out_lens))
+        truncated = [l >= gen_size * 0.999 for l in out_lens]
+
+        correct_lens = [l for l, c in zip(out_lens, correct) if c]
+        wrong_lens   = [l for l, c in zip(out_lens, correct) if not c]
+        correct_trunc = [t for t, c in zip(truncated, correct) if c]
+        wrong_trunc   = [t for t, c in zip(truncated, correct) if not c]
+
+        log_dict = {
+            "math500_avg_output_tokens":          float(np.mean(out_lens)),
+            "math500_avg_input_tokens":           float(np.mean(in_lens)),
+            "math500_max_output_tokens":          float(np.max(out_lens)),
+            "math500_truncation_rate":            float(np.mean(truncated)),
+            "math500_correct_avg_output_tokens":  float(np.mean(correct_lens)) if correct_lens else float("nan"),
+            "math500_correct_max_output_tokens":  float(np.max(correct_lens))  if correct_lens else float("nan"),
+            "math500_wrong_avg_output_tokens":    float(np.mean(wrong_lens))   if wrong_lens   else float("nan"),
+            "math500_correct_truncation_rate":    float(np.mean(correct_trunc)) if correct_trunc else float("nan"),
+            "math500_wrong_truncation_rate":      float(np.mean(wrong_trunc))   if wrong_trunc   else float("nan"),
+        }
+        wandb.log(log_dict)
 
         # First N samples table
         table = wandb.Table(columns=["idx", "problem", "model_answer", "gold_answer", "correct", "output_tokens"])
