@@ -37,10 +37,12 @@ def main(argv):
     if FLAGS.wandb and local_rank == 0:
         if getattr(FLAGS, 'do_gmp', False):
             group = "gmp"
+            kd_tag = f"_kd{getattr(FLAGS, 'gmp_kd_lambda', 0.0)}" if getattr(FLAGS, 'gmp_kd_lambda', 0.0) > 0 else ""
             run_name = (
                 f"gmp_s{FLAGS.sparsity_ratio}"
                 f"_lr{FLAGS.gmp_lr}"
                 f"_steps{FLAGS.gmp_steps}"
+                f"{kd_tag}"
             )
         elif FLAGS.do_kd_admm:
             group = "onpolicy_kd_admm"
@@ -141,7 +143,15 @@ def main(argv):
                 max_prompt_len=getattr(FLAGS, 'gmp_max_prompt_len', 512),
                 max_len=getattr(FLAGS, 'gmp_max_seq_len', 2048),
             )
-            saved_pruned_model_path = globalprune_gmp(model, tokenizer, train_dataset, FLAGS)
+            gmp_teacher = None
+            if getattr(FLAGS, 'gmp_kd_lambda', 0.0) > 0:
+                gmp_teacher = get_llm(FLAGS.model, FLAGS.seqlen)
+                gmp_teacher.to(torch.bfloat16).to(device)
+            saved_pruned_model_path = globalprune_gmp(
+                model, tokenizer, train_dataset, FLAGS, teacher_model=gmp_teacher)
+            if gmp_teacher is not None:
+                del gmp_teacher
+                torch.cuda.empty_cache()
         elif FLAGS.do_kd_admm:
             teacher_model = get_llm(FLAGS.model, FLAGS.seqlen)
             teacher_model.to(torch.bfloat16).to(device)
@@ -317,17 +327,23 @@ def main(argv):
                 if not _hub_repo:
                     _base_model = FLAGS.model.rstrip('/').split('/')[-1]
                     _sparsity_tag = f"s{int(FLAGS.sparsity_ratio * 100)}pct"
-                    _method_tag = "elsa-hybrid-kd" if getattr(FLAGS, 'do_kd_admm', False) and getattr(FLAGS, 'kd_use_cot_dataset', False) \
-                        else "elsa-kd" if getattr(FLAGS, 'do_kd_admm', False) \
-                        else "elsa-offpolicy-kd" if getattr(FLAGS, 'do_offpolicy_kd_admm', False) \
-                        else "elsa-ntp-cot" if getattr(FLAGS, 'dataset', '') == 'math_cot' \
-                        else "elsa-ntp"
                     def _fmt_float(v):
-                        s = f"{v:.0e}"  # e.g. "1e-05" → normalize
+                        s = f"{v:.0e}"
                         return s.replace("e-0", "e-").replace("e+0", "e")
-                    _lr_tag = f"lr{_fmt_float(FLAGS.admm_lr)}"
-                    _lmda_tag = f"lmda{_fmt_float(FLAGS.admm_lmda)}"
-                    _hub_repo = f"cosmos1030/{_base_model}-{_method_tag}-{_sparsity_tag}-{_lr_tag}-{_lmda_tag}"
+                    if getattr(FLAGS, 'do_gmp', False):
+                        _kd_tag = f"-kd{_fmt_float(getattr(FLAGS, 'gmp_kd_lambda', 0))}" if getattr(FLAGS, 'gmp_kd_lambda', 0) > 0 else ""
+                        _method_tag = f"gmp{_kd_tag}"
+                        _lr_tag = f"lr{_fmt_float(FLAGS.gmp_lr)}"
+                        _hub_repo = f"cosmos1030/{_base_model}-{_method_tag}-{_sparsity_tag}-{_lr_tag}"
+                    else:
+                        _method_tag = "elsa-hybrid-kd" if getattr(FLAGS, 'do_kd_admm', False) and getattr(FLAGS, 'kd_use_cot_dataset', False) \
+                            else "elsa-kd" if getattr(FLAGS, 'do_kd_admm', False) \
+                            else "elsa-offpolicy-kd" if getattr(FLAGS, 'do_offpolicy_kd_admm', False) \
+                            else "elsa-ntp-cot" if getattr(FLAGS, 'dataset', '') == 'math_cot' \
+                            else "elsa-ntp"
+                        _lr_tag = f"lr{_fmt_float(FLAGS.admm_lr)}"
+                        _lmda_tag = f"lmda{_fmt_float(FLAGS.admm_lmda)}"
+                        _hub_repo = f"cosmos1030/{_base_model}-{_method_tag}-{_sparsity_tag}-{_lr_tag}-{_lmda_tag}"
                 logging.info(f"Uploading model to HuggingFace Hub: {_hub_repo}")
                 api = HfApi()
                 api.create_repo(repo_id=_hub_repo, exist_ok=True)
@@ -336,9 +352,10 @@ def main(argv):
                     repo_id=_hub_repo,
                     commit_message=f"ELSA pruned: sparsity={FLAGS.sparsity_ratio}, lr={FLAGS.admm_lr}, lmda={FLAGS.admm_lmda}",
                 )
-                logging.info(f"Uploaded to https://huggingface.co/{_hub_repo}")
+                _hub_url = f"https://huggingface.co/{_hub_repo}"
+                logging.info(f"Uploaded to {_hub_url}")
                 if FLAGS.wandb:
-                    wandb.log({"hub_model_id": _hub_repo})
+                    wandb.log({"hub_model_id": _hub_repo, "hub_model_url": _hub_url})
             else:
                 logging.warning("push_to_hub=True but no saved model path found. Skipping upload.")
 
@@ -400,6 +417,9 @@ if __name__ == '__main__':
     flags.DEFINE_string('gmp_save_path', '/home1/doyoonkim/projects/elsa/models', 'Directory to save GMP pruned model.')
     flags.DEFINE_integer('gmp_max_prompt_len', 512, 'Max prompt length for GMP NTP dataset.')
     flags.DEFINE_integer('gmp_max_seq_len', 512, 'Max CoT sequence length for GMP NTP dataset.')
+    flags.DEFINE_float('gmp_kd_lambda', 0.0, 'KD loss weight for GMP (0 = NTP only).')
+    flags.DEFINE_float('gmp_kd_temperature', 2.0, 'Temperature for GMP token-level KD.')
+    flags.DEFINE_integer('gmp_kd_topk', 0, 'Top-K for KD KL divergence (0 = full vocab).')
 
     # KD-ADMM: on-policy distillation inside ADMM loop
     flags.DEFINE_bool('do_kd_admm', False, 'Use on-policy KD loss inside ADMM instead of NTP.')
