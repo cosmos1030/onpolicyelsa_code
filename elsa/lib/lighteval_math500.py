@@ -74,7 +74,7 @@ def run_lighteval_math500(
         logger.warning(f"[lighteval_math500] lighteval exited with code {result.returncode}")
 
     # Parse results JSON
-    pass_at_1, stderr = _parse_results(output_dir, model_path)
+    pass_at_1, stderr = _parse_results(output_dir, model_path, max_new_tokens=max_new_tokens)
 
     if log_to_wandb:
         _log_wandb(pass_at_1, stderr, wandb_step, wandb_metric_name)
@@ -95,7 +95,7 @@ def _find_lighteval() -> str:
     raise RuntimeError("lighteval not found. Install it or pass lighteval_bin=")
 
 
-def _parse_results(output_dir: str, model_path: str):
+def _parse_results(output_dir: str, model_path: str, max_new_tokens: int = 8192):
     # lighteval writes results under output_dir/<model_name_path>/results_*.json
     results_files = sorted(Path(output_dir).rglob("results_*.json"))
     if not results_files:
@@ -111,12 +111,12 @@ def _parse_results(output_dir: str, model_path: str):
     print(f"[lighteval_math500] MATH-500 pass@1 = {score:.4f} ± {stderr:.4f}", flush=True)
 
     # Log first 10 samples as wandb Table
-    _log_sample_table(output_dir)
+    _log_sample_table(output_dir, max_new_tokens=max_new_tokens)
 
     return score, stderr
 
 
-def _log_sample_table(output_dir: str, n_samples: int = 10):
+def _log_sample_table(output_dir: str, n_samples: int = 10, max_new_tokens: int = 8192):
     try:
         import numpy as np
         import pandas as pd
@@ -133,9 +133,8 @@ def _log_sample_table(output_dir: str, n_samples: int = 10):
         in_lens = [len(r["input_tokens"]) for r in df["model_response"]]
         correct = [bool(m.get("pass@k:k=1&n=1", 0)) for m in df["metric"]]
 
-        # generation_size is the max_new_tokens cap used for this run
-        gen_size = df["doc"].iloc[0].get("generation_size", max(out_lens))
-        truncated = [l >= gen_size * 0.999 for l in out_lens]
+        # Use the actual max_new_tokens cap passed to this function
+        truncated = [l >= max_new_tokens * 0.99 for l in out_lens]
 
         correct_lens = [l for l, c in zip(out_lens, correct) if c]
         wrong_lens   = [l for l, c in zip(out_lens, correct) if not c]
