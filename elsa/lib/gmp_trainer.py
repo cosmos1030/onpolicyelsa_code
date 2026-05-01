@@ -26,15 +26,19 @@ from torch.utils.data import DataLoader, Dataset
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _get_decoder_layers(model):
+    core = getattr(model, "model", model)
+    return getattr(core, "decoder", core).layers
+
+
 def _find_linear_weights(model):
-    """Return {name: param} for all Linear weight tensors, excluding lm_head and embeddings."""
-    skip = {"lm_head", "embed_tokens", "embed_out"}
+    """Return {name: param} for transformer block Linear weights (matches SparseGPT scope)."""
     result = {}
-    for name, module in model.named_modules():
-        if isinstance(module, nn.Linear):
-            leaf = name.split(".")[-1]
-            if leaf not in skip:
-                result[name + ".weight"] = module.weight
+    for block_idx, layer in enumerate(_get_decoder_layers(model)):
+        for name, module in layer.named_modules():
+            if isinstance(module, nn.Linear):
+                full_name = f"model.layers.{block_idx}.{name}.weight"
+                result[full_name] = module.weight
     return result
 
 
