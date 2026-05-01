@@ -8,6 +8,7 @@ from lib.lighteval_math500 import run_lighteval_math500
 from lib.utils import check_sparsity, get_llm
 from lib.on_policy_distill import run_on_policy_distillation
 from lib.gkd_admm import globalprune_admm_kd
+from lib.gmp_trainer import globalprune_gmp
 from absl import logging, app, flags
 from importlib.metadata import version
 import os
@@ -34,7 +35,14 @@ def main(argv):
         dist.init_process_group(backend='nccl')
 
     if FLAGS.wandb and local_rank == 0:
-        if FLAGS.do_kd_admm:
+        if getattr(FLAGS, 'do_gmp', False):
+            group = "gmp"
+            run_name = (
+                f"gmp_s{FLAGS.sparsity_ratio}"
+                f"_lr{FLAGS.gmp_lr}"
+                f"_steps{FLAGS.gmp_steps}"
+            )
+        elif FLAGS.do_kd_admm:
             group = "onpolicy_kd_admm"
             run_name = (
                 f"onpolicy_kd_admm"
@@ -124,7 +132,17 @@ def main(argv):
     if FLAGS.sparsity_ratio != 0:
         logging.info("pruning starts")
         _t_train_start = time.time()
-        if FLAGS.do_kd_admm:
+        if getattr(FLAGS, 'do_gmp', False):
+            model.to(torch.bfloat16).to(device)
+            from lib.gkd_admm_trainer import MathCotKDDataset
+            train_dataset = MathCotKDDataset(
+                jsonl_path=FLAGS.data_path,
+                tokenizer=tokenizer,
+                max_prompt_len=getattr(FLAGS, 'gmp_max_prompt_len', 512),
+                max_len=getattr(FLAGS, 'gmp_max_seq_len', 2048),
+            )
+            saved_pruned_model_path = globalprune_gmp(model, tokenizer, train_dataset, FLAGS)
+        elif FLAGS.do_kd_admm:
             teacher_model = get_llm(FLAGS.model, FLAGS.seqlen)
             teacher_model.to(torch.bfloat16).to(device)
             saved_pruned_model_path = globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device)
@@ -272,6 +290,7 @@ def main(argv):
                 model_path=_math500_model_path,
                 output_dir=os.path.join(_math500_model_path, "lighteval_math500"),
                 max_new_tokens=FLAGS.math500_max_new_tokens,
+                max_samples=getattr(FLAGS, 'math500_max_samples', None) or None,
                 tensor_parallel_size=world_size,
                 gpu_memory_utilization=_vllm_gpu_util,
                 log_to_wandb=FLAGS.wandb,
@@ -369,6 +388,18 @@ if __name__ == '__main__':
     flags.DEFINE_enum('admm_split_dtype', 'fp32', ['fp32','bf16', 'float8_e4m3fn', 'float8_e5m2'], 'Dtype for ADMM split variable (fp32 or bf16).')
     flags.DEFINE_bool('admm_nonuniform_sparsity', False, 'Whether to use non-uniform sparsity based on sensitivity scores in ADMM.')
     flags.DEFINE_string('admm_nonuniform_sparsity_config_file', None, 'Path to non-uniform sparsity configuration file (JSON format).')
+    # GMP (BEST-style)
+    flags.DEFINE_bool('do_gmp', False, 'Use BEST-style gradual magnitude pruning with Fisher importance.')
+    flags.DEFINE_integer('gmp_steps', 4096, 'Total training steps for GMP.')
+    flags.DEFINE_integer('gmp_batch_size', 1, 'Per-device batch size for GMP.')
+    flags.DEFINE_integer('gmp_grad_accum', 8, 'Gradient accumulation steps for GMP.')
+    flags.DEFINE_float('gmp_lr', 1e-5, 'Peak learning rate for GMP.')
+    flags.DEFINE_float('gmp_warmup_ratio', 0.05, 'Fraction of steps for LR warmup in GMP.')
+    flags.DEFINE_integer('gmp_mask_interval', 32, 'Steps between mask updates in GMP.')
+    flags.DEFINE_float('gmp_fisher_beta', 0.999, 'EMA beta for Fisher diagonal accumulation.')
+    flags.DEFINE_string('gmp_save_path', '/home1/doyoonkim/projects/elsa/models', 'Directory to save GMP pruned model.')
+    flags.DEFINE_integer('gmp_max_prompt_len', 512, 'Max prompt length for GMP NTP dataset.')
+    flags.DEFINE_integer('gmp_max_seq_len', 512, 'Max CoT sequence length for GMP NTP dataset.')
 
     # KD-ADMM: on-policy distillation inside ADMM loop
     flags.DEFINE_bool('do_kd_admm', False, 'Use on-policy KD loss inside ADMM instead of NTP.')
@@ -384,6 +415,7 @@ if __name__ == '__main__':
     flags.DEFINE_float('kd_lambda', 1.0, 'Weight of KD loss when combined with NTP loss in hybrid mode.')
     flags.DEFINE_bool('kd_use_vllm', False, 'Use vLLM for on-policy student rollout generation (faster for large models).')
     flags.DEFINE_bool('kd_generate_with_teacher', False, 'Generate rollouts with teacher (dense) instead of student. Ablation for on-policy vs teacher-generated rollouts.')
+    flags.DEFINE_bool('kd_forward_kl', False, 'Use forward KL D(teacher||student) instead of reverse KL D(student||teacher).')
     flags.DEFINE_float('kd_vllm_gpu_memory_utilization', 0.3, 'vLLM gpu_memory_utilization for rollout engine.')
     flags.DEFINE_integer('kd_vllm_max_model_len', 0, 'vLLM max_model_len (0 = auto: kd_max_new_tokens + 1024).')
     flags.DEFINE_bool('kd_use_cot_dataset', False, 'Use MathCotKDDataset (provides CoT NTP labels + prompt for KD).')
@@ -412,6 +444,7 @@ if __name__ == '__main__':
     flags.DEFINE_bool('eval_math500', False, 'Whether to run MATH-500 pass@1 eval after pruning (via lighteval+vLLM).')
     flags.DEFINE_string('math500_model_path', None, 'Path to saved pruned model for lighteval eval. If None, saves model to temp dir.')
     flags.DEFINE_integer('math500_max_new_tokens', 4096, 'max_new_tokens for MATH-500 generation.')
+    flags.DEFINE_integer('math500_max_samples', 0, 'Max samples for MATH-500 eval (0 = all 500).')
     flags.DEFINE_bool('wandb', False, 'Whether to use wandb for logging.')
     flags.DEFINE_string('wandb_project', None, 'wandb project name.')
     flags.DEFINE_bool('push_to_hub', False, 'Whether to push the pruned model to HuggingFace Hub after eval.')
