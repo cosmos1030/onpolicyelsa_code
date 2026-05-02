@@ -180,6 +180,10 @@ class GRPOConfig(_TrlGRPOConfig):          # placeholder base
         default=4096,
         metadata={"help": "max_new_tokens for MATH-500 eval generation."},
     )
+    math_eval_max_samples: Optional[int] = field(
+        default=None,
+        metadata={"help": "Number of MATH-500 samples for lighteval (None = all 500)."},
+    )
     math_eval_batch_size: int = field(
         default=8,
         metadata={"help": "Batch size for MATH-500 eval generation."},
