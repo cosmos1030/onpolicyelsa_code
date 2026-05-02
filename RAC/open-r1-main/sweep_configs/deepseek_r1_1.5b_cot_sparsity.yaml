@@ -27,7 +27,7 @@ command:
   - --report_to=wandb
   - ${args}
 
-name: deepseek_r1_1.5b_cot_sparsity
+name: sparsegpt_deepseek_1.5b
 method: grid
 project: gmp_qwen3_1.5b
 entity: dyk6208-gwangju-institute-of-science-and-technology

@@ -276,9 +276,11 @@ def main(script_args, training_args, model_args):
             try:
                 import wandb
                 if wandb.run is None:
+                    sp = getattr(training_args, "prune_sparsity", None)
+                    auto_name = f"rac_s{int(sp*100)}" if sp is not None else training_args.run_name
                     wandb.init(
                         project=os.environ.get("WANDB_PROJECT", "prune_eval"),
-                        name=os.environ.get("WANDB_NAME") or training_args.run_name,
+                        name=os.environ.get("WANDB_NAME") or auto_name,
                     )
             except ImportError:
                 pass
