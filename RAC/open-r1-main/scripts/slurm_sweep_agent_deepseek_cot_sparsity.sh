@@ -8,6 +8,7 @@
 #SBATCH --cpus-per-task=10
 #SBATCH --output=/home1/doyoonkim/projects/RAC/open-r1-main/logs/%j.out
 #SBATCH -t 3-00:00:00
+#SBATCH --exclude=n3,n76,n80
 
 # Usage:
 #   wandb sweep sweep_configs/deepseek_r1_1.5b_cot_sparsity.yaml

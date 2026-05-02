@@ -1,0 +1,70 @@
+program: main.py
+method: grid
+project: gmp_qwen3_1.5b
+name: gmp_deepseek_1.5b_s30pct
+entity: dyk6208-gwangju-institute-of-science-and-technology
+
+command:
+  - /home1/doyoonkim/miniconda3/envs/rac/bin/python
+  - ${program}
+  - ${args}
+
+metric:
+  name: eval/math500_pass@1
+  goal: maximize
+
+parameters:
+  sparsity_ratio:
+    value: .3
+  gmp_lr:
+    values: [5e-6, 1e-5, 5e-5, 1e-4]
+  gmp_kd_lambda:
+    values: [0.0, 0.1, 0.3, 0.5, 1.0]
+  model:
+    value: "/home1/doyoonkim/.cache/huggingface/hub/models--deepseek-ai--DeepSeek-R1-Distill-Qwen-1.5B/snapshots/ad9f0ae0864d7fbcd1cd905e3c6c5b069cc8b562"
+  dataset:
+    value: "math_cot"
+  data_path:
+    value: "/home1/doyoonkim/projects/elsa/data/math_220k_cot.jsonl"
+  do_gmp:
+    value: true
+  gmp_steps:
+    value: 1024
+  gmp_batch_size:
+    value: 1
+  gmp_grad_accum:
+    value: 8
+  gmp_warmup_ratio:
+    value: 0.05
+  gmp_mask_interval:
+    value: 32
+  gmp_fisher_beta:
+    value: 0.999
+  gmp_kd_temperature:
+    value: 2.0
+  gmp_kd_topk:
+    value: 100
+  gmp_save_path:
+    value: "/home1/doyoonkim/projects/elsa/models"
+  gmp_max_prompt_len:
+    value: 512
+  gmp_max_seq_len:
+    value: 2048
+  save_model:
+    value: true
+  eval_math500:
+    value: true
+  math500_max_new_tokens:
+    value: 8192
+  math500_max_samples:
+    value: 100
+  eval_zero_shot:
+    value: false
+  wandb:
+    value: true
+  wandb_project:
+    value: "gmp_qwen3_1.5b"
+  seed:
+    value: 42
+  push_to_hub:
+    value: true

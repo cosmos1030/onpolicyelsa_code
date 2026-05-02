@@ -295,6 +295,7 @@ def main(script_args, training_args, model_args):
             model_path=pruned_model_path,
             output_dir=str(Path(pruned_model_path) / "lighteval_math500"),
             max_new_tokens=getattr(training_args, "math_eval_max_new_tokens", 30000),
+            max_samples=getattr(training_args, "math_eval_max_samples", None),
             wandb_step=0,
         )
 
