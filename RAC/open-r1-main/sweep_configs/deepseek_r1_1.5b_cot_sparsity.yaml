@@ -29,7 +29,7 @@ command:
 
 name: deepseek_r1_1.5b_cot_sparsity
 method: grid
-project: rac_deepseek_r1_1.5b_pruning
+project: gmp_qwen3_1.5b
 entity: dyk6208-gwangju-institute-of-science-and-technology
 
 parameters:
