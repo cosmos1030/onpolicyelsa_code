@@ -25,6 +25,7 @@ def run_lighteval_math500(
     gpu_memory_utilization: float = 0.9,
     max_model_length: int = 32768,
     max_new_tokens: int = 32768,
+    max_samples: Optional[int] = None,
     temperature: float = 0.6,
     top_p: float = 0.95,
     lighteval_bin: Optional[str] = None,
@@ -61,6 +62,8 @@ def run_lighteval_math500(
         "--output-dir", output_dir,
         "--save-details",
     ]
+    if max_samples is not None:
+        cmd += ["--max-samples", str(max_samples)]
 
     print(f"[lighteval_math500] Running: {' '.join(cmd)}", flush=True)
 
