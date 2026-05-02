@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=prune_deepseek_cot
-#SBATCH --partition=A100-80GB
-#SBATCH --qos=hpgpu
+#SBATCH --partition=A6000
+#SBATCH --qos=normal
 #SBATCH --gres=gpu:1
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
