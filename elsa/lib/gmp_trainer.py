@@ -225,6 +225,7 @@ def globalprune_gmp(
     kd_lambda      = getattr(FLAGS, 'gmp_kd_lambda', 0.0)
     kd_temperature = getattr(FLAGS, 'gmp_kd_temperature', 2.0)
     kd_topk        = getattr(FLAGS, 'gmp_kd_topk', 0)
+    kd_only        = getattr(FLAGS, 'gmp_kd_only', False)
     use_kd         = (teacher_model is not None) and (kd_lambda > 0.0)
 
     if use_kd:
@@ -283,7 +284,10 @@ def globalprune_gmp(
                         t_out = teacher_model(**{k: v for k, v in batch.items() if k != 'labels'})
                     kl, kd_diag = _kl_loss(out.logits, t_out.logits, batch['labels'],
                                            kd_temperature, kd_topk)
-                    loss = (ntp_loss + kd_lambda * kl) / grad_accum
+                    if kd_only:
+                        loss = (kd_lambda * kl) / grad_accum
+                    else:
+                        loss = (ntp_loss + kd_lambda * kl) / grad_accum
                     accum_ntp += ntp_loss.item() / grad_accum
                     accum_kd  += kl.item() / grad_accum
                     for k, v in kd_diag.items():

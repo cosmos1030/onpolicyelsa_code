@@ -421,6 +421,7 @@ if __name__ == '__main__':
     flags.DEFINE_float('gmp_kd_lambda', 0.0, 'KD loss weight for GMP (0 = NTP only).')
     flags.DEFINE_float('gmp_kd_temperature', 2.0, 'Temperature for GMP token-level KD.')
     flags.DEFINE_integer('gmp_kd_topk', 0, 'Top-K for KD KL divergence (0 = full vocab).')
+    flags.DEFINE_bool('gmp_kd_only', False, 'Use KD loss only (no NTP loss).')
 
     # KD-ADMM: on-policy distillation inside ADMM loop
     flags.DEFINE_bool('do_kd_admm', False, 'Use on-policy KD loss inside ADMM instead of NTP.')
