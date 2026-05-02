@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --output=/local-data/user-data/%u/job_%j/slurm/%x_%j.out
 #SBATCH -t 0-00:08:00
-#SBATCH --exclude=n3,n80
+#SBATCH --exclude=n3,n76,n80
 
 ENV_FILE="/run/slurm/job_env_${SLURM_JOB_ID}"
 [ -f "$ENV_FILE" ] && source "$ENV_FILE"

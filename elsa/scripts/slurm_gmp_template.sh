@@ -8,7 +8,7 @@
 #SBATCH --cpus-per-task=10
 #SBATCH --output=/local-data/user-data/%u/job_%j/slurm/%x_%j.out
 #SBATCH -t 1-00:00:00
-#SBATCH --exclude=n3,n80
+#SBATCH --exclude=n3,n76,n80
 
 ENV_FILE="/run/slurm/job_env_${SLURM_JOB_ID}"
 [ -f "$ENV_FILE" ] && source "$ENV_FILE"
@@ -42,7 +42,7 @@ echo "METHOD: ${METHOD}, SPARSITY: ${SPARSITY}, KD_LAMBDA: ${KD_LAMBDA}"
     --gmp_steps=1024 \
     --gmp_batch_size=1 \
     --gmp_grad_accum=8 \
-    --gmp_lr=1e-4 \
+    --gmp_lr=${LR} \
     --gmp_warmup_ratio=0.05 \
     --gmp_mask_interval=32 \
     --gmp_fisher_beta=0.999 \
