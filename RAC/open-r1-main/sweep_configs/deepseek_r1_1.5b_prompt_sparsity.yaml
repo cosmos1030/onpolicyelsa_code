@@ -19,17 +19,18 @@ command:
   - --prune=True
   - --pruning_method=SparseGPT
   - --prune_calib_tokens=1_000_000
-  - --math_eval_max_new_tokens=30000
+  - --math_eval_max_new_tokens=8192
+  - --math_eval_max_samples=100
   - --push_to_hub=False
   - --score_completions=False
   - --report_to=wandb
   - ${args}
 
-name: deepseek_r1_1.5b_prompt_sparsity
+name: sparsegpt_mathprompt_deepseek_1.5b
 method: grid
-project: rac_deepseek_r1_1.5b_pruning
+project: gmp_qwen3_1.5b
 entity: dyk6208-gwangju-institute-of-science-and-technology
 
 parameters:
   prune_sparsity:
-    values: [0.3, 0.4, 0.5, 0.6, 0.7]
+    values: [0.3, 0.5, 0.7, 0.9]
