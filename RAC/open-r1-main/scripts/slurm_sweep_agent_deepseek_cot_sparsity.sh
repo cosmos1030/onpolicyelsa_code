@@ -33,6 +33,6 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 echo "Starting wandb agent for sweep: $SWEEP_ID"
 /home1/doyoonkim/miniconda3/envs/rac/bin/wandb agent \
-    dyk6208-gwangju-institute-of-science-and-technology/rac_deepseek_r1_1.5b_pruning/${SWEEP_ID}
+    dyk6208-gwangju-institute-of-science-and-technology/gmp_qwen3_1.5b/${SWEEP_ID}
 
 echo "##### END #####"
