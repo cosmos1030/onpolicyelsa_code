@@ -62,7 +62,10 @@ from .utils import (
 
 
 if is_deepspeed_available():
-    import deepspeed
+    try:
+        import deepspeed
+    except RuntimeError:
+        deepspeed = None
 
 if is_peft_available():
     from peft import PeftConfig, get_peft_model
@@ -945,6 +948,7 @@ python
                     processing_class or AutoTokenizer.from_pretrained(model_id),
                     tokens=args.prune_calib_tokens,
                     batch_size=args.per_device_train_batch_size,
+                    prompt_column=getattr(args, "dataset_prompt_column", "prompt") or "prompt",
                     weight_col = None
                 )
                 print("Created calibration loader")
@@ -977,6 +981,7 @@ python
                     processing_class or AutoTokenizer.from_pretrained(model_id),
                     tokens=args.prune_calib_tokens,
                     batch_size=args.per_device_train_batch_size,
+                    prompt_column=getattr(args, "dataset_prompt_column", "prompt") or "prompt",
                 )
                 prune_wanda(
                     model,
