@@ -182,7 +182,7 @@ def main(script_args, training_args, model_args):
                 dataset[split] = dataset[split].remove_columns("messages")
 
     # ── Trainer ────────────────────────────────────────────────────────────
-    for fld in ("dataset_name", "dataset_config_name", "dataset_split"):
+    for fld in ("dataset_name", "dataset_config_name", "dataset_split", "dataset_prompt_column"):
         setattr(training_args, fld, getattr(script_args, fld, None))
 
     trainer = GRPOTrainer(
@@ -285,13 +285,59 @@ def main(script_args, training_args, model_args):
             except ImportError:
                 pass
 
+        # ── PPL eval (wikitext2 + c4) before freeing GPU ──────────────────
+        try:
+            import sys as _sys
+            import wandb as _wandb
+            from transformers import AutoTokenizer as _AutoTokenizer
+            _sys.path.insert(0, "/home1/doyoonkim/projects/elsa")
+            from lib.eval import calculate_ppl
+            from lib.data import get_loaders
+
+            _ppl_model = trainer.model
+            _ppl_model.eval()
+            _ppl_tokenizer = _AutoTokenizer.from_pretrained(model_args.model_name_or_path)
+            _ppl_seqlen = getattr(training_args, "max_seq_length", 2048)
+            _ppl_model.seqlen = _ppl_seqlen
+
+            ppl_results = {}
+            for _ds in ["wikitext2", "c4"]:
+                logger.info(f"[PPL] Evaluating {_ds}...")
+                _, _testloader = get_loaders(_ds, seed=42, seqlen=_ppl_seqlen, tokenizer=_ppl_tokenizer)
+                with torch.no_grad():
+                    _ppl = calculate_ppl(_ppl_model, _testloader, _ppl_tokenizer, bs=1)
+                ppl_results[f"ppl_test({_ds})"] = _ppl
+                logger.info(f"[PPL] {_ds} = {_ppl:.2f}")
+
+            if _wandb.run is not None:
+                _wandb.log(ppl_results)
+                _wandb.run.summary.update(ppl_results)
+        except Exception as _e:
+            logger.warning(f"[PPL] eval failed: {_e}")
+        finally:
+            # Explicitly delete PPL eval references so the model refcount drops to 0
+            _ppl_model = None
+            _ppl_tokenizer = None
+            _testloader = None
+
+        # Save wandb run id before trainer cleanup (trainer.__del__ calls wandb.finish)
+        import wandb as _wandb
+        _wandb_run_id = _wandb.run.id if _wandb.run is not None else None
+
         # Free GPU memory before launching vLLM (vLLM loads from disk independently)
+        if hasattr(trainer, 'accelerator'):
+            trainer.accelerator.free_memory()
         del trainer.model
         del trainer
         del model
         import gc as _gc
         _gc.collect()
+        torch.cuda.synchronize()
         torch.cuda.empty_cache()
+
+        # Trainer may have called wandb.finish() — resume the same run for lighteval logging
+        if _wandb_run_id is not None and _wandb.run is None:
+            _wandb.init(id=_wandb_run_id, resume="allow")
 
         run_lighteval_math500(
             model_path=pruned_model_path,
