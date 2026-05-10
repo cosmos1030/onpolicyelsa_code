@@ -7,7 +7,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=10
 #SBATCH --output=/local-data/user-data/%u/job_%j/slurm/%x_%j.out
-#SBATCH -t 1-00:00:00
+#SBATCH -t 3-00:00:00
 #SBATCH --exclude=n3,n76,n80
 
 # Usage:
