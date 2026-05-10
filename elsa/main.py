@@ -24,6 +24,47 @@ logging.info(f'# of gpus: {torch.cuda.device_count()}')
 FLAGS = flags.FLAGS
 
 
+def _build_run_name(FLAGS):
+    """Build a descriptive run name from FLAGS (call after sweep config is applied)."""
+    F = FLAGS
+    if getattr(F, 'do_gmp', False):
+        sp = int(getattr(F, 'sparsity_ratio', 0) * 100)
+        lr = getattr(F, 'gmp_lr', 0)
+        steps = getattr(F, 'gmp_steps', 0)
+        prune_end = getattr(F, 'gmp_pruning_end_ratio', 1.0)
+
+        kd_only   = getattr(F, 'gmp_kd_only', False)
+        kd_lam    = getattr(F, 'gmp_kd_lambda', 0.0) or 0.0
+        onpol_lam = getattr(F, 'gmp_onpolicy_kd_lambda', 0.0) or 0.0
+        anc_lam   = getattr(F, 'gmp_anchor_kd_lambda', 0.0) or 0.0
+        anc_pfx   = getattr(F, 'gmp_anchor_prefix_len', 0)
+        onpol_tok = getattr(F, 'gmp_onpolicy_max_new_tokens', 0)
+
+        if anc_lam > 0:
+            method = f"anchor_lam{anc_lam}_pfx{anc_pfx}"
+        elif onpol_lam > 0:
+            method = f"onpol_lam{onpol_lam}_tok{onpol_tok}"
+        elif kd_lam > 0:
+            method = f"{'kdonly' if kd_only else 'kd'}{kd_lam}"
+        else:
+            method = "ntp"
+
+        name = f"gmp_s{sp}pct_{method}_lr{lr}_{steps}steps"
+        if prune_end < 1.0:
+            name += f"_prune{int(prune_end*100)}pct"
+        return name
+
+    elif getattr(F, 'do_kd_admm', False):
+        return (f"onpolicy_kd_admm_s{F.sparsity_ratio}_lr{F.admm_lr}"
+                f"_lmda{F.admm_lmda}_kdlam{F.kd_lambda}_steps{F.admm_steps}")
+    elif getattr(F, 'do_offpolicy_kd_admm', False):
+        return (f"offpolicy_kd_admm_s{F.sparsity_ratio}_lr{F.admm_lr}"
+                f"_lmda{F.admm_lmda}_steps{F.admm_steps}")
+    else:
+        return (f"ntp_admm_s{F.sparsity_ratio}_lr{F.admm_lr}"
+                f"_lmda{F.admm_lmda}_steps{F.admm_steps}")
+
+
 def main(argv):
     global FLAGS
     arguments = FLAGS.flag_values_dict()
@@ -37,52 +78,17 @@ def main(argv):
     if FLAGS.wandb and local_rank == 0:
         if getattr(FLAGS, 'do_gmp', False):
             group = "gmp"
-            kd_tag = f"_kd{getattr(FLAGS, 'gmp_kd_lambda', 0.0)}" if getattr(FLAGS, 'gmp_kd_lambda', 0.0) > 0 else ""
-            run_name = (
-                f"gmp_s{FLAGS.sparsity_ratio}"
-                f"_lr{FLAGS.gmp_lr}"
-                f"_steps{FLAGS.gmp_steps}"
-                f"{kd_tag}"
-            )
         elif FLAGS.do_kd_admm:
             group = "onpolicy_kd_admm"
-            run_name = (
-                f"onpolicy_kd_admm"
-                f"_s{FLAGS.sparsity_ratio}"
-                f"_lr{FLAGS.admm_lr}"
-                f"_lmda{FLAGS.admm_lmda}"
-                f"_kdlam{FLAGS.kd_lambda}"
-                f"_topk{FLAGS.kd_topk}"
-                f"_steps{FLAGS.admm_steps}"
-            )
         elif getattr(FLAGS, 'do_offpolicy_kd_admm', False):
             group = "offpolicy_kd_admm"
-            run_name = (
-                f"offpolicy_kd_admm"
-                f"_s{FLAGS.sparsity_ratio}"
-                f"_lr{FLAGS.admm_lr}"
-                f"_lmda{FLAGS.admm_lmda}"
-                f"_topk{FLAGS.kd_topk}"
-                f"_steps{FLAGS.admm_steps}"
-            )
         else:
             group = "ntp_admm"
-            run_name = (
-                f"ntp_admm"
-                f"_s{FLAGS.sparsity_ratio}"
-                f"_lr{FLAGS.admm_lr}"
-                f"_lmda{FLAGS.admm_lmda}"
-                f"_steps{FLAGS.admm_steps}"
-            )
-
-        if FLAGS.do_distill:
-            kl_type = "ForwardKL" if FLAGS.distill_alpha == 0.0 else ("ReverseKL" if FLAGS.distill_alpha == 1.0 else f"Alpha{FLAGS.distill_alpha}")
-            run_name += f"_distill_{kl_type}_steps{FLAGS.distill_steps}"
 
         wandb.init(
             project=FLAGS.wandb_project,
             group=group,
-            name=run_name,
+            name="pending",
             save_code=True,
         )
 
@@ -94,6 +100,10 @@ def main(argv):
             }
             FLAGS = type('FLAGS', (), updated_args)()
             logging.info(f"Updated args with wandb.config: {FLAGS}")
+
+        # Build run name after FLAGS is updated with sweep config
+        run_name = _build_run_name(FLAGS)
+        wandb.run.name = run_name
     else:
         if local_rank == 0:
             logging.info('\n' + '\n'.join([f'{k} = {v}' for k, v in arguments.items()]))
@@ -135,18 +145,19 @@ def main(argv):
         logging.info("pruning starts")
         _t_train_start = time.time()
         if getattr(FLAGS, 'do_gmp', False):
-            model.to(torch.bfloat16).to(device)
+            model.to(device)
             from lib.gkd_admm_trainer import MathCotKDDataset
             train_dataset = MathCotKDDataset(
                 jsonl_path=FLAGS.data_path,
                 tokenizer=tokenizer,
                 max_prompt_len=getattr(FLAGS, 'gmp_max_prompt_len', 512),
                 max_len=getattr(FLAGS, 'gmp_max_seq_len', 2048),
+                append_eos=getattr(FLAGS, 'cot_append_eos', False),
             )
             gmp_teacher = None
-            if getattr(FLAGS, 'gmp_kd_lambda', 0.0) > 0:
+            if getattr(FLAGS, 'gmp_kd_lambda', 0.0) > 0 or getattr(FLAGS, 'gmp_hidden_lambda', 0.0) > 0 or getattr(FLAGS, 'gmp_onpolicy_kd_lambda', 0.0) > 0 or getattr(FLAGS, 'gmp_anchor_kd_lambda', 0.0) > 0:
                 gmp_teacher = get_llm(FLAGS.model, FLAGS.seqlen)
-                gmp_teacher.to(torch.bfloat16).to(device)
+                gmp_teacher.to(device)
             saved_pruned_model_path = globalprune_gmp(
                 model, tokenizer, train_dataset, FLAGS, teacher_model=gmp_teacher)
             if gmp_teacher is not None:
@@ -154,13 +165,13 @@ def main(argv):
                 torch.cuda.empty_cache()
         elif FLAGS.do_kd_admm:
             teacher_model = get_llm(FLAGS.model, FLAGS.seqlen)
-            teacher_model.to(torch.bfloat16).to(device)
+            teacher_model.to(device)
             saved_pruned_model_path = globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device)
             del teacher_model
             torch.cuda.empty_cache()
         elif getattr(FLAGS, 'do_offpolicy_kd_admm', False):
             teacher_model = get_llm(FLAGS.model, FLAGS.seqlen)
-            teacher_model.to(torch.bfloat16).to(device)
+            teacher_model.to(device)
             saved_pruned_model_path = globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device, offpolicy_kd=True)
             del teacher_model
             torch.cuda.empty_cache()
@@ -194,7 +205,7 @@ def main(argv):
         # 1. 여기서 티처 모델을 직접 로드합니다. (원본 Dense 모델)
         # 메모리 효율을 위해 bfloat16을 권장하며, GPU 장치(device)로 이동시킵니다.
         teacher_model = get_llm(FLAGS.model, FLAGS.seqlen)
-        teacher_model.to(torch.bfloat16).to(device)
+        teacher_model.to(device)
         teacher_model.eval()
 
         # 2. 로드한 티처 모델을 인자로 명시적으로 넘겨줍니다.
@@ -413,6 +424,7 @@ if __name__ == '__main__':
     flags.DEFINE_integer('gmp_grad_accum', 8, 'Gradient accumulation steps for GMP.')
     flags.DEFINE_float('gmp_lr', 1e-5, 'Peak learning rate for GMP.')
     flags.DEFINE_float('gmp_warmup_ratio', 0.05, 'Fraction of steps for LR warmup in GMP.')
+    flags.DEFINE_float('gmp_pruning_end_ratio', 1.0, 'Fraction of steps at which pruning completes; remaining steps do sparse training with fixed mask.')
     flags.DEFINE_integer('gmp_mask_interval', 32, 'Steps between mask updates in GMP.')
     flags.DEFINE_float('gmp_fisher_beta', 0.999, 'EMA beta for Fisher diagonal accumulation.')
     flags.DEFINE_string('gmp_save_path', '/home1/doyoonkim/projects/elsa/models', 'Directory to save GMP pruned model.')
@@ -422,6 +434,33 @@ if __name__ == '__main__':
     flags.DEFINE_float('gmp_kd_temperature', 2.0, 'Temperature for GMP token-level KD.')
     flags.DEFINE_integer('gmp_kd_topk', 0, 'Top-K for KD KL divergence (0 = full vocab).')
     flags.DEFINE_bool('gmp_kd_only', False, 'Use KD loss only (no NTP loss).')
+    flags.DEFINE_float('gmp_hidden_lambda', 0.0, 'Weight for final hidden matching loss vs dense teacher.')
+    flags.DEFINE_bool('gmp_hidden_only', False, 'Use final hidden matching loss only (no NTP, no logit KD).')
+    flags.DEFINE_string('gmp_hidden_mode', 'cosine', 'Loss for hidden matching: cosine (default), nmse, or mse.')
+    flags.DEFINE_string('gmp_hidden_mask', 'cot', 'Mask for hidden matching: cot (labels!=-100) or all (attention_mask, prompt+CoT).')
+    flags.DEFINE_string('gmp_hidden_layers', 'final', 'Layer scope: final (last layer only) or anneal_all_to_final (coarse-to-fine).')
+    flags.DEFINE_float('gmp_onpolicy_kd_lambda', 0.0, 'Weight for on-policy KD loss in GMP (0 = disabled).')
+    flags.DEFINE_integer('gmp_onpolicy_kd_interval', 32, 'Optimizer steps between on-policy KD generations.')
+    flags.DEFINE_integer('gmp_onpolicy_max_new_tokens', 256, 'Max new tokens for on-policy student generation.')
+    flags.DEFINE_integer('gmp_onpolicy_kd_topk', 0, 'Top-K for on-policy KL divergence (0 = full vocab).')
+    flags.DEFINE_float('gmp_onpolicy_temperature', 0.6, 'Sampling temperature for on-policy generation.')
+    flags.DEFINE_integer('gmp_onpolicy_grad_accum', 1, 'Number of on-policy generate+KL micro-steps to accumulate per interval.')
+    flags.DEFINE_float('gmp_onpolicy_grad_clip', 1.0, 'Gradient clip norm applied after each on-policy rollout backward.')
+    flags.DEFINE_boolean('gmp_onpolicy_reverse_kl', False, 'Use reverse KL D(S||T) for on-policy KD instead of forward KL.')
+    flags.DEFINE_boolean('gmp_onpolicy_pg', False, 'Add MiniLLM-style long-term policy gradient loss to on-policy KD.')
+    flags.DEFINE_float('gmp_onpolicy_pg_lambda', 1.0, 'Weight for the long-term PG loss.')
+    flags.DEFINE_float('gmp_onpolicy_mixed_alpha', 0.0, 'Teacher-mixed sampling alpha: sample from alpha*p_T+(1-alpha)*q_S. 0=pure student.')
+    flags.DEFINE_float('gmp_onpolicy_pg_cliprange', 0.2, 'PPO clip range epsilon for on-policy PG loss.')
+    flags.DEFINE_float('gmp_onpolicy_pg_gamma', 0.99, 'Discount factor gamma for on-policy PG cumulative reward.')
+    flags.DEFINE_integer('gmp_rollout_buffer_size', 0, 'Rollout buffer size for PPO reuse (MiniLLM-style). 0=disabled (inline backward). When >0, collect rollouts and run ppo_epochs updates per buffer fill.')
+    flags.DEFINE_integer('gmp_ppo_epochs', 2, 'Number of PPO optimization epochs per rollout buffer fill.')
+    flags.DEFINE_float('gmp_pg_reward_clip', 10.0, 'Clip rewards to [-clip, +clip] before discounted cumsum. 0=disabled.')
+    flags.DEFINE_float('gmp_pg_reward_scale', 0.0, 'Divide rewards by this value before clipping (MiniLLM reward_scaling). 0=disabled.')
+    flags.DEFINE_string('gmp_prompt_path', None, 'Path to math prompts JSONL for on-policy GMP KD (defaults to data_path).')
+    flags.DEFINE_float('gmp_anchor_kd_lambda', 0.0, 'Weight for anchored KD loss (CoT prefix + student continuation).')
+    flags.DEFINE_integer('gmp_anchor_kd_interval', 32, 'Optimizer steps between anchored KD generations.')
+    flags.DEFINE_integer('gmp_anchor_prefix_len', 1536, 'CoT prefix length (tokens) for anchored KD.')
+    flags.DEFINE_integer('gmp_anchor_max_new_tokens', 512, 'Max new tokens for anchored student generation.')
 
     # KD-ADMM: on-policy distillation inside ADMM loop
     flags.DEFINE_bool('do_kd_admm', False, 'Use on-policy KD loss inside ADMM instead of NTP.')
@@ -441,6 +480,7 @@ if __name__ == '__main__':
     flags.DEFINE_float('kd_vllm_gpu_memory_utilization', 0.3, 'vLLM gpu_memory_utilization for rollout engine.')
     flags.DEFINE_integer('kd_vllm_max_model_len', 0, 'vLLM max_model_len (0 = auto: kd_max_new_tokens + 1024).')
     flags.DEFINE_bool('kd_use_cot_dataset', False, 'Use MathCotKDDataset (provides CoT NTP labels + prompt for KD).')
+    flags.DEFINE_bool('cot_append_eos', False, 'Append EOS token to each sample in MathCotKDDataset.')
     flags.DEFINE_bool('kd_use_random_cot_ntp', False, 'Use random 2048-token CoT windows for NTP; use separate MathPromptDataset for KD prompts.')
     flags.DEFINE_integer('kd_step_interval', 1, 'Apply KD loss every N optimizer steps (1=every step). Reduces teacher forward cost.')
     flags.DEFINE_string('kd_ntp_dataset', 'math_cot', 'Dataset for NTP in random CoT mode: math_cot or c4.')
