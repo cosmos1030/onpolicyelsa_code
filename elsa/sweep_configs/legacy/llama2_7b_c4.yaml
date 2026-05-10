@@ -1,0 +1,50 @@
+# wandb sweep: LLaMA-2 7B with C4 dataset, global_admm pruning
+#
+# Usage:
+#   cd /home1/doyoonkim/projects/elsa
+#   wandb sweep sweep_configs/llama2_7b_c4.yaml
+#   sbatch scripts/slurm_llama2_7b_sweep.sh <SWEEP_ID>
+
+program: main.py
+command:
+  - ${env}
+  - /home1/doyoonkim/miniconda3/envs/elsa/bin/accelerate
+  - launch
+  - --main_process_port
+  - "0"
+  - --config_file
+  - config/default_4gpu.yaml
+  - main.py
+  - --dataset=c4
+  - --seqlen=2048
+  - --sparsity_type=unstructured
+  - --admm_batch_size=2
+  - --admm_gradient_accumulation_steps=4
+  - --admm_interval=32
+  - --admm_eval_steps=100
+  - --admm_num_eval_samples=128
+  - --admm_precision=bf16
+  - --admm_lmda_schedule_mode=constant
+  - --eval_zero_shot=True
+  - --wandb=True
+  - --wandb_project=elsa_llama2_7b
+  - ${args}
+
+name: llama2_7b_c4_global_admm
+method: grid
+project: elsa_llama2_7b
+entity: dyk6208-gwangju-institute-of-science-and-technology
+
+parameters:
+  model:
+    value: meta-llama/Llama-2-7b-hf
+  prune_method:
+    value: global_admm
+  sparsity_ratio:
+    value: 0.5
+  admm_steps:
+    value: 4096
+  admm_lr:
+    value: 5e-05
+  admm_lmda:
+    value: 0.001

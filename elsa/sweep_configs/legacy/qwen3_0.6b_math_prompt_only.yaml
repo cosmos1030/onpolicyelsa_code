@@ -1,0 +1,49 @@
+# wandb sweep: Qwen3-0.6B ADMM pruning + math_500 evaluation in one run
+#
+# Usage:
+#   cd /home1/doyoonkim/projects/elsa
+#   wandb sweep sweep_configs/qwen3_0.6_math_prompt_eval.yaml
+#   sbatch scripts/slurm_sweep_agent.sh <SWEEP_ID>
+
+program: scripts/prune_and_eval.sh
+command:
+  - ${env}
+  - bash
+  - ${program}
+  - --dataset=math_prompt
+  - --data_path=/home1/doyoonkim/projects/elsa/data/math_220k_prompts.jsonl
+  - --seqlen=2048
+  - --sparsity_type=unstructured
+  - --admm_steps=4096
+  - --admm_batch_size=1
+  - --admm_gradient_accumulation_steps=8
+  - --admm_beta1=0.9
+  - --admm_beta2=0.999
+  - --admm_base_optimizer=adamw
+  - --admm_precision=bf16
+  - --admm_interval=32
+  - --admm_lmda_schedule_mode=constant
+  - --admm_lr_scheduler=linear
+  - --admm_logging_steps=10
+  - --admm_eval_steps=256
+  - --save_model=True
+  - --admm_save_path=/home1/doyoonkim/projects/elsa/models
+  - --eval_zero_shot=True
+  - --wandb=True
+  - --wandb_project=elsa_qwen3_0.6
+  - ${args}
+
+name: qwen3_0.6_math_prompt_eval_20pct
+method: grid
+project: elsa_qwen3_0.6
+entity: dyk6208-gwangju-institute-of-science-and-technology
+
+parameters:
+  model:
+    value: Qwen/Qwen3-0.6B
+  sparsity_ratio:
+    value: 0.2
+  admm_lr:
+    values: [5e-6, 1e-5, 5e-5, 1e-4]
+  admm_lmda:
+    values: [1e-3, 5e-3, 1e-2]
