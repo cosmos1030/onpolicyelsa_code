@@ -35,6 +35,7 @@ def get_llm(
         low_cpu_mem_usage=True,
         device_map="cpu",
         trust_remote_code=True,
+        torch_dtype=torch.bfloat16,
         attn_implementation="flash_attention_2"
     )
     assert seqlen<=model.config.max_position_embeddings, f"seqlen({seqlen}) should be less than or equal to model.config.max_position_embeddings({model.config.max_position_embeddings})"

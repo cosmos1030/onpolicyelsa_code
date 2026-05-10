@@ -149,6 +149,7 @@ def globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device, offpolic
     elif use_hybrid:
         if local_rank == 0:
             logging.info(f"Loading CoT KD dataset from {FLAGS.kd_data_path}")
+        _append_eos = getattr(FLAGS, "cot_append_eos", True)
         train_dataset = MathCotKDDataset(
             jsonl_path=FLAGS.kd_data_path,
             tokenizer=tokenizer,
@@ -156,6 +157,7 @@ def globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device, offpolic
             max_prompt_len=FLAGS.kd_max_prompt_len,
             nsamples=FLAGS.kd_nsamples if FLAGS.kd_nsamples > 0 else None,
             seed=FLAGS.seed,
+            append_eos=_append_eos,
         )
         data_collator = collate_cot_kd(tokenizer.pad_token_id)
         valid_inputs = MathCotKDDataset(
@@ -165,6 +167,7 @@ def globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device, offpolic
             max_prompt_len=FLAGS.kd_max_prompt_len,
             nsamples=FLAGS.admm_num_eval_samples,
             seed=FLAGS.seed + 1,
+            append_eos=_append_eos,
         )
     else:
         if local_rank == 0:

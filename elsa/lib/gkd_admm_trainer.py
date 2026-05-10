@@ -120,9 +120,11 @@ class MathCotKDDataset(Dataset):
     THINK_TAG = "<think>"
 
     def __init__(self, jsonl_path, tokenizer, max_len=2048, max_prompt_len=512,
-                 nsamples=None, seed=42, cache_dir="/tmp/elsa_dataset_cache"):
+                 nsamples=None, seed=42, cache_dir="/tmp/elsa_dataset_cache",
+                 append_eos=False):
         cache_path = _dataset_cache_path(cache_dir, jsonl_path, tokenizer.name_or_path,
-                                         cls="MathCotKD", max_len=max_len,
+                                         cls="MathCotKD" if not append_eos else "MathCotKD_eos",
+                                         max_len=max_len,
                                          max_prompt_len=max_prompt_len,
                                          nsamples=nsamples, seed=seed)
         if os.path.exists(cache_path):
@@ -164,12 +166,22 @@ class MathCotKDDataset(Dataset):
             full_enc = tokenizer(
                 text,
                 truncation=True,
-                max_length=max_len,
+                max_length=max_len - 1 if append_eos else max_len,
                 return_tensors="pt",
                 padding=False,
             )
-            full_ids = full_enc["input_ids"].squeeze(0)
-            full_mask = full_enc["attention_mask"].squeeze(0)
+            if append_eos:
+                full_ids = torch.cat([
+                    full_enc["input_ids"].squeeze(0),
+                    torch.tensor([tokenizer.eos_token_id], dtype=torch.long),
+                ])
+                full_mask = torch.cat([
+                    full_enc["attention_mask"].squeeze(0),
+                    torch.tensor([1], dtype=torch.long),
+                ])
+            else:
+                full_ids = full_enc["input_ids"].squeeze(0)
+                full_mask = full_enc["attention_mask"].squeeze(0)
 
             # Prompt for KD generation
             prompt_enc = tokenizer(
