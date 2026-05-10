@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=prune_deepseek_prompt
-#SBATCH --partition=A6000
+#SBATCH --partition=A100-40GB-PCIe
 #SBATCH --qos=normal
 #SBATCH --gres=gpu:1
 #SBATCH --nodes=1
@@ -12,6 +12,11 @@
 # Usage:
 #   wandb sweep sweep_configs/deepseek_r1_1.5b_prompt_sparsity.yaml
 #   for i in {1..5}; do sbatch scripts/slurm_sweep_agent_deepseek_prompt_sparsity.sh <SWEEP_ID>; done
+
+_SAVED_CUDA=${CUDA_VISIBLE_DEVICES:-}
+ENV_FILE="/run/slurm/job_env_${SLURM_JOB_ID}"
+[ -f "$ENV_FILE" ] && source "$ENV_FILE"
+[ -n "$_SAVED_CUDA" ] && export CUDA_VISIBLE_DEVICES="$_SAVED_CUDA"
 
 SWEEP_ID=$1
 if [ -z "$SWEEP_ID" ]; then
@@ -29,6 +34,8 @@ cd /home1/doyoonkim/projects/RAC/open-r1-main
 
 export TRITON_CACHE_DIR=/tmp/triton_cache_doyoon
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export PYTHONUNBUFFERED=1
+export WANDB_DISABLE_SERVICE=1
 
 echo "Starting wandb agent for sweep: $SWEEP_ID"
 /home1/doyoonkim/miniconda3/envs/rac/bin/wandb agent \
