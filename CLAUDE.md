@@ -37,6 +37,9 @@
 - HF 토큰 스크립트 하드코딩 금지 → `export HF_TOKEN=$(cat ~/.hf_token 2>/dev/null || echo "")`
 - sweep 에이전트 수 = grid 크기 (3 lr × 3 lmda = 9)
 - 이미 실행 중인 sweep을 수정해야 하면 → 기존 sweep 취소 후 새로 생성
+- **agents 제출 전 반드시 sweep 상태 확인**: wandb API로 sweep.state 및 각 run의 state 확인
+  - crashed/finished run만 있으면 새 sweep 먼저 만들고 agents 제출
+  - `python -c "import wandb; api=wandb.Api(); s=api.sweep('<entity>/<project>/<id>'); print(s.state); [print(r.state) for r in s.runs]"`
 
 ---
 
