@@ -708,19 +708,6 @@ def globalprune_gmp(
             anc_loss.backward()
             accum_onpolicy_diag.update({"anchor/kl_loss": anc_kl.item()})
 
-        # ── NTP optimizer step ────────────────────────────────────────────────
-        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0).item()
-        if math.isnan(grad_norm) or math.isinf(grad_norm):
-            logging.warning(f"NaN/Inf grad_norm at step {step}, skipping optimizer step")
-            optimizer.zero_grad()
-        else:
-            fisher.update()
-            accum_grad_norm += grad_norm
-            optimizer.step()
-            scheduler.step()
-        optimizer.zero_grad()
-        maskmgr.apply()
-
         step += 1
 
         # periodic mask update (freeze mask after pruning_end_steps)
@@ -731,7 +718,7 @@ def globalprune_gmp(
             else:
                 maskmgr.apply()
 
-        # ── On-policy: rollout collection + RL update (MiniLLM: separate optimizer step) ──
+        # ── On-policy: rollout collection + RL grad accumulation (combined step fires below) ──
         if use_onpolicy and step % onpolicy_interval == 0:
             _pad_id = tokenizer.pad_token_id or tokenizer.eos_token_id
             _eos_id = tokenizer.eos_token_id or _pad_id
@@ -815,7 +802,7 @@ def globalprune_gmp(
                              f"step={step} gen={_total_gen_tok}tok "
                              f"r={_total_r:.3f} t={_total_gen_time:.1f}s")
 
-                # ── RL update: separate optimizer step per mini-batch (MiniLLM style) ──
+                # ── RL update: accumulate into NTP grads (combined step fires below) ──
                 if len(rollout_buffer) >= rollout_buffer_size:
                     _n_buf = len(rollout_buffer)
                     _last_kl = 0.0
@@ -846,14 +833,9 @@ def globalprune_gmp(
                                     reward_clip=pg_reward_clip,
                                     reward_scale=pg_reward_scale,
                                 )
-                                _buf_loss = onpolicy_lambda * _op_kl2 + onpolicy_pg_lambda * _pg2
+                                _buf_loss = (onpolicy_lambda * _op_kl2 + onpolicy_pg_lambda * _pg2) / (grad_accum * ppo_epochs * _n_buf)
                             if not (torch.isnan(_buf_loss) or torch.isinf(_buf_loss)):
                                 _buf_loss.backward()
-                            torch.nn.utils.clip_grad_norm_(model.parameters(), onpolicy_grad_clip)
-                            fisher.update()
-                            optimizer.step()
-                            optimizer.zero_grad()
-                            maskmgr.apply()
                             _last_kl = _op_kl2.item()
 
                     accum_onpolicy = _last_kl
@@ -984,6 +966,19 @@ def globalprune_gmp(
                 })
                 accum_onpolicy_diag.update({f"onpolicy/{k.split('/')[-1]}": v
                                             for k, v in op_diag.items()})
+
+        # ── Combined optimizer step (NTP + RL grads) ─────────────────────────
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0).item()
+        if math.isnan(grad_norm) or math.isinf(grad_norm):
+            logging.warning(f"NaN/Inf grad_norm at step {step}, skipping optimizer step")
+            optimizer.zero_grad()
+        else:
+            fisher.update()
+            accum_grad_norm += grad_norm
+            optimizer.step()
+            scheduler.step()
+        optimizer.zero_grad()
+        maskmgr.apply()
 
         # periodic logging
         if step % log_interval == 0:
