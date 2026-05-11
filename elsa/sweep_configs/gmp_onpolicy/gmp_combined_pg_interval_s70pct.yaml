@@ -17,13 +17,13 @@ parameters:
   sparsity_ratio:
     value: 0.7
   gmp_lr:
-    value: 1e-5
+    value: 1e-4
   gmp_kd_lambda:
     value: 1.0
   gmp_onpolicy_kd_lambda:
     value: 1.0
   gmp_onpolicy_pg_lambda:
-    value: 0.5
+    value: 1.0
   gmp_onpolicy_kd_interval:
     values: [1, 4, 8, 16]
   gmp_onpolicy_grad_accum:
