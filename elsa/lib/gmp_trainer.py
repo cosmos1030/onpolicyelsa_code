@@ -726,12 +726,12 @@ def globalprune_gmp(
 
             if use_rollout:
                 # ── ROLLOUT BUFFER PATH ──────────────────────────────────────
-                # Batch all grad_accum prompts for a single generation call.
                 _total_gen_tok = 0
                 _total_r = 0.0
                 _t_gen = time.time()
+                _n_collect = onpolicy_grad_accum  # prompts per collection step (default 1)
 
-                _p_batches = [next(prompt_iter) for _ in range(grad_accum)]
+                _p_batches = [next(prompt_iter) for _ in range(_n_collect)]
                 _p_ids_list  = [b['input_ids'].to(device)  for b in _p_batches]
                 _p_mask_list = [b['attention_mask'].to(device) for b in _p_batches]
                 _max_plen = max(p.shape[1] for p in _p_ids_list)
@@ -739,12 +739,12 @@ def globalprune_gmp(
                     torch.cat([torch.full((1, _max_plen - p.shape[1]), _pad_id,
                                          dtype=torch.long, device=device), p], dim=1)
                     for p in _p_ids_list
-                ], dim=0)  # (grad_accum, _max_plen)
+                ], dim=0)  # (_n_collect, _max_plen)
                 _batch_mask = torch.cat([
                     torch.cat([torch.zeros(1, _max_plen - m.shape[1],
                                           dtype=torch.long, device=device), m], dim=1)
                     for m in _p_mask_list
-                ], dim=0)  # (grad_accum, _max_plen)
+                ], dim=0)  # (_n_collect, _max_plen)
 
                 model.config.use_cache = True
                 model.eval()
@@ -769,7 +769,7 @@ def globalprune_gmp(
                 model.config.use_cache = False
                 maskmgr.apply()
 
-                gen_labels = generated.clone()  # (grad_accum, _max_plen + gen_len)
+                gen_labels = generated.clone()  # (_n_collect, _max_plen + gen_len)
                 gen_labels[:, :_max_plen] = -100
                 gen_labels[generated == _pad_id] = -100
 
@@ -790,7 +790,7 @@ def globalprune_gmp(
                         _buf_is_log_w = (_s_tok - _mix_prob.log()) * _gen_pos_mask
                     else:
                         _buf_is_log_w = torch.zeros_like(_gen_pos_mask)
-                    for _i in range(grad_accum):
+                    for _i in range(_n_collect):
                         rollout_buffer.add(
                             generated[_i:_i+1], gen_labels[_i:_i+1],
                             _buf_rewards[_i:_i+1], _s_tok[_i:_i+1], _buf_is_log_w[_i:_i+1],
