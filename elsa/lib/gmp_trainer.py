@@ -498,7 +498,6 @@ def globalprune_gmp(
     onpolicy_grad_clip  = getattr(FLAGS, 'gmp_onpolicy_grad_clip', 1.0)
     onpolicy_reverse_kl = getattr(FLAGS, 'gmp_onpolicy_reverse_kl', False)
     onpolicy_pg           = getattr(FLAGS, 'gmp_onpolicy_pg', False)
-    onpolicy_pg_lambda    = getattr(FLAGS, 'gmp_onpolicy_pg_lambda', 1.0)
     onpolicy_mixed_alpha  = getattr(FLAGS, 'gmp_onpolicy_mixed_alpha', 0.0)
     onpolicy_pg_cliprange = getattr(FLAGS, 'gmp_onpolicy_pg_cliprange', 0.2)
     onpolicy_pg_gamma     = getattr(FLAGS, 'gmp_onpolicy_pg_gamma', 0.99)
@@ -833,7 +832,7 @@ def globalprune_gmp(
                                     reward_clip=pg_reward_clip,
                                     reward_scale=pg_reward_scale,
                                 )
-                                _buf_loss = (onpolicy_lambda * _op_kl2 + onpolicy_pg_lambda * _pg2) / (grad_accum * ppo_epochs * _n_buf)
+                                _buf_loss = (onpolicy_lambda * _op_kl2 + onpolicy_lambda * _pg2) / (grad_accum * ppo_epochs * _n_buf)
                             if not (torch.isnan(_buf_loss) or torch.isinf(_buf_loss)):
                                 _buf_loss.backward()
                             _last_kl = _op_kl2.item()
@@ -933,7 +932,7 @@ def globalprune_gmp(
                                           gamma=onpolicy_pg_gamma,
                                           reward_clip=pg_reward_clip,
                                           reward_scale=pg_reward_scale)
-                            op_loss = (onpolicy_lambda * op_kl + onpolicy_pg_lambda * pg) / (grad_accum * onpolicy_grad_accum)
+                            op_loss = (onpolicy_lambda * op_kl + onpolicy_lambda * pg) / (grad_accum * onpolicy_grad_accum)
                         else:
                             op_loss = onpolicy_lambda * op_kl / (grad_accum * onpolicy_grad_accum)
 
