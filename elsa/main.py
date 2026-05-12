@@ -146,14 +146,26 @@ def main(argv):
         _t_train_start = time.time()
         if getattr(FLAGS, 'do_gmp', False):
             model.to(device)
-            from lib.gkd_admm_trainer import MathCotKDDataset
-            train_dataset = MathCotKDDataset(
-                jsonl_path=FLAGS.data_path,
-                tokenizer=tokenizer,
-                max_prompt_len=getattr(FLAGS, 'gmp_max_prompt_len', 512),
-                max_len=getattr(FLAGS, 'gmp_max_seq_len', 2048),
-                append_eos=getattr(FLAGS, 'cot_append_eos', False),
-            )
+            if getattr(FLAGS, 'gmp_random_cot_ntp', False):
+                from lib.data import get_dataset
+                train_dataset = get_dataset(
+                    dataset_name='math_cot',
+                    tokenizer=tokenizer,
+                    nsamples=4096,
+                    seed=FLAGS.seed,
+                    seqlen=getattr(FLAGS, 'gmp_max_seq_len', 2048),
+                    data_type='train',
+                    data_path=FLAGS.data_path,
+                )
+            else:
+                from lib.gkd_admm_trainer import MathCotKDDataset
+                train_dataset = MathCotKDDataset(
+                    jsonl_path=FLAGS.data_path,
+                    tokenizer=tokenizer,
+                    max_prompt_len=getattr(FLAGS, 'gmp_max_prompt_len', 512),
+                    max_len=getattr(FLAGS, 'gmp_max_seq_len', 2048),
+                    append_eos=getattr(FLAGS, 'cot_append_eos', False),
+                )
             gmp_teacher = None
             if getattr(FLAGS, 'gmp_kd_lambda', 0.0) > 0 or getattr(FLAGS, 'gmp_hidden_lambda', 0.0) > 0 or getattr(FLAGS, 'gmp_onpolicy_kd_lambda', 0.0) > 0 or getattr(FLAGS, 'gmp_anchor_kd_lambda', 0.0) > 0:
                 gmp_teacher = get_llm(FLAGS.model, FLAGS.seqlen)
@@ -419,6 +431,8 @@ if __name__ == '__main__':
     flags.DEFINE_string('admm_nonuniform_sparsity_config_file', None, 'Path to non-uniform sparsity configuration file (JSON format).')
     # GMP (BEST-style)
     flags.DEFINE_bool('do_gmp', False, 'Use BEST-style gradual magnitude pruning with Fisher importance.')
+    flags.DEFINE_bool('gmp_fixed_mask', False, 'Fix mask from pre-pruned model weights (for sparse SFT). Skips Fisher-based mask updates.')
+    flags.DEFINE_bool('gmp_random_cot_ntp', False, 'Use random seqlen-token windows from CoT (no prompt masking) instead of MathCotKDDataset.')
     flags.DEFINE_integer('gmp_steps', 4096, 'Total training steps for GMP.')
     flags.DEFINE_integer('gmp_batch_size', 1, 'Per-device batch size for GMP.')
     flags.DEFINE_integer('gmp_grad_accum', 8, 'Gradient accumulation steps for GMP.')

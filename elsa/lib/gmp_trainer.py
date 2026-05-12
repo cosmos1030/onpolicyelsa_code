@@ -106,6 +106,12 @@ class GradualMaskManager:
                       for n, p in named_params.items()}
 
     @torch.no_grad()
+    def init_from_weights(self):
+        """Initialize mask from existing zero pattern (for sparse SFT on pre-pruned models)."""
+        for n, p in self.named_params.items():
+            self.masks[n] = p.data != 0
+
+    @torch.no_grad()
     def update(self, fisher: FisherAccumulator, sparsity: float):
         """Recompute global mask at target sparsity using Fisher importance."""
         if sparsity <= 0.0:
@@ -544,8 +550,13 @@ def globalprune_gmp(
 
     rollout_buffer = RolloutBuffer() if use_rollout else None
 
+    fixed_mask     = getattr(FLAGS, 'gmp_fixed_mask', False)
+
     fisher  = FisherAccumulator(named_params, beta=fisher_beta)
     maskmgr = GradualMaskManager(named_params)
+    if fixed_mask:
+        maskmgr.init_from_weights()
+        maskmgr.apply()
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.0)
     scheduler = get_cosine_schedule_with_warmup(
@@ -711,11 +722,14 @@ def globalprune_gmp(
 
         # periodic mask update (freeze mask after pruning_end_steps)
         if step % mask_interval == 0:
-            current_sparsity = _cubic_sparsity(min(step, pruning_end_steps), pruning_end_steps, final_sparsity, warmup_steps)
-            if step <= pruning_end_steps:
-                maskmgr.update(fisher, current_sparsity)
-            else:
+            if fixed_mask:
                 maskmgr.apply()
+            else:
+                current_sparsity = _cubic_sparsity(min(step, pruning_end_steps), pruning_end_steps, final_sparsity, warmup_steps)
+                if step <= pruning_end_steps:
+                    maskmgr.update(fisher, current_sparsity)
+                else:
+                    maskmgr.apply()
 
         # ── On-policy: rollout collection + RL grad accumulation (combined step fires below) ──
         if use_onpolicy and step % onpolicy_interval == 0:
@@ -1043,12 +1057,14 @@ def globalprune_gmp(
 def _collate(batch, pad_token_id=0):
     # Only use fields needed for NTP forward pass
     ntp_keys = [k for k in batch[0].keys() if k in ('input_ids', 'attention_mask', 'labels')]
-    max_len = max(b['input_ids'].shape[0] for b in batch)
+    max_len = max(len(b['input_ids']) if isinstance(b['input_ids'], list) else b['input_ids'].shape[0] for b in batch)
     result = {}
     for k in ntp_keys:
         tensors = []
         for b in batch:
             t = b[k]
+            if isinstance(t, list):
+                t = torch.tensor(t, dtype=torch.long)
             pad_val = -100 if k == 'labels' else pad_token_id
             pad_len = max_len - t.shape[0]
             if pad_len > 0:
