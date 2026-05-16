@@ -88,9 +88,9 @@ from lib.gmp_trainer import (FisherAccumulator, GradualMaskManager,
                               _find_linear_weights, _cubic_sparsity)
 
 named_params  = _find_linear_weights(model)
-fisher        = FisherAccumulator(named_params, beta=0.999)
-maskmgr       = GradualMaskManager(named_params)
 optimizer     = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.0)
+fisher        = FisherAccumulator(named_params, optimizer)
+maskmgr       = GradualMaskManager(named_params)
 scheduler     = get_cosine_schedule_with_warmup(
     optimizer, num_warmup_steps=args.warmup, num_training_steps=args.steps)
 

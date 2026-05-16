@@ -141,7 +141,7 @@ def main(argv):
 
     saved_pruned_model_path = None
     _train_time_sec = 0.0
-    if FLAGS.sparsity_ratio != 0:
+    if FLAGS.sparsity_ratio != 0 or getattr(FLAGS, 'do_gmp', False):
         logging.info("pruning starts")
         _t_train_start = time.time()
         if getattr(FLAGS, 'do_gmp', False):
@@ -326,6 +326,7 @@ def main(argv):
                 max_samples=getattr(FLAGS, 'math500_max_samples', None) or None,
                 tensor_parallel_size=world_size,
                 gpu_memory_utilization=_vllm_gpu_util,
+                seed=getattr(FLAGS, 'seed', None),
                 log_to_wandb=FLAGS.wandb,
                 wandb_step=0,
             )
@@ -348,7 +349,8 @@ def main(argv):
                 # Auto-generate repo id if not specified
                 _hub_repo = FLAGS.hub_model_id if FLAGS.hub_model_id else None
                 if not _hub_repo:
-                    _base_model = FLAGS.model.rstrip('/').split('/')[-1]
+                    from datetime import datetime as _dt
+                    _now = _dt.now().strftime("%Y%m%d_%H%M%S")
                     _sparsity_tag = f"s{int(FLAGS.sparsity_ratio * 100)}pct"
                     def _fmt_float(v):
                         s = f"{v:.0e}"
@@ -357,7 +359,7 @@ def main(argv):
                         _kd_tag = f"-kd{_fmt_float(getattr(FLAGS, 'gmp_kd_lambda', 0))}" if getattr(FLAGS, 'gmp_kd_lambda', 0) > 0 else ""
                         _method_tag = f"gmp{_kd_tag}"
                         _lr_tag = f"lr{_fmt_float(FLAGS.gmp_lr)}"
-                        _hub_repo = f"cosmos1030/{_base_model}-{_method_tag}-{_sparsity_tag}-{_lr_tag}"
+                        _hub_repo = f"cosmos1030/{_method_tag}-{_sparsity_tag}-{_lr_tag}_{_now}"
                     else:
                         _method_tag = "elsa-hybrid-kd" if getattr(FLAGS, 'do_kd_admm', False) and getattr(FLAGS, 'kd_use_cot_dataset', False) \
                             else "elsa-kd" if getattr(FLAGS, 'do_kd_admm', False) \
@@ -366,7 +368,7 @@ def main(argv):
                             else "elsa-ntp"
                         _lr_tag = f"lr{_fmt_float(FLAGS.admm_lr)}"
                         _lmda_tag = f"lmda{_fmt_float(FLAGS.admm_lmda)}"
-                        _hub_repo = f"cosmos1030/{_base_model}-{_method_tag}-{_sparsity_tag}-{_lr_tag}-{_lmda_tag}"
+                        _hub_repo = f"cosmos1030/{_method_tag}-{_sparsity_tag}-{_lr_tag}-{_lmda_tag}_{_now}"
                 logging.info(f"Uploading model to HuggingFace Hub: {_hub_repo}")
                 api = HfApi()
                 api.create_repo(repo_id=_hub_repo, exist_ok=True)

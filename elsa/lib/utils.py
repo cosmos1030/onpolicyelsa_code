@@ -30,13 +30,14 @@ def get_llm(
     Returns:
         model: AutoModelForCausalLM, the model loaded from huggingface hub.
     """
+    attn_impl = "flash_attention_2" if torch.cuda.is_available() else "sdpa"
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         low_cpu_mem_usage=True,
         device_map="cpu",
         trust_remote_code=True,
         torch_dtype=torch.bfloat16,
-        attn_implementation="flash_attention_2"
+        attn_implementation=attn_impl,
     )
     assert seqlen<=model.config.max_position_embeddings, f"seqlen({seqlen}) should be less than or equal to model.config.max_position_embeddings({model.config.max_position_embeddings})"
     model.seqlen = seqlen

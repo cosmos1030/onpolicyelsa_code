@@ -61,32 +61,35 @@ def _apply_mask(param, mask):
 # ---------------------------------------------------------------------------
 
 class FisherAccumulator:
-    """Accumulates empirical Fisher diagonal (running avg of g_i^2) for Linear weights."""
+    """Fisher diagonal from Adam's exp_avg_sq (== empirical Fisher diagonal).
 
-    def __init__(self, named_params, beta=0.999):
-        self.beta = beta
-        self.named_params = named_params          # {name: param}
-        self.F = {n: torch.zeros_like(p.data, dtype=torch.float32) for n, p in named_params.items()}
+    Adam's second moment v_t is an EMA of g² with the same semantics as the
+    hand-rolled FisherAccumulator it replaces — no separate bookkeeping needed.
+    """
+
+    def __init__(self, named_params, optimizer, beta=0.999):
+        self.named_params = named_params  # {name: param}
+        self.optimizer = optimizer
         self._step = 0
 
     def update(self):
-        """Call after loss.backward() but before optimizer.step()."""
+        """No-op: Adam updates exp_avg_sq automatically in optimizer.step()."""
         self._step += 1
-        b = self.beta
-        for name, param in self.named_params.items():
-            if param.grad is not None:
-                g = param.grad.data.float()
-                self.F[name].mul_(b).addcmul_(g, g, value=1 - b)
 
     def importance(self, name, param):
-        """Fisher-weighted magnitude: F_hat_ii * w_i^2.
-        Falls back to plain magnitude when Fisher is all-zero (e.g. zero-gradient loss at init).
-        """
-        f = self.F[name]
-        if self._step > 0:
-            f = f / (1.0 - self.beta ** self._step)  # bias correction
+        """Fisher-weighted magnitude: v_hat_ii * w_i^2, using Adam's exp_avg_sq."""
+        st = self.optimizer.state.get(param, {})
+        v = st.get('exp_avg_sq', None)
+        if v is None:
+            return param.data ** 2  # fallback before first optimizer step
+        f = v.float()
+        step = st.get('step', self._step)
+        if torch.is_tensor(step):
+            step = step.item()
+        beta2 = self.optimizer.param_groups[0].get('betas', (0.9, 0.999))[1]
+        if step > 0:
+            f = f / (1.0 - beta2 ** step)
         imp = f * param.data ** 2
-        # If all-zero (no gradient signal yet), use magnitude-based pruning as fallback
         if imp.sum() == 0:
             imp = param.data ** 2
         return imp
@@ -552,13 +555,12 @@ def globalprune_gmp(
 
     fixed_mask     = getattr(FLAGS, 'gmp_fixed_mask', False)
 
-    fisher  = FisherAccumulator(named_params, beta=fisher_beta)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.0)
+    fisher  = FisherAccumulator(named_params, optimizer)
     maskmgr = GradualMaskManager(named_params)
     if fixed_mask:
         maskmgr.init_from_weights()
         maskmgr.apply()
-
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.0)
     scheduler = get_cosine_schedule_with_warmup(
         optimizer,
         num_warmup_steps=warmup_steps,

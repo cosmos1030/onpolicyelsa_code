@@ -28,6 +28,7 @@ def run_lighteval_math500(
     max_samples: Optional[int] = None,
     temperature: float = 0.6,
     top_p: float = 0.95,
+    seed: Optional[int] = None,
     lighteval_bin: Optional[str] = None,
     log_to_wandb: bool = True,
     wandb_step: Optional[int] = None,
@@ -44,6 +45,7 @@ def run_lighteval_math500(
         output_dir = str(Path(model_path) / "lighteval_math500")
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
+    seed_arg = f"seed={seed}," if seed is not None else ""
     model_args = (
         f"model_name={model_path},"
         f"dtype=bfloat16,"
@@ -52,6 +54,7 @@ def run_lighteval_math500(
         f"gpu_memory_utilization={gpu_memory_utilization},"
         f"max_model_length={max_model_length},"
         f"max_num_batched_tokens={max_model_length},"
+        f"{seed_arg}"
         f"override_chat_template=true,"
         f"generation_parameters={{max_new_tokens:{max_new_tokens},temperature:{temperature},top_p:{top_p}}}"
     )
