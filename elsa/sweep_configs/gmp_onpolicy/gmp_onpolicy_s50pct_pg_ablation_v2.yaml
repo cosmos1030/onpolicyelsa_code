@@ -1,0 +1,90 @@
+program: main.py
+method: grid
+project: gmp_qwen3_1.5b_v2
+name: gmp_onpolicy_s50pct_pg_ablation_v2
+entity: dyk6208-gwangju-institute-of-science-and-technology
+
+command:
+  - /home1/doyoonkim/miniconda3/envs/rac/bin/python
+  - ${program}
+  - ${args}
+
+metric:
+  name: eval/math500_pass@1
+  goal: maximize
+
+parameters:
+  seed:
+    value: 42
+  sparsity_ratio:
+    value: 0.5
+  gmp_lr:
+    value: 1e-4
+  gmp_kd_lambda:
+    value: 1.0
+  gmp_onpolicy_kd_lambda:
+    value: 2.0
+  gmp_onpolicy_mixed_alpha:
+    value: 0.2
+  gmp_onpolicy_pg:
+    values: [true, false]
+  model:
+    value: "/home1/doyoonkim/.cache/huggingface/hub/models--deepseek-ai--DeepSeek-R1-Distill-Qwen-1.5B/snapshots/ad9f0ae0864d7fbcd1cd905e3c6c5b069cc8b562"
+  dataset:
+    value: "math_cot"
+  data_path:
+    value: "/home1/doyoonkim/projects/elsa/data/math_220k_cot.jsonl"
+  gmp_prompt_path:
+    value: "/home1/doyoonkim/projects/elsa/data/math_220k_prompts.jsonl"
+  do_gmp:
+    value: true
+  gmp_steps:
+    value: 1024
+  gmp_batch_size:
+    value: 1
+  gmp_grad_accum:
+    value: 8
+  gmp_warmup_ratio:
+    value: 0.05
+  gmp_mask_interval:
+    value: 32
+  gmp_fisher_beta:
+    value: 0.999
+  gmp_onpolicy_kd_interval:
+    value: 8
+  gmp_onpolicy_max_new_tokens:
+    value: 512
+  gmp_onpolicy_kd_topk:
+    value: 100
+  gmp_onpolicy_temperature:
+    value: 1.0
+  gmp_onpolicy_grad_clip:
+    value: 1.0
+  gmp_onpolicy_reverse_kl:
+    value: true
+  gmp_rollout_buffer_size:
+    value: 4
+  gmp_ppo_epochs:
+    value: 2
+  gmp_save_path:
+    value: "/home1/doyoonkim/projects/elsa/models"
+  gmp_max_prompt_len:
+    value: 512
+  gmp_max_seq_len:
+    value: 2048
+  save_model:
+    value: true
+  eval_math500:
+    value: true
+  math500_max_new_tokens:
+    value: 8192
+  math500_max_samples:
+    value: 500
+  eval_zero_shot:
+    value: false
+  wandb:
+    value: true
+  wandb_project:
+    value: "gmp_qwen3_1.5b_v2"
+  push_to_hub:
+    value: true
