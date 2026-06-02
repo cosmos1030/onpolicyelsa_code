@@ -16,10 +16,23 @@ import torch.nn as nn
 import torch.nn.functional as F
 import wandb
 from absl import logging
+from contextlib import nullcontext
 from datetime import datetime
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from transformers.optimization import get_cosine_schedule_with_warmup
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, DistributedSampler
+
+try:
+    from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+    _FSDP_AVAILABLE = True
+except ImportError:
+    _FSDP_AVAILABLE = False
+
+try:
+    from torch.distributed.tensor import DTensor, Replicate
+    _DTENSOR_AVAILABLE = True
+except ImportError:
+    _DTENSOR_AVAILABLE = False
 
 
 # ---------------------------------------------------------------------------
@@ -40,6 +53,47 @@ def _find_linear_weights(model):
                 full_name = f"model.layers.{block_idx}.{name}.weight"
                 result[full_name] = module.weight
     return result
+
+
+def _structured_l1_loss(named_params: dict, masks: dict, prune_n: int, prune_m: int) -> torch.Tensor:
+    """2:4 structured L1 regularization (mean-normalized).
+
+    Penalizes the mean abs value of the bottom-(M-N) alive weights per group-of-M.
+    Already-pruned (mask=0) positions are excluded — penalizing zeros is meaningless
+    and would bias the gradient signal.
+    Normalized by alive element count so scale stays comparable to per-token NTP loss.
+    """
+    total = None
+    count = 0
+    for name, param in named_params.items():
+        w = param
+        mask = masks.get(name)
+        if w.dim() < 2:
+            alive = w[mask] if mask is not None else w
+            term = alive.abs().sum()
+            n = alive.numel()
+        else:
+            n_rows, n_cols = w.shape
+            n_full = n_cols // prune_m
+            n_nm_cols = n_full * prune_m
+            w_nm = w[:, :n_nm_cols].reshape(n_rows * n_full, prune_m)
+            alive_nm = mask[:, :n_nm_cols].reshape(n_rows * n_full, prune_m) if mask is not None \
+                       else torch.ones_like(w_nm, dtype=torch.bool)
+            # within each group, only consider alive weights for bottom-k selection
+            metric = w_nm.abs()
+            metric[~alive_nm] = float('inf')  # dead weights can't be bottom-k
+            n_pruned = prune_m - prune_n
+            bottom_idx = torch.topk(metric, n_pruned, dim=1, largest=False).indices
+            selected = w_nm.abs().gather(1, bottom_idx)
+            # only count positions that are actually alive
+            alive_selected = alive_nm.gather(1, bottom_idx)
+            term = selected[alive_selected].sum()
+            n = int(alive_selected.sum().item())
+        total = term if total is None else total + term
+        count += n
+    if total is None or count == 0:
+        return torch.tensor(0.0)
+    return total / count
 
 
 def _cubic_sparsity(step, total_steps, final_sparsity, warmup_steps=0):
@@ -82,6 +136,9 @@ class FisherAccumulator:
         v = st.get('exp_avg_sq', None)
         if v is None:
             return param.data ** 2  # fallback before first optimizer step
+        # DTensor (FSDP2): redistribute to local replica before use
+        if _DTENSOR_AVAILABLE and isinstance(v, DTensor):
+            v = v.redistribute(placements=[Replicate()]).to_local()
         f = v.float()
         step = st.get('step', self._step)
         if torch.is_tensor(step):
@@ -102,48 +159,130 @@ class FisherAccumulator:
 class GradualMaskManager:
     """Maintains binary masks and updates them on a schedule."""
 
-    def __init__(self, named_params):
+    def __init__(self, named_params, fsdp_model=None, prune_n=0, prune_m=0):
         self.named_params = named_params
-        # start fully dense
-        self.masks = {n: torch.ones_like(p.data, dtype=torch.bool)
-                      for n, p in named_params.items()}
+        self.prune_n = prune_n  # N for N:M semi-structured sparsity (0 = unstructured)
+        self.prune_m = prune_m  # M for N:M semi-structured sparsity
+        # With FSDP2, p.data is a local shard; use summon_full_params to get full shapes.
+        ctx = (FSDP.summon_full_params(fsdp_model, writeback=False, recurse=True)
+               if (_FSDP_AVAILABLE and fsdp_model is not None)
+               else nullcontext())
+        with ctx:
+            self.masks = {n: torch.ones(p.data.shape, dtype=torch.bool, device=p.data.device)
+                          for n, p in named_params.items()}
 
     @torch.no_grad()
-    def init_from_weights(self):
+    def init_from_weights(self, fsdp_model=None):
         """Initialize mask from existing zero pattern (for sparse SFT on pre-pruned models)."""
-        for n, p in self.named_params.items():
-            self.masks[n] = p.data != 0
+        ctx = (FSDP.summon_full_params(fsdp_model, writeback=False, recurse=True)
+               if (_FSDP_AVAILABLE and fsdp_model is not None)
+               else nullcontext())
+        with ctx:
+            for n, p in self.named_params.items():
+                self.masks[n] = (p.data != 0)
 
     @torch.no_grad()
-    def update(self, fisher: FisherAccumulator, sparsity: float):
-        """Recompute global mask at target sparsity using Fisher importance."""
+    def _nm_mask(self, imp: torch.Tensor, current_mask: torch.Tensor, sparsity: float) -> torch.Tensor:
+        """N:M semi-structured mask for a single weight matrix.
+
+        Ported from log_efficient_qwen_competition/lib/gmp.py.
+        Protects top-N weights per group of M, then globally prunes remaining
+        positions to reach target sparsity (gradual schedule).
+        """
+        prune_n, prune_m = self.prune_n, self.prune_m
+        if imp.dim() < 2:
+            # 1-D param (bias etc.) — fall back to unstructured
+            return imp > torch.kthvalue(imp.flatten(), max(1, int(imp.numel() * sparsity))).values
+
+        n_rows, n_cols = imp.shape
+        n_full_chunks = n_cols // prune_m
+        n_nm_cols = n_full_chunks * prune_m
+
+        metric_nm     = imp[:, :n_nm_cols].reshape(n_rows * n_full_chunks, prune_m)
+        already_zero  = current_mask[:, :n_nm_cols].reshape(n_rows * n_full_chunks, prune_m)
+
+        # Protect top-N per group; already-zero weights cannot consume a protected slot.
+        metric_protect = metric_nm.clone()
+        metric_protect[already_zero] = -float('inf')
+        _, top_idx = torch.topk(metric_protect, prune_n, dim=1, largest=True)
+        protect_mask = torch.zeros_like(metric_nm, dtype=torch.bool)
+        protect_mask.scatter_(1, top_idx, True)
+
+        # Find how many additional positions to prune.
+        n_total      = n_rows * n_full_chunks * prune_m
+        n_max_pruned = n_rows * n_full_chunks * (prune_m - prune_n)
+        n_already    = int(already_zero.sum().item())
+        n_target     = min(int(n_total * sparsity), n_max_pruned)
+        n_new        = max(0, n_target - n_already)
+
+        W_mask = current_mask.clone()
+        if n_new > 0:
+            metric_thresh = metric_nm.clone()
+            metric_thresh[protect_mask]  = float('inf')
+            metric_thresh[already_zero]  = float('inf')
+            flat = metric_thresh.flatten()
+            n_avail = int((flat < float('inf')).sum().item())
+            n_new = min(n_new, n_avail)
+            if n_new > 0:
+                _, prune_idx = torch.topk(flat, n_new, largest=False)
+                prune_flat = torch.zeros(n_total, dtype=torch.bool, device=imp.device)
+                prune_flat[prune_idx] = True
+                W_mask[:, :n_nm_cols] |= prune_flat.reshape(n_rows, n_nm_cols)
+        return ~W_mask  # mask=True means KEEP (consistent with unstructured path)
+
+    @torch.no_grad()
+    def update(self, fisher: FisherAccumulator, sparsity: float, fsdp_model=None):
+        """Recompute global mask at target sparsity using Fisher importance.
+
+        fsdp_model: if FSDP-wrapped, pass the root FSDP module so we can
+                    summon_full_params for weight access and writeback.
+        """
         if sparsity <= 0.0:
             return
 
-        # collect all importance scores globally
-        scores = []
-        for name, param in self.named_params.items():
-            scores.append(fisher.importance(name, param).flatten())
-        all_scores = torch.cat(scores)
+        ctx = (FSDP.summon_full_params(fsdp_model, writeback=True, recurse=True)
+               if (_FSDP_AVAILABLE and fsdp_model is not None)
+               else nullcontext())
+        with ctx:
+            if self.prune_n > 0 and self.prune_m > 0:
+                # N:M semi-structured: per-layer masking
+                for name, param in self.named_params.items():
+                    imp = fisher.importance(name, param)
+                    if torch.isnan(imp).any() or torch.isinf(imp).any():
+                        logging.warning(f"NaN/Inf in Fisher importance for {name}, skipping")
+                        continue
+                    current_pruned = ~self.masks[name]  # True = currently zero
+                    self.masks[name] = self._nm_mask(imp, current_pruned, sparsity)
+                    _apply_mask(param, self.masks[name])
+            else:
+                # Unstructured: global threshold
+                scores = []
+                for name, param in self.named_params.items():
+                    scores.append(fisher.importance(name, param).flatten())
+                all_scores = torch.cat(scores)
 
-        if torch.isnan(all_scores).any() or torch.isinf(all_scores).any():
-            logging.warning("NaN/Inf in Fisher importance scores, skipping mask update")
-            return
+                if torch.isnan(all_scores).any() or torch.isinf(all_scores).any():
+                    logging.warning("NaN/Inf in Fisher importance scores, skipping mask update")
+                    return
 
-        k = int(all_scores.numel() * sparsity)
-        if k == 0:
-            return
-        threshold = torch.kthvalue(all_scores, k).values
+                k = int(all_scores.numel() * sparsity)
+                if k == 0:
+                    return
+                threshold = torch.kthvalue(all_scores, k).values
 
-        for name, param in self.named_params.items():
-            imp = fisher.importance(name, param)
-            self.masks[name] = imp > threshold
-            _apply_mask(param, self.masks[name])
+                for name, param in self.named_params.items():
+                    imp = fisher.importance(name, param)
+                    self.masks[name] = imp > threshold
+                    _apply_mask(param, self.masks[name])
 
-    def apply(self):
+    def apply(self, fsdp_model=None):
         """Zero out masked weights (call after every optimizer step)."""
-        for name, param in self.named_params.items():
-            _apply_mask(param, self.masks[name])
+        ctx = (FSDP.summon_full_params(fsdp_model, writeback=True, recurse=True)
+               if (_FSDP_AVAILABLE and fsdp_model is not None)
+               else nullcontext())
+        with ctx:
+            for name, param in self.named_params.items():
+                _apply_mask(param, self.masks[name])
 
     def current_sparsity(self):
         total = sum(m.numel() for m in self.masks.values())
@@ -452,6 +591,7 @@ def globalprune_gmp(
     train_dataset: Dataset,
     FLAGS,
     teacher_model: AutoModelForCausalLM = None,
+    dpo_dense_model: AutoModelForCausalLM = None,
     eval_fn=None,        # optional callable(model) → dict of metrics
 ):
     """
@@ -475,6 +615,23 @@ def globalprune_gmp(
     """
     device = next(model.parameters()).device
     named_params = _find_linear_weights(model)
+
+    # ── FSDP detection ─────────────────────────────────────────────────────────
+    fsdp_model = None
+    is_fsdp = False
+    if _FSDP_AVAILABLE:
+        _root = next((m for m in model.modules() if isinstance(m, FSDP)), None)
+        if _root is not None:
+            fsdp_model = _root
+            is_fsdp = True
+            logging.info("FSDP detected — enabling summon_full_params for mask updates")
+
+    # Distributed state (DDP or FSDP)
+    import torch.distributed as _dist
+    is_distributed = _dist.is_available() and _dist.is_initialized()
+    local_rank = _dist.get_rank() if is_distributed else 0
+    world_size = _dist.get_world_size() if is_distributed else 1
+    is_main_process = (local_rank == 0)
 
     total_steps    = FLAGS.gmp_steps
     batch_size     = getattr(FLAGS, 'gmp_batch_size', 1)
@@ -519,19 +676,39 @@ def globalprune_gmp(
     anchor_interval   = getattr(FLAGS, 'gmp_anchor_kd_interval', 32)
     anchor_prefix_len = getattr(FLAGS, 'gmp_anchor_prefix_len', 1536)
     anchor_max_new    = getattr(FLAGS, 'gmp_anchor_max_new_tokens', 512)
+    teacher_seqkd      = getattr(FLAGS, 'gmp_teacher_seqkd', False)
+    teacher_seqkd_temp = getattr(FLAGS, 'gmp_onpolicy_temperature', 1.0)
+    teacher_seqkd_max_new = getattr(FLAGS, 'gmp_onpolicy_max_new_tokens', 512)
     use_kd         = (teacher_model is not None) and (kd_lambda > 0.0)
     use_hidden     = (teacher_model is not None) and (hidden_lambda > 0.0)
     use_onpolicy   = (teacher_model is not None) and (onpolicy_lambda > 0.0)
     use_anchor     = (teacher_model is not None) and (anchor_lambda > 0.0)
+    use_teacher_seqkd = (teacher_model is not None) and teacher_seqkd
 
-    if use_kd or use_hidden or use_onpolicy:
+    # DPO flags
+    dpo_lambda        = getattr(FLAGS, 'gmp_dpo_lambda', 0.0)
+    dpo_beta          = getattr(FLAGS, 'gmp_dpo_beta', 0.1)
+    dpo_n_pairs       = getattr(FLAGS, 'gmp_dpo_n_pairs', 1024)
+    dpo_gen_batch     = getattr(FLAGS, 'gmp_dpo_gen_batch', 8)
+    dpo_max_new       = getattr(FLAGS, 'gmp_dpo_max_new_tokens', 512)
+    dpo_temperature   = getattr(FLAGS, 'gmp_dpo_temperature', 0.7)
+    dpo_start_step    = getattr(FLAGS, 'gmp_dpo_start_step', 0)
+    dpo_reference_free = getattr(FLAGS, 'gmp_dpo_reference_free', False)
+    use_dpo = (dpo_lambda > 0.0) and (dpo_dense_model is not None)
+
+    if use_kd or use_hidden or use_onpolicy or use_teacher_seqkd:
         teacher_model.eval()
         for p in teacher_model.parameters():
             p.requires_grad_(False)
 
-    # Prompt dataset for on-policy generation
+    if use_dpo:
+        dpo_dense_model.eval()
+        for p in dpo_dense_model.parameters():
+            p.requires_grad_(False)
+
+    # Prompt dataset for on-policy generation or teacher SeqKD
     prompt_iter = None
-    if use_onpolicy:
+    if use_onpolicy or use_teacher_seqkd:
         from lib.gkd_admm_trainer import MathPromptDataset
         prompt_path = getattr(FLAGS, 'gmp_prompt_path', None) or getattr(FLAGS, 'data_path', None)
         prompt_max_len = getattr(FLAGS, 'gmp_max_prompt_len', 512)
@@ -554,13 +731,27 @@ def globalprune_gmp(
     rollout_buffer = RolloutBuffer() if use_rollout else None
 
     fixed_mask     = getattr(FLAGS, 'gmp_fixed_mask', False)
+    l1_lambda      = getattr(FLAGS, 'gmp_l1_lambda', 0.0)
+
+    # N:M semi-structured sparsity support (e.g. "2:4")
+    sparsity_type = getattr(FLAGS, 'sparsity_type', 'unstructured')
+    prune_n, prune_m = 0, 0
+    if sparsity_type != 'unstructured':
+        prune_n, prune_m = map(int, sparsity_type.split(':'))
+        logging.info(f"  N:M semi-structured sparsity: {prune_n}:{prune_m}")
+    use_l1 = l1_lambda > 0.0
+    if use_l1:
+        if prune_n > 0 and prune_m > 0:
+            logging.info(f"  Structured L1 (N:M) regularization: lambda={l1_lambda}")
+        else:
+            logging.info(f"  Plain L1 regularization: lambda={l1_lambda}")
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.0)
     fisher  = FisherAccumulator(named_params, optimizer)
-    maskmgr = GradualMaskManager(named_params)
+    maskmgr = GradualMaskManager(named_params, fsdp_model, prune_n=prune_n, prune_m=prune_m)
     if fixed_mask:
         maskmgr.init_from_weights()
-        maskmgr.apply()
+        maskmgr.apply(fsdp_model)
     scheduler = get_cosine_schedule_with_warmup(
         optimizer,
         num_warmup_steps=warmup_steps,
@@ -570,12 +761,23 @@ def globalprune_gmp(
     _pad_tok = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
     _collate_fn = lambda b: _collate(b, pad_token_id=_pad_tok)
 
-    loader = DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        collate_fn=_collate_fn,
-    )
+    if is_distributed:
+        _train_sampler = DistributedSampler(
+            train_dataset, num_replicas=world_size, rank=local_rank, shuffle=True
+        )
+        loader = DataLoader(
+            train_dataset,
+            batch_size=batch_size,
+            sampler=_train_sampler,
+            collate_fn=_collate_fn,
+        )
+    else:
+        loader = DataLoader(
+            train_dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            collate_fn=_collate_fn,
+        )
     data_iter = _infinite(loader)
 
     # Anchor KD: separate iterator over CoT dataset (batch_size=1)
@@ -591,6 +793,51 @@ def globalprune_gmp(
         logging.info(f"  Anchor KD: lambda={anchor_lambda}, interval={anchor_interval}, "
                      f"prefix_len={anchor_prefix_len}, max_new_tokens={anchor_max_new}")
 
+    # ── DPO setup ──────────────────────────────────────────────────────────────
+    import copy as _copy
+    dpo_chosen_cache   = None
+    dpo_ref_model      = None
+    dpo_rejected_queue = None
+
+    if use_dpo and is_main_process:
+        from lib.gmp_dpo import generate_chosen_cache, RejectedQueue, concatenated_forward, dpo_loss as _dpo_loss
+        from lib.gkd_admm_trainer import MathPromptDataset
+        _dpo_prompt_path = getattr(FLAGS, 'gmp_prompt_path', None) or getattr(FLAGS, 'data_path', None)
+        _dpo_prompt_ds = MathPromptDataset(
+            jsonl_path=_dpo_prompt_path,
+            tokenizer=tokenizer,
+            max_prompt_len=getattr(FLAGS, 'gmp_max_prompt_len', 512),
+        )
+        dpo_chosen_cache = generate_chosen_cache(
+            dpo_dense_model, tokenizer, _dpo_prompt_ds,
+            n_pairs=dpo_n_pairs, gen_batch_size=dpo_gen_batch,
+            max_new_tokens=dpo_max_new, temperature=dpo_temperature,
+            device=device,
+        )
+        # Pruning-aware DPO init:
+        # ref = pre-first-mask snapshot (model not yet pruned at all)
+        # Initial rejected generated from same un-pruned model (step=0, no mask yet)
+        # → first interval has ref ≈ rejected_generator (like v3), but from step 32 onward
+        #   ref = pre-mask, rejected = post-mask (the intended pruning-aware setup)
+        dpo_ref_model = _copy.deepcopy(model).eval()
+        for p in dpo_ref_model.parameters():
+            p.requires_grad_(False)
+        dpo_rejected_queue = RejectedQueue(
+            dpo_chosen_cache, mask_interval,
+            gen_batch_size=dpo_gen_batch,
+            max_new_tokens=dpo_max_new,
+            temperature=dpo_temperature,
+        )
+        # initial fill: rejected from un-pruned model (step 0)
+        model.eval()
+        dpo_rejected_queue.refill(model, tokenizer, str(device))
+        model.train()
+        maskmgr.apply(fsdp_model)
+        logging.info(f"  DPO: lambda={dpo_lambda}, beta={dpo_beta}, "
+                     f"n_pairs={dpo_n_pairs}, max_new={dpo_max_new}, start_step={dpo_start_step}")
+    elif use_dpo:
+        from lib.gmp_dpo import concatenated_forward, dpo_loss as _dpo_loss
+
     model.train()
     optimizer.zero_grad()
 
@@ -599,7 +846,15 @@ def globalprune_gmp(
     accum_loss      = 0.0
     accum_ntp       = 0.0
     accum_kd        = 0.0
+    accum_l1        = 0.0
     accum_grad_norm = 0.0
+    accum_dpo_loss  = 0.0
+    accum_dpo_acc   = 0.0
+    accum_dpo_chosen_logp       = 0.0
+    accum_dpo_rejected_logp     = 0.0
+    accum_dpo_ref_chosen_logp   = 0.0
+    accum_dpo_ref_rejected_logp = 0.0
+    accum_dpo_margin            = 0.0
     accum_diag: dict = {}
     accum_diag_n = 0
     accum_onpolicy_diag: dict = {}
@@ -615,8 +870,48 @@ def globalprune_gmp(
     while step < total_steps:
         accum_onpolicy = 0.0
 
+        # ── Teacher SeqKD: teacher generates, forward KL(T||S) on generated seq ─
+        if use_teacher_seqkd:
+            _pad_id = tokenizer.pad_token_id or tokenizer.eos_token_id
+            p_batch = next(prompt_iter)
+            prompt_ids  = p_batch['input_ids'].to(device)
+            prompt_mask = p_batch['attention_mask'].to(device)
+            prompt_len  = prompt_ids.shape[1]
+
+            teacher_model.config.use_cache = True
+            with torch.no_grad():
+                with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+                    generated = teacher_model.generate(
+                        input_ids=prompt_ids,
+                        attention_mask=prompt_mask,
+                        max_new_tokens=teacher_seqkd_max_new,
+                        do_sample=True,
+                        temperature=teacher_seqkd_temp,
+                        pad_token_id=_pad_id,
+                    )
+            teacher_model.config.use_cache = False
+
+            gen_labels = generated.clone()
+            gen_labels[:, :prompt_len] = -100
+            gen_labels[generated == _pad_id] = -100
+
+            with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+                s_out = model(input_ids=generated)
+                with torch.no_grad():
+                    t_out = teacher_model(input_ids=generated)
+                loss, _ = _kl_loss(s_out.logits, t_out.logits, gen_labels,
+                                   kd_temperature, kd_topk, reverse=False)
+
+            if torch.isnan(loss) or torch.isinf(loss):
+                logging.warning(f"NaN/Inf SeqKD loss at step {step}, skipping")
+            else:
+                loss.backward()
+                accum_loss += loss.item()
+                accum_kd   += loss.item()
+
         # ── NTP + offline KD micro-steps ──────────────────────────────────────
-        for micro_step in range(grad_accum):
+        else:
+          for micro_step in range(grad_accum):
             batch = next(data_iter)
             batch = {k: v.to(device) for k, v in batch.items()}
 
@@ -670,6 +965,22 @@ def globalprune_gmp(
                     loss = ntp_loss / grad_accum
                     accum_ntp += ntp_loss.item() / grad_accum
 
+            if use_l1:
+                if prune_n > 0 and prune_m > 0:
+                    l1 = _structured_l1_loss(named_params, maskmgr.masks, prune_n, prune_m)
+                else:
+                    # Unstructured: L1 on alive (non-pruned) weights only, mean-normalized.
+                    # maskmgr.masks[name] == True means KEEP, False means pruned.
+                    alive_sum = sum(
+                        (p * maskmgr.masks[n].to(p.dtype)).abs().sum()
+                        for n, p in named_params.items()
+                    )
+                    alive_cnt = sum(maskmgr.masks[n].sum().item() for n in named_params)
+                    l1 = alive_sum / max(alive_cnt, 1)
+                l1_term = l1_lambda * l1 / grad_accum
+                loss = loss + l1_term
+                accum_l1 += l1_term.item()
+
             if torch.isnan(loss) or torch.isinf(loss):
                 logging.warning(f"NaN/Inf loss at micro_step {micro_step}, skipping")
                 continue
@@ -700,7 +1011,7 @@ def globalprune_gmp(
                     )
                 model.train()
                 model.config.use_cache = False
-                maskmgr.apply()
+                maskmgr.apply(fsdp_model)
 
                 anc_mask = (generated != (tokenizer.pad_token_id or tokenizer.eos_token_id)).long()
                 anc_labels = generated.clone()
@@ -724,14 +1035,51 @@ def globalprune_gmp(
 
         # periodic mask update (freeze mask after pruning_end_steps)
         if step % mask_interval == 0:
+            # Pruning-aware DPO: snapshot ref BEFORE mask update.
+            # ref = π_{k-1} (pre-mask stable policy)
+            # rejected will be generated AFTER mask update → π̃_k (damaged policy)
+            # This ensures ref ≠ rejected_generator, giving non-zero DPO margin.
+            # (v3 bug: ref was snapshotted AFTER mask update → ref ≈ rejected → margin ≈ 0)
+            if use_dpo and is_main_process and dpo_rejected_queue is not None:
+                del dpo_ref_model
+                dpo_ref_model = _copy.deepcopy(model).eval()   # π_{k-1}: pre-mask
+                for p in dpo_ref_model.parameters():
+                    p.requires_grad_(False)
+
             if fixed_mask:
-                maskmgr.apply()
+                maskmgr.apply(fsdp_model)
             else:
                 current_sparsity = _cubic_sparsity(min(step, pruning_end_steps), pruning_end_steps, final_sparsity, warmup_steps)
                 if step <= pruning_end_steps:
-                    maskmgr.update(fisher, current_sparsity)
+                    maskmgr.update(fisher, current_sparsity, fsdp_model)
                 else:
-                    maskmgr.apply()
+                    maskmgr.apply(fsdp_model)
+
+            # Refill rejected AFTER mask update → rejected ~ π̃_k (post-mask damaged policy)
+            if use_dpo and is_main_process and dpo_rejected_queue is not None:
+                model.eval()
+                dpo_rejected_queue.refill(model, tokenizer, str(device))
+                model.train()
+                maskmgr.apply(fsdp_model)
+
+                # Δ_T diagnostic: teacher logprob gap on fresh pairs
+                # Δ_T = avg_log_p_T(chosen) - avg_log_p_T(rejected)
+                # ≈ 0 in early pruning (sparse ≈ dense), grows as pruning damages model
+                _pad_val = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
+                _diag_pairs = dpo_rejected_queue.peek_n(min(64, len(dpo_rejected_queue)))
+                if _diag_pairs:
+                    from lib.gmp_dpo import compute_teacher_delta as _compute_delta
+                    _deltas = _compute_delta(dpo_dense_model, _diag_pairs, _pad_val, str(device))
+                    _delta_mean = _deltas.mean().item()
+                    _delta_std  = _deltas.std().item()
+                    _delta_pos  = (_deltas > 0).float().mean().item()
+                    logging.info(f"  Δ_T: mean={_delta_mean:.4f} std={_delta_std:.4f} P(>0)={_delta_pos:.3f} (step={step})")
+                    if use_wandb:
+                        import wandb as _wandb
+                        _wandb.log({"train/delta_T_mean": _delta_mean,
+                                    "train/delta_T_std":  _delta_std,
+                                    "train/delta_T_pos_rate": _delta_pos,
+                                    "step": step})
 
         # ── On-policy: rollout collection + RL grad accumulation (combined step fires below) ──
         if use_onpolicy and step % onpolicy_interval == 0:
@@ -782,7 +1130,7 @@ def globalprune_gmp(
                 _total_gen_time = time.time() - _t_gen
                 model.train()
                 model.config.use_cache = False
-                maskmgr.apply()
+                maskmgr.apply(fsdp_model)
 
                 gen_labels = generated.clone()  # (_n_collect, _max_plen + gen_len)
                 gen_labels[:, :_max_plen] = -100
@@ -899,7 +1247,7 @@ def globalprune_gmp(
                     _total_gen_tokens += generated.shape[1] - prompt_len
                     model.train()
                     model.config.use_cache = False
-                    maskmgr.apply()
+                    maskmgr.apply(fsdp_model)
 
                     gen_labels = generated.clone()
                     gen_labels[:, :prompt_len] = -100
@@ -960,7 +1308,7 @@ def globalprune_gmp(
                         fisher.update()
                         optimizer.step()
                         optimizer.zero_grad()
-                        maskmgr.apply()
+                        maskmgr.apply(fsdp_model)
                         accum_onpolicy += op_kl.item()
 
                     _diag_kl      += op_kl.item()
@@ -982,6 +1330,48 @@ def globalprune_gmp(
                 accum_onpolicy_diag.update({f"onpolicy/{k.split('/')[-1]}": v
                                             for k, v in op_diag.items()})
 
+        # ── DPO loss ──────────────────────────────────────────────────────────
+        if use_dpo and step >= dpo_start_step and is_main_process and dpo_rejected_queue:
+            pair = dpo_rejected_queue.pop()
+            if pair is not None:
+                _pad_val = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
+                pair_dev = {k: v.to(device) for k, v in pair.items()}
+                try:
+                    with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+                        policy_out = concatenated_forward(model, pair_dev, padding_value=_pad_val)
+                        if not dpo_reference_free:
+                            with torch.no_grad():
+                                ref_out = concatenated_forward(dpo_ref_model, pair_dev, padding_value=_pad_val, is_ref_model=True)
+                        else:
+                            # reference-free: zero logratios from ref
+                            ref_out = {
+                                "chosen_logps":   torch.zeros_like(policy_out["chosen_logps"]),
+                                "rejected_logps": torch.zeros_like(policy_out["rejected_logps"]),
+                            }
+                    losses, chosen_rew, rejected_rew = _dpo_loss(
+                        policy_out["chosen_logps"], policy_out["rejected_logps"],
+                        ref_out["chosen_logps"],   ref_out["rejected_logps"],
+                        beta=dpo_beta,
+                        reference_free=dpo_reference_free,
+                    )
+                    dpo_l = losses.mean()
+                    if not (torch.isnan(dpo_l) or torch.isinf(dpo_l)):
+                        (dpo_lambda * dpo_l / grad_accum).backward()
+                        accum_dpo_loss += dpo_l.item()
+                        _dpo_margin = dpo_beta * (
+                            (policy_out["chosen_logps"] - ref_out["chosen_logps"]) -
+                            (policy_out["rejected_logps"] - ref_out["rejected_logps"])
+                        )
+                        accum_dpo_acc += (_dpo_margin > 0).float().mean().item()
+                        # diagnostic accumulators (v2: sanity check logprob scale)
+                        accum_dpo_chosen_logp   += policy_out["chosen_logps"].mean().item()
+                        accum_dpo_rejected_logp += policy_out["rejected_logps"].mean().item()
+                        accum_dpo_ref_chosen_logp   += ref_out["chosen_logps"].mean().item()
+                        accum_dpo_ref_rejected_logp += ref_out["rejected_logps"].mean().item()
+                        accum_dpo_margin        += _dpo_margin.mean().item()
+                except Exception as e:
+                    logging.warning(f"DPO loss error at step {step}: {e}")
+
         # ── Combined optimizer step (NTP + RL grads) ─────────────────────────
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0).item()
         if math.isnan(grad_norm) or math.isinf(grad_norm):
@@ -993,7 +1383,7 @@ def globalprune_gmp(
             optimizer.step()
             scheduler.step()
         optimizer.zero_grad()
-        maskmgr.apply()
+        maskmgr.apply(fsdp_model)
 
         # periodic logging
         if step % log_interval == 0:
@@ -1008,6 +1398,8 @@ def globalprune_gmp(
                 "train/grad_norm": accum_grad_norm / log_interval,
                 "step": step,
             }
+            if use_l1:
+                log_dict["train/l1_loss"] = accum_l1
             if use_kd or use_hidden:
                 log_dict["train/aux_loss"] = accum_kd
                 if accum_diag_n > 0:
@@ -1016,33 +1408,57 @@ def globalprune_gmp(
                 if accum_onpolicy > 0 or not use_rollout:
                     log_dict["train/onpolicy_kd_loss"] = accum_onpolicy
                 log_dict.update(accum_onpolicy_diag)
+            if use_dpo:
+                log_dict["train/dpo_loss"]              = accum_dpo_loss
+                log_dict["train/dpo_acc"]               = accum_dpo_acc
+                # v2 diagnostics: sanity-check logprob scale & ref alignment
+                log_dict["train/dpo_chosen_logp"]       = accum_dpo_chosen_logp
+                log_dict["train/dpo_rejected_logp"]     = accum_dpo_rejected_logp
+                log_dict["train/dpo_ref_chosen_logp"]   = accum_dpo_ref_chosen_logp
+                log_dict["train/dpo_ref_rejected_logp"] = accum_dpo_ref_rejected_logp
+                log_dict["train/dpo_margin"]            = accum_dpo_margin
             logging.info(f"Step {step}/{total_steps} | loss={accum_loss:.4f} | "
-                         f"sparsity={real_sparsity:.3f} | lr={scheduler.get_last_lr()[0]:.2e}")
-            if use_wandb and wandb.run is not None:
+                         f"sparsity={real_sparsity:.3f} | lr={scheduler.get_last_lr()[0]:.2e}"
+                         + (f" | dpo_loss={accum_dpo_loss:.4f} acc={accum_dpo_acc:.3f} "
+                            f"margin={accum_dpo_margin:.4f}" if use_dpo else ""))
+            if use_wandb and wandb.run is not None and is_main_process:
                 wandb.log(log_dict, step=step)
             accum_loss           = 0.0
             accum_ntp            = 0.0
             accum_kd             = 0.0
+            accum_l1             = 0.0
             accum_grad_norm      = 0.0
+            accum_dpo_loss               = 0.0
+            accum_dpo_acc                = 0.0
+            accum_dpo_chosen_logp        = 0.0
+            accum_dpo_rejected_logp      = 0.0
+            accum_dpo_ref_chosen_logp    = 0.0
+            accum_dpo_ref_rejected_logp  = 0.0
+            accum_dpo_margin             = 0.0
             accum_diag           = {}
             accum_diag_n         = 0
             accum_onpolicy_diag  = {}
 
     # final mask at full sparsity
-    maskmgr.update(fisher, final_sparsity)
+    maskmgr.update(fisher, final_sparsity, fsdp_model)
     logging.info(f"Final sparsity: {maskmgr.current_sparsity():.4f}")
 
-    # save
+    # save (rank-0 only for distributed runs)
     saved_path = None
-    if getattr(FLAGS, 'save_model', False) and getattr(FLAGS, 'gmp_save_path', None):
+    if is_main_process and getattr(FLAGS, 'save_model', False) and getattr(FLAGS, 'gmp_save_path', None):
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         saved_path = f"{FLAGS.gmp_save_path}/{_run_tag(FLAGS)}_{ts}"
-        model.save_pretrained(saved_path)
+        if is_fsdp:
+            # FSDP: gather full model to rank-0 before saving
+            with FSDP.summon_full_params(fsdp_model, writeback=False, recurse=True):
+                model.save_pretrained(saved_path)
+        else:
+            model.save_pretrained(saved_path)
         tokenizer.save_pretrained(saved_path)
         logging.info(f"Saved pruned model to {saved_path}")
 
-    # optional downstream eval
-    if eval_fn is not None:
+    # optional downstream eval (rank-0 only)
+    if eval_fn is not None and is_main_process:
         metrics = eval_fn(model)
         if use_wandb and wandb.run is not None:
             wandb.log(metrics, step=step)

@@ -9,6 +9,7 @@ from lib.utils import check_sparsity, get_llm
 from lib.on_policy_distill import run_on_policy_distillation
 from lib.gkd_admm import globalprune_admm_kd
 from lib.gmp_trainer import globalprune_gmp
+from lib.grpo_opkd import run_grpo_opkd
 from absl import logging, app, flags
 from importlib.metadata import version
 import os
@@ -27,7 +28,15 @@ FLAGS = flags.FLAGS
 def _build_run_name(FLAGS):
     """Build a descriptive run name from FLAGS (call after sweep config is applied)."""
     F = FLAGS
-    if getattr(F, 'do_gmp', False):
+    if getattr(F, 'do_grpo_opkd', False):
+        sp = int(getattr(F, 'sparsity_ratio', 0) * 100)
+        lr = getattr(F, 'gmp_lr', 0)
+        steps = getattr(F, 'gmp_steps', 0)
+        G = getattr(F, 'gmp_grpo_num_rollouts', 4)
+        lam = getattr(F, 'gmp_grpo_lambda', 1.0)
+        eps = getattr(F, 'gmp_grpo_eps_clip', 0.2)
+        return f"grpo_opkd_s{sp}pct_G{G}_lam{lam}_eps{eps}_lr{lr}_{steps}steps"
+    elif getattr(F, 'do_gmp', False):
         sp = int(getattr(F, 'sparsity_ratio', 0) * 100)
         lr = getattr(F, 'gmp_lr', 0)
         steps = getattr(F, 'gmp_steps', 0)
@@ -40,7 +49,9 @@ def _build_run_name(FLAGS):
         anc_pfx   = getattr(F, 'gmp_anchor_prefix_len', 0)
         onpol_tok = getattr(F, 'gmp_onpolicy_max_new_tokens', 0)
 
-        if anc_lam > 0:
+        if getattr(F, 'gmp_teacher_seqkd', False):
+            method = "teacher_seqkd"
+        elif anc_lam > 0:
             method = f"anchor_lam{anc_lam}_pfx{anc_pfx}"
         elif onpol_lam > 0:
             method = f"onpol_lam{onpol_lam}_tok{onpol_tok}"
@@ -76,7 +87,9 @@ def main(argv):
         dist.init_process_group(backend='nccl')
 
     if FLAGS.wandb and local_rank == 0:
-        if getattr(FLAGS, 'do_gmp', False):
+        if getattr(FLAGS, 'do_grpo_opkd', False):
+            group = "grpo_opkd"
+        elif getattr(FLAGS, 'do_gmp', False):
             group = "gmp"
         elif FLAGS.do_kd_admm:
             group = "onpolicy_kd_admm"
@@ -141,11 +154,105 @@ def main(argv):
 
     saved_pruned_model_path = None
     _train_time_sec = 0.0
-    if FLAGS.sparsity_ratio != 0 or getattr(FLAGS, 'do_gmp', False):
+    if FLAGS.sparsity_ratio != 0 or getattr(FLAGS, 'do_gmp', False) or getattr(FLAGS, 'do_grpo_opkd', False) or getattr(FLAGS, 'do_chunk_grpo_opkd', False):
         logging.info("pruning starts")
         _t_train_start = time.time()
-        if getattr(FLAGS, 'do_gmp', False):
+        if getattr(FLAGS, 'do_chunk_grpo_opkd', False):
             model.to(device)
+            from lib.gkd_admm_trainer import MathCotKDDataset, MathPromptDataset, collate_prompts
+            from lib.grpo_opkd import run_chunk_grpo_opkd
+            train_dataset = MathCotKDDataset(
+                jsonl_path=FLAGS.data_path,
+                tokenizer=tokenizer,
+                max_prompt_len=getattr(FLAGS, 'gmp_max_prompt_len', 512),
+                max_len=getattr(FLAGS, 'gmp_max_seq_len', 2048),
+                append_eos=getattr(FLAGS, 'cot_append_eos', False),
+            )
+            prompt_path = getattr(FLAGS, 'gmp_prompt_path', None) or FLAGS.data_path
+            prompt_dataset = MathPromptDataset(
+                jsonl_path=prompt_path,
+                tokenizer=tokenizer,
+                max_prompt_len=getattr(FLAGS, 'gmp_max_prompt_len', 512),
+            )
+            grpo_teacher = get_llm(FLAGS.model, FLAGS.seqlen)
+            grpo_teacher.to(device)
+            grpo_teacher.eval()
+            for p in grpo_teacher.parameters():
+                p.requires_grad_(False)
+            saved_pruned_model_path = run_chunk_grpo_opkd(
+                model, grpo_teacher, tokenizer, train_dataset, prompt_dataset, FLAGS)
+            del grpo_teacher
+            torch.cuda.empty_cache()
+        elif getattr(FLAGS, 'do_grpo_opkd', False):
+            model.to(device)
+            from lib.gkd_admm_trainer import (
+                MathCotKDDataset, MathPromptDataset, MathPromptWithAnswerDataset, collate_prompts,
+            )
+            train_dataset = MathCotKDDataset(
+                jsonl_path=FLAGS.data_path,
+                tokenizer=tokenizer,
+                max_prompt_len=getattr(FLAGS, 'gmp_max_prompt_len', 512),
+                max_len=getattr(FLAGS, 'gmp_max_seq_len', 2048),
+                append_eos=getattr(FLAGS, 'cot_append_eos', False),
+            )
+            prompt_path = getattr(FLAGS, 'gmp_prompt_path', None) or FLAGS.data_path
+            if getattr(FLAGS, 'gmp_correctness_reward', False):
+                # Correctness reward: need gold answers → use CoT data
+                prompt_dataset = MathPromptWithAnswerDataset(
+                    jsonl_path=prompt_path,
+                    tokenizer=tokenizer,
+                    max_prompt_len=getattr(FLAGS, 'gmp_max_prompt_len', 512),
+                )
+                grpo_teacher = None  # teacher not needed for correctness reward
+            else:
+                prompt_dataset = MathPromptDataset(
+                    jsonl_path=prompt_path,
+                    tokenizer=tokenizer,
+                    max_prompt_len=getattr(FLAGS, 'gmp_max_prompt_len', 512),
+                )
+                grpo_teacher = get_llm(FLAGS.model, FLAGS.seqlen)
+                grpo_teacher.to(device)
+                grpo_teacher.eval()
+                for p in grpo_teacher.parameters():
+                    p.requires_grad_(False)
+            saved_pruned_model_path = run_grpo_opkd(
+                model, grpo_teacher, tokenizer, train_dataset, prompt_dataset, FLAGS)
+            if grpo_teacher is not None:
+                del grpo_teacher
+            torch.cuda.empty_cache()
+        elif getattr(FLAGS, 'do_gmp', False):
+            model.to(device)
+
+            # ── Optional FSDP wrapping for multi-GPU GMP ─────────────────────
+            gmp_use_fsdp = getattr(FLAGS, 'gmp_use_fsdp', False)
+            if gmp_use_fsdp and is_distributed:
+                from torch.distributed.fsdp import (
+                    FullyShardedDataParallel as FSDP,
+                    MixedPrecision,
+                    ShardingStrategy,
+                )
+                from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
+                import functools
+                _block_cls = type(model.model.layers[0])
+                _wrap_policy = functools.partial(
+                    transformer_auto_wrap_policy,
+                    transformer_layer_cls={_block_cls},
+                )
+                _mp = MixedPrecision(
+                    param_dtype=torch.bfloat16,
+                    reduce_dtype=torch.bfloat16,
+                    buffer_dtype=torch.bfloat16,
+                )
+                model = FSDP(
+                    model,
+                    auto_wrap_policy=_wrap_policy,
+                    mixed_precision=_mp,
+                    sharding_strategy=ShardingStrategy.FULL_SHARD,
+                    use_orig_params=True,   # preserve param identity for optimizer state lookup
+                    device_id=torch.cuda.current_device(),
+                )
+                logging.info(f"[rank {local_rank}] Model wrapped with FSDP (use_orig_params=True)")
+
             if getattr(FLAGS, 'gmp_random_cot_ntp', False):
                 from lib.data import get_dataset
                 train_dataset = get_dataset(
@@ -167,14 +274,26 @@ def main(argv):
                     append_eos=getattr(FLAGS, 'cot_append_eos', False),
                 )
             gmp_teacher = None
-            if getattr(FLAGS, 'gmp_kd_lambda', 0.0) > 0 or getattr(FLAGS, 'gmp_hidden_lambda', 0.0) > 0 or getattr(FLAGS, 'gmp_onpolicy_kd_lambda', 0.0) > 0 or getattr(FLAGS, 'gmp_anchor_kd_lambda', 0.0) > 0:
+            if getattr(FLAGS, 'gmp_kd_lambda', 0.0) > 0 or getattr(FLAGS, 'gmp_hidden_lambda', 0.0) > 0 or getattr(FLAGS, 'gmp_onpolicy_kd_lambda', 0.0) > 0 or getattr(FLAGS, 'gmp_anchor_kd_lambda', 0.0) > 0 or getattr(FLAGS, 'gmp_teacher_seqkd', False):
                 gmp_teacher = get_llm(FLAGS.model, FLAGS.seqlen)
                 gmp_teacher.to(device)
+            # DPO dense model: reuse teacher if loaded, else load separately
+            gmp_dpo_dense = None
+            if getattr(FLAGS, 'gmp_dpo_lambda', 0.0) > 0:
+                if gmp_teacher is not None:
+                    gmp_dpo_dense = gmp_teacher  # reuse
+                else:
+                    gmp_dpo_dense = get_llm(FLAGS.model, FLAGS.seqlen)
+                    gmp_dpo_dense.to(device)
+                    gmp_dpo_dense.eval()
+                    for p in gmp_dpo_dense.parameters():
+                        p.requires_grad_(False)
             saved_pruned_model_path = globalprune_gmp(
-                model, tokenizer, train_dataset, FLAGS, teacher_model=gmp_teacher)
-            if gmp_teacher is not None:
-                del gmp_teacher
-                torch.cuda.empty_cache()
+                model, tokenizer, train_dataset, FLAGS,
+                teacher_model=gmp_teacher, dpo_dense_model=gmp_dpo_dense)
+            gmp_teacher = None
+            gmp_dpo_dense = None
+            torch.cuda.empty_cache()
         elif FLAGS.do_kd_admm:
             teacher_model = get_llm(FLAGS.model, FLAGS.seqlen)
             teacher_model.to(device)
@@ -435,6 +554,15 @@ if __name__ == '__main__':
     flags.DEFINE_bool('do_gmp', False, 'Use BEST-style gradual magnitude pruning with Fisher importance.')
     flags.DEFINE_bool('gmp_fixed_mask', False, 'Fix mask from pre-pruned model weights (for sparse SFT). Skips Fisher-based mask updates.')
     flags.DEFINE_bool('gmp_random_cot_ntp', False, 'Use random seqlen-token windows from CoT (no prompt masking) instead of MathCotKDDataset.')
+    flags.DEFINE_bool('gmp_use_fsdp', False, 'Wrap GMP model with FSDP for multi-GPU training (requires torchrun / accelerate launch).')
+    flags.DEFINE_float('gmp_dpo_lambda', 0.0, 'Weight for DPO loss (0 = disabled).')
+    flags.DEFINE_float('gmp_dpo_beta', 0.1, 'DPO beta (temperature).')
+    flags.DEFINE_integer('gmp_dpo_n_pairs', 1024, 'Number of chosen pairs to pre-generate.')
+    flags.DEFINE_integer('gmp_dpo_gen_batch', 8, 'Batch size for DPO continuation generation.')
+    flags.DEFINE_integer('gmp_dpo_max_new_tokens', 512, 'Continuation length for DPO pairs.')
+    flags.DEFINE_float('gmp_dpo_temperature', 0.7, 'Sampling temperature for DPO generation.')
+    flags.DEFINE_integer('gmp_dpo_start_step', 0, 'Step from which to start applying DPO loss.')
+    flags.DEFINE_bool('gmp_dpo_reference_free', False, 'Reference-free DPO: set ref logprobs to 0 (no ref model). Used as ablation control vs pruning-aware DPO.')
     flags.DEFINE_integer('gmp_steps', 4096, 'Total training steps for GMP.')
     flags.DEFINE_integer('gmp_batch_size', 1, 'Per-device batch size for GMP.')
     flags.DEFINE_integer('gmp_grad_accum', 8, 'Gradient accumulation steps for GMP.')
@@ -477,6 +605,26 @@ if __name__ == '__main__':
     flags.DEFINE_integer('gmp_anchor_kd_interval', 32, 'Optimizer steps between anchored KD generations.')
     flags.DEFINE_integer('gmp_anchor_prefix_len', 1536, 'CoT prefix length (tokens) for anchored KD.')
     flags.DEFINE_integer('gmp_anchor_max_new_tokens', 512, 'Max new tokens for anchored student generation.')
+    flags.DEFINE_bool('gmp_teacher_seqkd', False, 'SeqKD: teacher generates sequences, student does NTP on them. No CoT dataset NTP, no KL divergence.')
+
+    # GRPO-OPKD: GRPO-style on-policy KD
+    flags.DEFINE_bool('do_grpo_opkd', False, 'Use GRPO-style on-policy KD (lib/grpo_opkd.py).')
+    flags.DEFINE_integer('gmp_grpo_num_rollouts', 4, 'Number of rollouts per prompt G for GRPO-OPKD.')
+    flags.DEFINE_integer('gmp_grpo_interval', 8, 'Optimizer steps between GRPO-OPKD updates.')
+    flags.DEFINE_float('gmp_grpo_lambda', 1.0, 'Weight for GRPO-OPKD loss.')
+    flags.DEFINE_float('gmp_grpo_eps_clip', 0.2, 'PPO clip range epsilon for GRPO-OPKD.')
+    flags.DEFINE_bool('gmp_correctness_reward', False,
+                      'Use correctness+format reward instead of log-ratio reward in GRPO-OPKD.')
+    flags.DEFINE_float('gmp_format_reward', 0.1,
+                       'Partial reward for correct format (</think>+\\boxed{}) but wrong answer.')
+
+    # Chunk-GRPO-OPKD: chunk-wise teacher-verified on-policy KD
+    flags.DEFINE_bool('do_chunk_grpo_opkd', False, 'Use chunk-wise GRPO-OPKD (lib/grpo_opkd.py).')
+    flags.DEFINE_integer('gmp_chunk_size', 32, 'Tokens per chunk K for chunk-GRPO-OPKD.')
+    flags.DEFINE_float('gmp_chunk_adv_clip', 2.0, 'Advantage clamp value for chunk-GRPO-OPKD.')
+    flags.DEFINE_bool('gmp_chunk_reward_logratio', True, 'Reward = log p_T - log q_old (True) or log p_T only (False).')
+    flags.DEFINE_float('gmp_chunk_kd_lambda', 0.0, 'Weight for on-policy reverse KL on full generated sequence after chunk loop.')
+    flags.DEFINE_float('gmp_l1_lambda', 0.0, '2:4 structured L1 reg: penalizes bottom-(M-N) weights per group-of-M. 0=disabled.')
 
     # KD-ADMM: on-policy distillation inside ADMM loop
     flags.DEFINE_bool('do_kd_admm', False, 'Use on-policy KD loss inside ADMM instead of NTP.')
