@@ -26,6 +26,139 @@ def _dataset_cache_path(cache_dir, jsonl_path, tokenizer_name, **kwargs):
 
 
 # ---------------------------------------------------------------------------
+# Dataset: prompt + gold answer from local JSONL (with pre-extracted answers)
+# ---------------------------------------------------------------------------
+class MathPromptWithAnswerDataset(Dataset):
+    """
+    Loads math prompts and gold answers from a local JSONL file.
+
+    Expected JSONL format (one JSON object per line):
+      {"prompt": "<full prompt with chat template + <think>\\n>", "answer": "<gold answer>"}
+    OR (fallback, constructs prompt via apply_chat_template):
+      {"problem": "<problem text>", "answer": "<gold answer>"}
+
+    Use data/math_220k_with_answers.jsonl (pre-built from math_220k_prompts + cot).
+    """
+    THINK_TAG = "<think>\n"
+
+    def __init__(self, jsonl_path, tokenizer, max_prompt_len=512,
+                 nsamples=None, seed=42, cache_dir="/home1/doyoonkim/projects/elsa/.cache/datasets",
+                 hf_dataset_name=None):  # hf_dataset_name kept for API compat, ignored
+
+        cache_path = _dataset_cache_path(
+            cache_dir, jsonl_path, tokenizer.name_or_path,
+            cls="MathPromptWithAnswerLocal", max_prompt_len=max_prompt_len,
+            nsamples=nsamples, seed=seed,
+        )
+        if os.path.exists(cache_path):
+            try:
+                with open(cache_path, "rb") as f:
+                    self.samples = pickle.load(f)
+                logging.info(
+                    f"MathPromptWithAnswerDataset: loaded {len(self.samples)} samples from cache"
+                )
+                return
+            except (EOFError, pickle.UnpicklingError):
+                logging.warning("MathPromptWithAnswerDataset: corrupted cache, rebuilding")
+                os.remove(cache_path)
+
+        random.seed(seed)
+        with open(jsonl_path) as f:
+            records = [json.loads(l) for l in f]
+
+        if nsamples and nsamples < len(records):
+            records = random.sample(records, nsamples)
+
+        self.samples = []
+        skipped = 0
+        for rec in records:
+            gold = rec.get("answer", "")
+            if not gold:
+                skipped += 1
+                continue
+
+            # 로컬 파일에 이미 prompt 있으면 그대로 사용, 없으면 chat template 적용
+            if "prompt" in rec:
+                prompt_text = rec["prompt"]
+            elif "problem" in rec:
+                prompt_text = tokenizer.apply_chat_template(
+                    [{"role": "user", "content": rec["problem"]}],
+                    tokenize=False,
+                    add_generation_prompt=True,
+                ) + self.THINK_TAG
+            else:
+                skipped += 1
+                continue
+
+            enc = tokenizer(
+                prompt_text,
+                truncation=True,
+                max_length=max_prompt_len,
+                return_tensors="pt",
+                padding=False,
+            )
+            self.samples.append({
+                "input_ids":      enc["input_ids"].squeeze(0),
+                "attention_mask": enc["attention_mask"].squeeze(0),
+                "gold_answer":    gold.strip(),
+            })
+
+        logging.info(
+            f"MathPromptWithAnswerDataset: {len(self.samples)} samples "
+            f"({skipped} skipped)"
+        )
+        with open(cache_path, "wb") as f:
+            pickle.dump(self.samples, f)
+
+    @staticmethod
+    def _extract_boxed(text: str):
+        """Brace-balanced extraction of last \\boxed{} content."""
+        idx = text.rfind(r'\boxed{')
+        if idx == -1:
+            return None
+        depth = 0
+        start = idx + len(r'\boxed{')
+        for i in range(start, len(text)):
+            if text[i] == '{':
+                depth += 1
+            elif text[i] == '}':
+                if depth == 0:
+                    return text[start:i].strip()
+                depth -= 1
+        return None
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        return self.samples[idx]
+
+
+def collate_prompts_with_answers(pad_token_id):
+    """collate_fn for MathPromptWithAnswerDataset — left-pads, keeps gold strings."""
+    def _collate(batch):
+        max_len = max(x["input_ids"].shape[0] for x in batch)
+        input_ids_list, mask_list, golds = [], [], []
+        for x in batch:
+            pad_len = max_len - x["input_ids"].shape[0]
+            input_ids_list.append(
+                torch.cat([torch.full((pad_len,), pad_token_id, dtype=torch.long),
+                           x["input_ids"]])
+            )
+            mask_list.append(
+                torch.cat([torch.zeros(pad_len, dtype=torch.long),
+                           x["attention_mask"]])
+            )
+            golds.append(x["gold_answer"])
+        return {
+            "input_ids":      torch.stack(input_ids_list),
+            "attention_mask": torch.stack(mask_list),
+            "gold_answers":   golds,          # list[str], length B
+        }
+    return _collate
+
+
+# ---------------------------------------------------------------------------
 # Dataset: prompt-only from math 220k JSONL
 # ---------------------------------------------------------------------------
 class MathPromptDataset(Dataset):
@@ -34,15 +167,23 @@ class MathPromptDataset(Dataset):
     Returns tokenized prompt tensors for on-policy generation.
     """
     def __init__(self, jsonl_path, tokenizer, max_prompt_len=512, nsamples=None, seed=42,
-                 cache_dir="/tmp/elsa_dataset_cache"):
+                 cache_dir="/home1/doyoonkim/projects/elsa/.cache/datasets"):
         cache_path = _dataset_cache_path(cache_dir, jsonl_path, tokenizer.name_or_path,
                                          cls="MathPrompt", max_prompt_len=max_prompt_len,
                                          nsamples=nsamples, seed=seed)
         if os.path.exists(cache_path):
-            with open(cache_path, "rb") as f:
-                self.samples = pickle.load(f)
-            logging.info(f"MathPromptDataset: loaded {len(self.samples)} samples from cache {cache_path}")
-            return
+            try:
+                with open(cache_path, "rb") as f:
+                    self.samples = pickle.load(f)
+                if len(self.samples) == 0:
+                    logging.warning(f"MathPromptDataset: empty cache {cache_path}, rebuilding")
+                    os.remove(cache_path)
+                else:
+                    logging.info(f"MathPromptDataset: loaded {len(self.samples)} samples from cache {cache_path}")
+                    return
+            except (EOFError, pickle.UnpicklingError):
+                logging.warning(f"MathPromptDataset: corrupted cache {cache_path}, rebuilding")
+                os.remove(cache_path)
 
         random.seed(seed)
         with open(jsonl_path) as f:
@@ -54,6 +195,10 @@ class MathPromptDataset(Dataset):
         self.samples = []
         for rec in records:
             prompt = rec.get("prompt", "")
+            if not prompt:
+                # fallback: extract prompt from 'text' field by splitting on <think>
+                text = rec.get("text", "")
+                prompt = text.split("<think>")[0].strip() if "<think>" in text else ""
             if not prompt:
                 continue
             enc = tokenizer(
@@ -120,7 +265,7 @@ class MathCotKDDataset(Dataset):
     THINK_TAG = "<think>"
 
     def __init__(self, jsonl_path, tokenizer, max_len=2048, max_prompt_len=512,
-                 nsamples=None, seed=42, cache_dir="/tmp/elsa_dataset_cache",
+                 nsamples=None, seed=42, cache_dir="/home1/doyoonkim/projects/elsa/.cache/datasets",
                  append_eos=False):
         cache_path = _dataset_cache_path(cache_dir, jsonl_path, tokenizer.name_or_path,
                                          cls="MathCotKD" if not append_eos else "MathCotKD_eos",
@@ -128,10 +273,14 @@ class MathCotKDDataset(Dataset):
                                          max_prompt_len=max_prompt_len,
                                          nsamples=nsamples, seed=seed)
         if os.path.exists(cache_path):
-            with open(cache_path, "rb") as f:
-                self.samples = pickle.load(f)
-            logging.info(f"MathCotKDDataset: loaded {len(self.samples)} samples from cache {cache_path}")
-            return
+            try:
+                with open(cache_path, "rb") as f:
+                    self.samples = pickle.load(f)
+                logging.info(f"MathCotKDDataset: loaded {len(self.samples)} samples from cache {cache_path}")
+                return
+            except (EOFError, pickle.UnpicklingError):
+                logging.warning(f"MathCotKDDataset: corrupted cache {cache_path}, rebuilding")
+                os.remove(cache_path)
 
         random.seed(seed)
         with open(jsonl_path) as f:
