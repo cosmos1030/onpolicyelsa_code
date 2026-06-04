@@ -16,7 +16,7 @@
   - Top-N per group 보호 → 나머지에서 global threshold pruning
 - **SparseGPT 2:4**: RAC `grpo.py`의 `--prune_N=2 --prune_M=4` 플래그 사용 (기존 지원)
 - **SparseGPT 2:4 + Retrain**: SparseGPT pruned model → `gmp_fixed_mask=true`로 mask 고정 후 retrain
-- **GMP 2:4 structured L1**: training 중 bottom-2 per group에 L1 penalty — `gmp_l1_lambda` 플래그, mean-normalized, already-pruned 제외
+- **GMP 2:4 bottom-2 L1**: training 중 각 group-of-4의 bottom-2 (magnitude 기준, 최종적으로 pruned될 위치)에만 L1 penalty — top-2는 보호, already-pruned 제외, mean-normalized
 - **On-policy KD (MiniLLM-style)**: reverse KL, on-policy rollout, `gmp_onpolicy_pg=true`, 8 steps마다 1회
 
 ---
@@ -29,7 +29,7 @@
 | 2 | SparseGPT 2:4 one-shot | `ee91pxth` | ✅ 완료 | 0.370 |
 | 3 | SparseGPT 2:4 + Retrain NTP | `41nql157` | ✅ 완료 | 0.542 (lr=2e-4) |
 | 4 | SparseGPT 2:4 + Retrain OPKD | `pmcsozwk` | ✅ 완료 | 0.550 (lr=2e-4, kd=1) |
-| 5 | GMP 2:4 NTP + L1 reg | `cv3f7v9l` | ✅ 완료 | 0.334 (l1=1e-4) |
+| 5 | GMP 2:4 NTP + bottom-2 L1 reg | `cv3f7v9l` | ✅ 완료 | 0.334 (l1=1e-4) |
 | 6 | GMP 2:4 NTP + OPKD | `oxuyfsii` | ✅ 완료 | 0.390 (lr=1e-4, kd=4) |
 | 7 | SparseGPT 2:4 + Retrain chunk GRPO | `870vg461` | ✅ 완료 | 0.552 (lr=2e-4, grpo=0.1) |
 
@@ -72,7 +72,7 @@ calibration: math_cot 1M tokens
 | 1e-4 | 0.530 | 0.548 | 0.510 |
 | **2e-4** | **0.550** | 0.538 | 0.518 |
 
-### 5. GMP 2:4 NTP + L1 reg (sweep `cv3f7v9l`)
+### 5. GMP 2:4 NTP + bottom-2 L1 reg (sweep `cv3f7v9l`)
 
 lr=2e-4 고정, l1_lambda 탐색 — bottom-2 per group에 structured L1 penalty
 
@@ -105,13 +105,12 @@ lr × kd_lambda grid (3×3=9 runs)
 | Method | MATH-500 |
 |--------|----------|
 | GMP 2:4 NTP (best) | 0.344 |
+| GMP 2:4 NTP + bottom-2 L1 reg (best) | 0.334 |
+| GMP 2:4 NTP + OPKD (best) | 0.390 |
 | SparseGPT 2:4 one-shot | 0.370 |
 | SparseGPT 2:4 + Retrain NTP (best) | 0.542 |
-| SparseGPT 2:4 + Retrain OPKD (best) | **0.550** |
-| GMP 2:4 NTP + L1 reg | 🔄 |
-| GMP 2:4 NTP + OPKD (best) | 0.390 |
 | SparseGPT 2:4 + Retrain OPKD (best) | 0.550 |
-| SparseGPT 2:4 + Retrain chunk GRPO (best) | **0.552** |
+| **SparseGPT 2:4 + Retrain chunk GRPO (best)** | **0.552** |
 
 ---
 

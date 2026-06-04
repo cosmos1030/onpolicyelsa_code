@@ -624,7 +624,12 @@ if __name__ == '__main__':
     flags.DEFINE_float('gmp_chunk_adv_clip', 2.0, 'Advantage clamp value for chunk-GRPO-OPKD.')
     flags.DEFINE_bool('gmp_chunk_reward_logratio', True, 'Reward = log p_T - log q_old (True) or log p_T only (False).')
     flags.DEFINE_float('gmp_chunk_kd_lambda', 0.0, 'Weight for on-policy reverse KL on full generated sequence after chunk loop.')
-    flags.DEFINE_float('gmp_l1_lambda', 0.0, '2:4 structured L1 reg: penalizes bottom-(M-N) weights per group-of-M. 0=disabled.')
+    flags.DEFINE_float('gmp_l1_lambda', 0.0, 'L1 regularization weight. 0=disabled.')
+    flags.DEFINE_bool('gmp_l1_structured', True, 'True=bottom-2 per group L1 (2:4 structured), False=use gmp_l1_mode.')
+    flags.DEFINE_enum('gmp_l1_mode', 'plain', ['plain', 'inv_fisher_sqrt'],
+                      'L1 mode when gmp_l1_structured=False. plain=mean|w|, inv_fisher_sqrt=|w|/sqrt(clamp(f/mean_f)).')
+    flags.DEFINE_float('gmp_l1_fisher_clip_min', 0.1, 'Min clamp for normalized Fisher in inv_fisher_sqrt L1.')
+    flags.DEFINE_float('gmp_l1_fisher_clip_max', 10.0, 'Max clamp for normalized Fisher in inv_fisher_sqrt L1.')
 
     # KD-ADMM: on-policy distillation inside ADMM loop
     flags.DEFINE_bool('do_kd_admm', False, 'Use on-policy KD loss inside ADMM instead of NTP.')

@@ -96,6 +96,56 @@ def _structured_l1_loss(named_params: dict, masks: dict, prune_n: int, prune_m: 
     return total / count
 
 
+def _gmp_l1_regularizer(named_params, maskmgr, fisher, mode="plain",
+                        clip_min=0.1, clip_max=10.0):
+    """L1 regularization term for GMP training.
+
+    mode="plain":
+        mean |w_i| over alive weights (mean-normalized across layers)
+
+    mode="inv_fisher_sqrt":
+        mean  |w_i| / sqrt(clamp(f_i / mean(f_alive), clip_min, clip_max))
+        Weights with high Fisher (important) get lower penalty,
+        weights with low Fisher (pruning candidates) get higher penalty.
+        Falls back to plain L1 if Fisher state not yet available.
+    """
+    reg_terms = []
+    for name, param in named_params.items():
+        if param.ndim != 2:
+            continue
+        mask = maskmgr.masks.get(name)
+        if mask is None:
+            continue
+        alive = mask.bool()
+        if alive.sum() == 0:
+            continue
+
+        w_abs = param.abs()
+
+        if mode == "plain":
+            reg_terms.append(w_abs[alive].mean())
+
+        elif mode == "inv_fisher_sqrt":
+            f = fisher.fisher_factor(param)
+            if f is None:
+                # fallback: no Adam state yet
+                reg_terms.append(w_abs[alive].mean())
+                continue
+            f = f.detach()
+            f_alive = f[alive]
+            f_mean = f_alive.mean().clamp_min(1e-12)
+            f_norm = (f / f_mean).clamp(min=clip_min, max=clip_max)
+            weight = 1.0 / torch.sqrt(f_norm)
+            reg_terms.append((w_abs * weight)[alive].mean())
+
+        else:
+            raise ValueError(f"Unknown gmp_l1_mode: {mode}")
+
+    if not reg_terms:
+        return None
+    return torch.stack(reg_terms).mean()
+
+
 def _cubic_sparsity(step, total_steps, final_sparsity, warmup_steps=0):
     """Cubic schedule: s_t = s_final * (1 - (1 - (t-warmup)/(T-warmup))^3)."""
     if step < warmup_steps:
@@ -130,13 +180,15 @@ class FisherAccumulator:
         """No-op: Adam updates exp_avg_sq automatically in optimizer.step()."""
         self._step += 1
 
-    def importance(self, name, param):
-        """Fisher-weighted magnitude: v_hat_ii * w_i^2, using Adam's exp_avg_sq."""
+    def fisher_factor(self, param):
+        """Return bias-corrected Adam second moment f_i (empirical Fisher diagonal).
+
+        Returns None before the first optimizer step (no state yet).
+        """
         st = self.optimizer.state.get(param, {})
         v = st.get('exp_avg_sq', None)
         if v is None:
-            return param.data ** 2  # fallback before first optimizer step
-        # DTensor (FSDP2): redistribute to local replica before use
+            return None
         if _DTENSOR_AVAILABLE and isinstance(v, DTensor):
             v = v.redistribute(placements=[Replicate()]).to_local()
         f = v.float()
@@ -146,6 +198,13 @@ class FisherAccumulator:
         beta2 = self.optimizer.param_groups[0].get('betas', (0.9, 0.999))[1]
         if step > 0:
             f = f / (1.0 - beta2 ** step)
+        return f
+
+    def importance(self, name, param):
+        """Fisher-weighted magnitude: v_hat_ii * w_i^2, using Adam's exp_avg_sq."""
+        f = self.fisher_factor(param)
+        if f is None:
+            return param.data ** 2  # fallback before first optimizer step
         imp = f * param.data ** 2
         if imp.sum() == 0:
             imp = param.data ** 2
@@ -730,8 +789,12 @@ def globalprune_gmp(
 
     rollout_buffer = RolloutBuffer() if use_rollout else None
 
-    fixed_mask     = getattr(FLAGS, 'gmp_fixed_mask', False)
-    l1_lambda      = getattr(FLAGS, 'gmp_l1_lambda', 0.0)
+    fixed_mask       = getattr(FLAGS, 'gmp_fixed_mask', False)
+    l1_lambda        = getattr(FLAGS, 'gmp_l1_lambda', 0.0)
+    l1_structured    = getattr(FLAGS, 'gmp_l1_structured', True)
+    l1_mode          = getattr(FLAGS, 'gmp_l1_mode', 'plain')
+    l1_fisher_cmin   = getattr(FLAGS, 'gmp_l1_fisher_clip_min', 0.1)
+    l1_fisher_cmax   = getattr(FLAGS, 'gmp_l1_fisher_clip_max', 10.0)
 
     # N:M semi-structured sparsity support (e.g. "2:4")
     sparsity_type = getattr(FLAGS, 'sparsity_type', 'unstructured')
@@ -741,10 +804,11 @@ def globalprune_gmp(
         logging.info(f"  N:M semi-structured sparsity: {prune_n}:{prune_m}")
     use_l1 = l1_lambda > 0.0
     if use_l1:
-        if prune_n > 0 and prune_m > 0:
-            logging.info(f"  Structured L1 (N:M) regularization: lambda={l1_lambda}")
+        use_structured_l1 = l1_structured and prune_n > 0 and prune_m > 0
+        if use_structured_l1:
+            logging.info(f"  Bottom-2 structured L1: lambda={l1_lambda}")
         else:
-            logging.info(f"  Plain L1 regularization: lambda={l1_lambda}")
+            logging.info(f"  L1 mode={l1_mode}: lambda={l1_lambda}")
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.0)
     fisher  = FisherAccumulator(named_params, optimizer)
@@ -966,20 +1030,17 @@ def globalprune_gmp(
                     accum_ntp += ntp_loss.item() / grad_accum
 
             if use_l1:
-                if prune_n > 0 and prune_m > 0:
+                if use_structured_l1:
                     l1 = _structured_l1_loss(named_params, maskmgr.masks, prune_n, prune_m)
                 else:
-                    # Unstructured: L1 on alive (non-pruned) weights only, mean-normalized.
-                    # maskmgr.masks[name] == True means KEEP, False means pruned.
-                    alive_sum = sum(
-                        (p * maskmgr.masks[n].to(p.dtype)).abs().sum()
-                        for n, p in named_params.items()
-                    )
-                    alive_cnt = sum(maskmgr.masks[n].sum().item() for n in named_params)
-                    l1 = alive_sum / max(alive_cnt, 1)
-                l1_term = l1_lambda * l1 / grad_accum
-                loss = loss + l1_term
-                accum_l1 += l1_term.item()
+                    l1 = _gmp_l1_regularizer(named_params, maskmgr, fisher,
+                                             mode=l1_mode,
+                                             clip_min=l1_fisher_cmin,
+                                             clip_max=l1_fisher_cmax)
+                if l1 is not None:
+                    l1_term = l1_lambda * l1 / grad_accum
+                    loss = loss + l1_term
+                    accum_l1 += l1_term.item()
 
             if torch.isnan(loss) or torch.isinf(loss):
                 logging.warning(f"NaN/Inf loss at micro_step {micro_step}, skipping")
