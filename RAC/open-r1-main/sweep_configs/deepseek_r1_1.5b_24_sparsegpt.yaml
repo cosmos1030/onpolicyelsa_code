@@ -1,0 +1,41 @@
+# wandb sweep: DeepSeek-R1-Distill-Qwen-1.5B SparseGPT 2:4 semi-structured pruning
+# Fixed at 50% sparsity (2:4 → exactly 50% per group of 4)
+# Auto math500 eval via lighteval+vLLM after pruning
+#
+# Usage:
+#   cd /home1/doyoonkim/projects/RAC/open-r1-main
+#   WANDB_API_KEY=$(grep WANDB_API_KEY ~/.bashrc | cut -d'=' -f2 | tail -1) \
+#     wandb sweep sweep_configs/deepseek_r1_1.5b_24_sparsegpt.yaml
+#   sbatch scripts/slurm_sweep_agent_deepseek_24_sparsegpt.sh <SWEEP_ID>
+
+program: src/open_r1/grpo.py
+command:
+  - ${env}
+  - /home1/doyoonkim/miniconda3/envs/rac/bin/python
+  - ${program}
+  - --config
+  - recipes/DeepSeek-R1-Distill-Qwen-1.5B/grpo/config_pruning.yaml
+  - --dataset_name=/home1/doyoonkim/projects/RAC/open-r1-main/math_trace/dataset_DeepSeek-R1-Distill-Qwen-1_trace_OpenR1-Math-220k_.jsonl
+  - --dataset_prompt_column=prompt
+  - --do_train=False
+  - --prune=True
+  - --pruning_method=SparseGPT
+  - --prune_sparsity=0.5
+  - --prune_N=2
+  - --prune_M=4
+  - --prune_calib_tokens=1_000_000
+  - --math_eval_max_new_tokens=8192
+  - --math_eval_max_samples=500
+  - --push_to_hub=False
+  - --score_completions=False
+  - --report_to=wandb
+  - ${args}
+
+name: sparsegpt_24_deepseek_1.5b
+method: grid
+project: gmp_24_semi_structured
+entity: dyk6208-gwangju-institute-of-science-and-technology
+
+parameters:
+  prune_calib_tokens:
+    value: 1_000_000
