@@ -1,0 +1,36 @@
+program: chunk_diag.py
+method: grid
+project: gmp_qwen3_1.5b_v2
+name: chunk_diag_s70pct_v1
+entity: dyk6208-gwangju-institute-of-science-and-technology
+
+command:
+  - /home1/doyoonkim/miniconda3/envs/rac/bin/python
+  - ${program}
+  - ${args}
+
+metric:
+  name: diag/acc
+  goal: maximize
+
+parameters:
+  method:
+    values: ["A", "B", "C", "D", "E"]
+  student:
+    value: "/home1/doyoonkim/projects/elsa/models/gmp_s70pct_lr0.0001_onpol_lmda1_20260515_234522"
+  teacher:
+    value: "/home1/doyoonkim/.cache/huggingface/hub/models--deepseek-ai--DeepSeek-R1-Distill-Qwen-1.5B/snapshots/ad9f0ae0864d7fbcd1cd905e3c6c5b069cc8b562"
+  max_samples:
+    value: 100
+  max_new_tokens:
+    value: 8192
+  chunk_size:
+    value: 128
+  num_candidates:
+    value: 4
+  temperature:
+    value: 0.6
+  top_p:
+    value: 0.95
+  seed:
+    value: 42
