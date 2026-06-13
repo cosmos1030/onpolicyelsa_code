@@ -753,6 +753,7 @@ def globalprune_gmp(
     dpo_temperature   = getattr(FLAGS, 'gmp_dpo_temperature', 0.7)
     dpo_start_step    = getattr(FLAGS, 'gmp_dpo_start_step', 0)
     dpo_reference_free = getattr(FLAGS, 'gmp_dpo_reference_free', False)
+    dpo_loss_type      = getattr(FLAGS, 'gmp_dpo_loss_type', 'sigmoid')
     use_dpo = (dpo_lambda > 0.0) and (dpo_dense_model is not None)
 
     if use_kd or use_hidden or use_onpolicy or use_teacher_seqkd:
@@ -872,11 +873,14 @@ def globalprune_gmp(
             tokenizer=tokenizer,
             max_prompt_len=getattr(FLAGS, 'gmp_max_prompt_len', 512),
         )
+        _dpo_cache_dir = getattr(FLAGS, 'gmp_dpo_cache_dir', '') or None
         dpo_chosen_cache = generate_chosen_cache(
             dpo_dense_model, tokenizer, _dpo_prompt_ds,
             n_pairs=dpo_n_pairs, gen_batch_size=dpo_gen_batch,
             max_new_tokens=dpo_max_new, temperature=dpo_temperature,
             device=device,
+            cache_dir=_dpo_cache_dir,
+            prompt_path=_dpo_prompt_path or "",
         )
         # Pruning-aware DPO init:
         # ref = pre-first-mask snapshot (model not yet pruned at all)
@@ -1413,6 +1417,7 @@ def globalprune_gmp(
                         policy_out["chosen_logps"], policy_out["rejected_logps"],
                         ref_out["chosen_logps"],   ref_out["rejected_logps"],
                         beta=dpo_beta,
+                        loss_type=dpo_loss_type,
                         reference_free=dpo_reference_free,
                     )
                     dpo_l = losses.mean()

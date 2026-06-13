@@ -563,6 +563,8 @@ if __name__ == '__main__':
     flags.DEFINE_float('gmp_dpo_temperature', 0.7, 'Sampling temperature for DPO generation.')
     flags.DEFINE_integer('gmp_dpo_start_step', 0, 'Step from which to start applying DPO loss.')
     flags.DEFINE_bool('gmp_dpo_reference_free', False, 'Reference-free DPO: set ref logprobs to 0 (no ref model). Used as ablation control vs pruning-aware DPO.')
+    flags.DEFINE_string('gmp_dpo_loss_type', 'sigmoid', 'DPO/IPO loss type passed to dpo_loss(): sigmoid, ipo, hinge, robust, etc.')
+    flags.DEFINE_string('gmp_dpo_cache_dir', '/home1/doyoonkim/projects/elsa/.cache/dpo_chosen', 'Directory to persist chosen cache across runs. Set empty string to disable.')
     flags.DEFINE_integer('gmp_steps', 4096, 'Total training steps for GMP.')
     flags.DEFINE_integer('gmp_batch_size', 1, 'Per-device batch size for GMP.')
     flags.DEFINE_integer('gmp_grad_accum', 8, 'Gradient accumulation steps for GMP.')
