@@ -1369,11 +1369,6 @@ def globalprune_gmp(
                         logging.warning(f"NaN/Inf on-policy loss at step {step} micro {_op_i}, skipping")
                     else:
                         op_loss.backward()
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), onpolicy_grad_clip)
-                        fisher.update()
-                        optimizer.step()
-                        optimizer.zero_grad()
-                        maskmgr.apply(fsdp_model)
                         accum_onpolicy += op_kl.item()
 
                     _diag_kl      += op_kl.item()
