@@ -1,0 +1,52 @@
+{
+  "C_chunk_bon_teacher": {
+    "acc": 0.59,
+    "avg_len": 3894.4,
+    "truncation_rate": 0.31,
+    "has_think_close_rate": 0.69,
+    "boxed_rate": 0.69,
+    "n": 100,
+    "time_s": 12480.6,
+    "method": "C_chunk_bon_teacher"
+  },
+  "A_student_sampling": {
+    "acc": 0.52,
+    "avg_len": 5092.2,
+    "truncation_rate": 0.47,
+    "has_think_close_rate": 0.56,
+    "boxed_rate": 0.57,
+    "n": 100,
+    "time_s": 5222.8,
+    "method": "A_student_sampling"
+  },
+  "E_chunk_bon_logratio": {
+    "acc": 0.58,
+    "avg_len": 4262.0,
+    "truncation_rate": 0.35,
+    "has_think_close_rate": 0.66,
+    "boxed_rate": 0.66,
+    "n": 100,
+    "time_s": 19755.2,
+    "method": "E_chunk_bon_logratio"
+  },
+  "B_seq_bon_teacher": {
+    "acc": 0.32,
+    "avg_len": 6261.3,
+    "truncation_rate": 0.68,
+    "has_think_close_rate": 0.33,
+    "boxed_rate": 0.34,
+    "n": 100,
+    "time_s": 22198.4,
+    "method": "B_seq_bon_teacher"
+  },
+  "D_seq_bon_logratio": {
+    "acc": 0.31,
+    "avg_len": 6378.6,
+    "truncation_rate": 0.69,
+    "has_think_close_rate": 0.32,
+    "boxed_rate": 0.35,
+    "n": 100,
+    "time_s": 22323.8,
+    "method": "D_seq_bon_logratio"
+  }
+}
