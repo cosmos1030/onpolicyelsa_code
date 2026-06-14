@@ -278,6 +278,102 @@ def _flush_right(attention_mask, *tensors):
 # DPO loss (ported from DPOTrainer.dpo_loss)
 # ---------------------------------------------------------------------------
 
+@torch.no_grad()
+def get_completion_token_logps(
+    model: nn.Module,
+    prompt_input_ids: torch.Tensor,
+    prompt_attention_mask: torch.Tensor,
+    completion_input_ids: torch.Tensor,
+    completion_attention_mask: torch.Tensor,
+) -> torch.Tensor:
+    """Per-token log-probs for completion tokens only. Returns [B, comp_len].
+
+    logits[:, prompt_len-1+k, :] predicts completion_input_ids[:, k],
+    so we extract those logits and gather the actual token logprobs.
+    """
+    input_ids = torch.cat([prompt_input_ids, completion_input_ids], dim=1)
+    attention_mask = torch.cat([prompt_attention_mask, completion_attention_mask], dim=1)
+    with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+        outputs = model(input_ids=input_ids, attention_mask=attention_mask, use_cache=False)
+    logits = outputs.logits.float()
+    prompt_len = prompt_input_ids.shape[1]
+    comp_len = completion_input_ids.shape[1]
+    comp_logits = logits[:, prompt_len - 1: prompt_len - 1 + comp_len, :]
+    log_probs = F.log_softmax(comp_logits, dim=-1)
+    token_logps = log_probs.gather(-1, completion_input_ids.unsqueeze(-1)).squeeze(-1)
+    return token_logps * completion_attention_mask.float()
+
+
+def ca_ipo_loss(
+    policy_chosen_token_logps: torch.Tensor,
+    policy_rejected_token_logps: torch.Tensor,
+    ref_chosen_token_logps: torch.Tensor,
+    ref_rejected_token_logps: torch.Tensor,
+    teacher_chosen_token_logps: torch.Tensor,
+    teacher_rejected_token_logps: torch.Tensor,
+    chosen_mask: torch.Tensor,
+    rejected_mask: torch.Tensor,
+    ref_chosen_logps_avg: torch.Tensor,
+    ref_rejected_logps_avg: torch.Tensor,
+    policy_chosen_logps_avg: torch.Tensor,
+    policy_rejected_logps_avg: torch.Tensor,
+    beta: float = 1.0,
+    eps_credit: float = 1e-6,
+) -> tuple[torch.Tensor, dict]:
+    """CA-IPO loss: token-credit-weighted IPO surrogate.
+
+    delta (IPO residual) uses the same sequence-average log-ratios as
+    existing IPO for a fair comparison. Only the gradient allocation
+    (delta_w) is reweighted by teacher-student discrepancy.
+
+    Stop-gradients: e, w_pos, w_neg are all detached.
+    """
+    chosen_mask  = chosen_mask.float()
+    rejected_mask = rejected_mask.float()
+
+    # token-level log-ratios for policy vs ref
+    z_s_pos = (policy_chosen_token_logps  - ref_chosen_token_logps)  * chosen_mask
+    z_s_neg = (policy_rejected_token_logps - ref_rejected_token_logps) * rejected_mask
+
+    # credit weights: teacher vs student discrepancy (ref cancels)
+    with torch.no_grad():
+        a_pos = torch.relu(teacher_chosen_token_logps  - policy_chosen_token_logps.detach())  * chosen_mask
+        a_neg = torch.relu(policy_rejected_token_logps.detach() - teacher_rejected_token_logps) * rejected_mask
+
+        a_pos = a_pos + eps_credit * chosen_mask
+        a_neg = a_neg + eps_credit * rejected_mask
+
+        pos_count = chosen_mask.sum(dim=-1, keepdim=True).clamp_min(1.0)
+        neg_count = rejected_mask.sum(dim=-1, keepdim=True).clamp_min(1.0)
+        w_pos = a_pos / a_pos.sum(dim=-1, keepdim=True).clamp_min(1e-8) * pos_count
+        w_neg = a_neg / a_neg.sum(dim=-1, keepdim=True).clamp_min(1e-8) * neg_count
+
+    # IPO residual: same definition as existing IPO (sequence-average log-ratio)
+    tau = 1.0 / (2.0 * beta)
+    delta = (policy_chosen_logps_avg - ref_chosen_logps_avg) - \
+            (policy_rejected_logps_avg - ref_rejected_logps_avg)
+    e = (delta - tau).detach()
+
+    # CA-IPO surrogate margin
+    delta_w = (w_pos * z_s_pos).sum(dim=-1) - (w_neg * z_s_neg).sum(dim=-1)
+
+    loss = (e * delta_w).mean()
+
+    metrics = {
+        "ca_ipo/loss":       loss.detach(),
+        "ca_ipo/delta":      delta.detach().mean(),
+        "ca_ipo/e_abs":      e.abs().mean(),
+        "ca_ipo/delta_w":    delta_w.detach().mean(),
+        "ca_ipo/w_pos_max":  w_pos.max(dim=-1).values.mean(),
+        "ca_ipo/w_neg_max":  w_neg.max(dim=-1).values.mean(),
+        "ca_ipo/w_pos_mean": (w_pos * chosen_mask).sum() / chosen_mask.sum().clamp_min(1),
+        "ca_ipo/w_neg_mean": (w_neg * rejected_mask).sum() / rejected_mask.sum().clamp_min(1),
+        "ca_ipo/a_pos_mean": (a_pos * chosen_mask).sum() / chosen_mask.sum().clamp_min(1),
+        "ca_ipo/a_neg_mean": (a_neg * rejected_mask).sum() / rejected_mask.sum().clamp_min(1),
+    }
+    return loss, metrics
+
+
 def dpo_loss(
     chosen_logps: torch.FloatTensor,
     rejected_logps: torch.FloatTensor,
@@ -436,6 +532,7 @@ def generate_chosen_cache(
     device: str = "cuda",
     cache_dir: str | None = None,
     prompt_path: str = "",
+    store_teacher_logps: bool = False,
 ) -> list[dict]:
     """
     Pre-generate chosen (dense) continuations for n_pairs prompts.
@@ -475,15 +572,26 @@ def generate_chosen_cache(
             max_new_tokens=max_new_tokens, temperature=temperature,
         )
 
+        # Optionally compute teacher (dense model) token logps for CA-IPO
+        if store_teacher_logps:
+            teacher_tok_logps = get_completion_token_logps(
+                dense_model,
+                prompt_ids, prompt_mask,
+                cont_ids.to(device), cont_mask.to(device),
+            ).cpu()
+
         for i in range(prompt_ids.shape[0]):
             if len(cache) >= n_pairs:
                 break
-            cache.append({
+            entry = {
                 "prompt_input_ids":       prompt_ids[i:i+1].cpu(),
                 "prompt_attention_mask":  prompt_mask[i:i+1].cpu(),
                 "chosen_input_ids":       cont_ids[i:i+1].cpu(),
                 "chosen_attention_mask":  cont_mask[i:i+1].cpu(),
-            })
+            }
+            if store_teacher_logps:
+                entry["teacher_chosen_token_logps"] = teacher_tok_logps[i:i+1]
+            cache.append(entry)
     logging.info(f"Chosen cache ready: {len(cache)} pairs")
 
     if cache_dir:
@@ -517,12 +625,14 @@ class RejectedQueue:
         gen_batch_size: int = 8,
         max_new_tokens: int = 512,
         temperature: float = 0.7,
+        teacher_model: nn.Module | None = None,
     ):
         self.chosen_cache   = chosen_cache
         self.mask_interval  = mask_interval
         self.gen_batch_size = gen_batch_size
         self.max_new_tokens = max_new_tokens
         self.temperature    = temperature
+        self.teacher_model  = teacher_model  # for CA-IPO: compute teacher logps on rejected
         self._queue: deque  = deque()
         self._ptr: int      = 0   # pointer into chosen_cache
 
@@ -562,12 +672,34 @@ class RejectedQueue:
         results_ids  = torch.cat(padded_ids,   dim=0)  # [n, max_cont_len]
         results_mask = torch.cat(padded_masks, dim=0)  # [n, max_cont_len]
 
+        # If teacher_model provided (CA-IPO), compute teacher token logps on rejected
+        teacher_rejected_logps = None
+        if self.teacher_model is not None:
+            # Batch all (prompt, rejected) pairs for teacher forward
+            teacher_logps_list = []
+            for start in range(0, len(idxs), self.gen_batch_size):
+                end = start + self.gen_batch_size
+                batch_idxs = idxs[start:end]
+                p_ids  = torch.cat([self.chosen_cache[i]["prompt_input_ids"]  for i in batch_idxs], dim=0).to(device)
+                p_msk  = torch.cat([self.chosen_cache[i]["prompt_attention_mask"] for i in batch_idxs], dim=0).to(device)
+                r_ids  = results_ids[start:end].to(device)
+                r_msk  = results_mask[start:end].to(device)
+                # Pad rejected to same length within this sub-batch (already same via stacking above)
+                t_logps = get_completion_token_logps(
+                    self.teacher_model, p_ids, p_msk, r_ids, r_msk,
+                )
+                teacher_logps_list.append(t_logps.cpu())
+            teacher_rejected_logps = torch.cat(teacher_logps_list, dim=0)  # [n, max_cont_len]
+
         for local_i, global_idx in enumerate(idxs):
-            self._queue.append({
+            entry = {
                 **self.chosen_cache[global_idx],
                 "rejected_input_ids":       results_ids[local_i:local_i+1],
                 "rejected_attention_mask":  results_mask[local_i:local_i+1],
-            })
+            }
+            if teacher_rejected_logps is not None:
+                entry["teacher_rejected_token_logps"] = teacher_rejected_logps[local_i:local_i+1]
+            self._queue.append(entry)
         logging.info(f"RejectedQueue refilled: {len(self._queue)} pairs ready")
 
     def pop(self) -> dict | None:

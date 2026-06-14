@@ -864,8 +864,13 @@ def globalprune_gmp(
     dpo_ref_model      = None
     dpo_rejected_queue = None
 
+    use_ca_ipo = (dpo_loss_type == "ca_ipo")
+
     if use_dpo and is_main_process:
-        from lib.gmp_dpo import generate_chosen_cache, RejectedQueue, concatenated_forward, dpo_loss as _dpo_loss
+        from lib.gmp_dpo import (generate_chosen_cache, RejectedQueue,
+                                  concatenated_forward, dpo_loss as _dpo_loss,
+                                  ca_ipo_loss as _ca_ipo_loss,
+                                  get_completion_token_logps as _get_token_logps)
         from lib.gkd_admm_trainer import MathPromptDataset
         _dpo_prompt_path = getattr(FLAGS, 'gmp_prompt_path', None) or getattr(FLAGS, 'data_path', None)
         _dpo_prompt_ds = MathPromptDataset(
@@ -881,6 +886,7 @@ def globalprune_gmp(
             device=device,
             cache_dir=_dpo_cache_dir,
             prompt_path=_dpo_prompt_path or "",
+            store_teacher_logps=use_ca_ipo,
         )
         # Pruning-aware DPO init:
         # ref = pre-first-mask snapshot (model not yet pruned at all)
@@ -895,16 +901,19 @@ def globalprune_gmp(
             gen_batch_size=dpo_gen_batch,
             max_new_tokens=dpo_max_new,
             temperature=dpo_temperature,
+            teacher_model=dpo_dense_model if use_ca_ipo else None,
         )
         # initial fill: rejected from un-pruned model (step 0)
         model.eval()
         dpo_rejected_queue.refill(model, tokenizer, str(device))
         model.train()
         maskmgr.apply(fsdp_model)
-        logging.info(f"  DPO: lambda={dpo_lambda}, beta={dpo_beta}, "
+        logging.info(f"  DPO: lambda={dpo_lambda}, beta={dpo_beta}, loss_type={dpo_loss_type}, "
                      f"n_pairs={dpo_n_pairs}, max_new={dpo_max_new}, start_step={dpo_start_step}")
     elif use_dpo:
-        from lib.gmp_dpo import concatenated_forward, dpo_loss as _dpo_loss
+        from lib.gmp_dpo import (concatenated_forward, dpo_loss as _dpo_loss,
+                                  ca_ipo_loss as _ca_ipo_loss,
+                                  get_completion_token_logps as _get_token_logps)
 
     model.train()
     optimizer.zero_grad()
@@ -923,6 +932,7 @@ def globalprune_gmp(
     accum_dpo_ref_chosen_logp   = 0.0
     accum_dpo_ref_rejected_logp = 0.0
     accum_dpo_margin            = 0.0
+    accum_ca_ipo_diag: dict     = {}
     accum_diag: dict = {}
     accum_diag_n = 0
     accum_onpolicy_diag: dict = {}
@@ -1408,17 +1418,50 @@ def globalprune_gmp(
                                 "chosen_logps":   torch.zeros_like(policy_out["chosen_logps"]),
                                 "rejected_logps": torch.zeros_like(policy_out["rejected_logps"]),
                             }
-                    losses, chosen_rew, rejected_rew = _dpo_loss(
-                        policy_out["chosen_logps"], policy_out["rejected_logps"],
-                        ref_out["chosen_logps"],   ref_out["rejected_logps"],
-                        beta=dpo_beta,
-                        loss_type=dpo_loss_type,
-                        reference_free=dpo_reference_free,
-                    )
-                    dpo_l = losses.mean()
+                    if use_ca_ipo:
+                        # CA-IPO: get token-level logps for policy and ref
+                        _p_ids   = pair_dev["prompt_input_ids"]
+                        _p_msk   = pair_dev["prompt_attention_mask"]
+                        _c_ids   = pair_dev["chosen_input_ids"]
+                        _c_msk   = pair_dev["chosen_attention_mask"]
+                        _r_ids   = pair_dev["rejected_input_ids"]
+                        _r_msk   = pair_dev["rejected_attention_mask"]
+                        with torch.no_grad():
+                            policy_chosen_tok  = _get_token_logps(model,   _p_ids, _p_msk, _c_ids, _c_msk)
+                            policy_rej_tok     = _get_token_logps(model,   _p_ids, _p_msk, _r_ids, _r_msk)
+                            ref_chosen_tok     = _get_token_logps(dpo_ref_model, _p_ids, _p_msk, _c_ids, _c_msk)
+                            ref_rej_tok        = _get_token_logps(dpo_ref_model, _p_ids, _p_msk, _r_ids, _r_msk)
+                        teacher_chosen_tok  = pair_dev["teacher_chosen_token_logps"].to(device)
+                        teacher_rej_tok     = pair_dev["teacher_rejected_token_logps"].to(device)
+                        _eps_credit = getattr(FLAGS, 'gmp_ca_ipo_eps_credit', 1e-6)
+                        dpo_l, _ca_metrics = _ca_ipo_loss(
+                            policy_chosen_tok, policy_rej_tok,
+                            ref_chosen_tok,    ref_rej_tok,
+                            teacher_chosen_tok, teacher_rej_tok,
+                            _c_msk.float(), _r_msk.float(),
+                            ref_chosen_logps_avg=ref_out["chosen_logps"],
+                            ref_rejected_logps_avg=ref_out["rejected_logps"],
+                            policy_chosen_logps_avg=policy_out["chosen_logps"],
+                            policy_rejected_logps_avg=policy_out["rejected_logps"],
+                            beta=dpo_beta,
+                            eps_credit=_eps_credit,
+                        )
+                    else:
+                        losses, chosen_rew, rejected_rew = _dpo_loss(
+                            policy_out["chosen_logps"], policy_out["rejected_logps"],
+                            ref_out["chosen_logps"],   ref_out["rejected_logps"],
+                            beta=dpo_beta,
+                            loss_type=dpo_loss_type,
+                            reference_free=dpo_reference_free,
+                        )
+                        dpo_l = losses.mean()
+
                     if not (torch.isnan(dpo_l) or torch.isinf(dpo_l)):
                         (dpo_lambda * dpo_l / grad_accum).backward()
                         accum_dpo_loss += dpo_l.item()
+                        if use_ca_ipo:
+                            for k, v in _ca_metrics.items():
+                                accum_ca_ipo_diag[k] = accum_ca_ipo_diag.get(k, 0.0) + v.item()
                         _dpo_margin = dpo_beta * (
                             (policy_out["chosen_logps"] - ref_out["chosen_logps"]) -
                             (policy_out["rejected_logps"] - ref_out["rejected_logps"])
@@ -1478,6 +1521,8 @@ def globalprune_gmp(
                 log_dict["train/dpo_ref_chosen_logp"]   = accum_dpo_ref_chosen_logp
                 log_dict["train/dpo_ref_rejected_logp"] = accum_dpo_ref_rejected_logp
                 log_dict["train/dpo_margin"]            = accum_dpo_margin
+                if use_ca_ipo and accum_ca_ipo_diag:
+                    log_dict.update({k: v / log_interval for k, v in accum_ca_ipo_diag.items()})
             logging.info(f"Step {step}/{total_steps} | loss={accum_loss:.4f} | "
                          f"sparsity={real_sparsity:.3f} | lr={scheduler.get_last_lr()[0]:.2e}"
                          + (f" | dpo_loss={accum_dpo_loss:.4f} acc={accum_dpo_acc:.3f} "
@@ -1499,6 +1544,7 @@ def globalprune_gmp(
             accum_diag           = {}
             accum_diag_n         = 0
             accum_onpolicy_diag  = {}
+            accum_ca_ipo_diag    = {}
 
     # final mask at full sparsity
     maskmgr.update(fisher, final_sparsity, fsdp_model)
