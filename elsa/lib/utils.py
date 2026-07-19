@@ -595,7 +595,7 @@ def prepare_calibration_input(model, dataloader, device, nsamples=128):
 
     inps = torch.zeros((nsamples, model.seqlen, hidden_size), dtype=dtype, device=device)
     inps.requires_grad = False
-    cache = {'i': 0, 'attention_mask': None, 'position_ids': None}
+    cache = {'i': 0, 'attention_mask': None, 'position_ids': None, 'position_embeddings': None}
 
     class Catcher(nn.Module):
         def __init__(self, module):
@@ -617,6 +617,8 @@ def prepare_calibration_input(model, dataloader, device, nsamples=128):
                 cache['attention_mask'] = kwargs['attention_mask']
             if 'position_ids' in kwargs:
                 cache['position_ids'] = kwargs['position_ids']
+            if 'position_embeddings' in kwargs:
+                cache['position_embeddings'] = kwargs['position_embeddings']
             raise ValueError
 
     original_first_layer = layers[0]
@@ -642,8 +644,9 @@ def prepare_calibration_input(model, dataloader, device, nsamples=128):
     outs = torch.zeros_like(inps)
     attention_mask = cache['attention_mask']
     position_ids = cache['position_ids']
+    position_embeddings = cache['position_embeddings']
 
     if use_cache is not None:
         model.config.use_cache = use_cache
     torch.cuda.empty_cache()
-    return inps, outs, attention_mask, position_ids
+    return inps, outs, attention_mask, position_ids, position_embeddings

@@ -242,7 +242,7 @@ def prune_safe(args, model, tokenizer, device, prune_n=0, prune_m=0):
         model.config.use_cache = False
 
     with torch.no_grad():
-        inps, _, attention_mask, position_ids = prepare_calibration_input(
+        inps, _, attention_mask, position_ids, position_embeddings = prepare_calibration_input(
             model, dataloader, device, nsamples=args.nsamples
         )
 
@@ -261,7 +261,7 @@ def prune_safe(args, model, tokenizer, device, prune_n=0, prune_m=0):
                 if OPTDecoderLayer and isinstance(layer, OPTDecoderLayer):
                     dense_layer_targets[j] = layer(inp_j, attention_mask=attention_mask)[0].detach().cpu()
                 else:
-                    dense_layer_targets[j] = layer(inp_j, attention_mask=attention_mask, position_ids=position_ids)[0].detach().cpu()
+                    dense_layer_targets[j] = layer(inp_j, attention_mask=attention_mask, position_ids=position_ids, position_embeddings=position_embeddings)[0].detach().cpu()
 
         tensordata = TensorData(current_inps.cpu(), dense_layer_targets, device)
         loader = TensorDataLoader(tensordata, args.safe_batch_size, shuffle=True, num_workers=0).get_loader()
@@ -314,7 +314,7 @@ def prune_safe(args, model, tokenizer, device, prune_n=0, prune_m=0):
                         if OPTDecoderLayer and isinstance(layer, OPTDecoderLayer):
                             out = layer(batch_in, attention_mask=attention_mask)[0]
                         else:
-                            out = layer(batch_in, attention_mask=attention_mask, position_ids=position_ids)[0]
+                            out = layer(batch_in, attention_mask=attention_mask, position_ids=position_ids, position_embeddings=position_embeddings)[0]
                         loss = loss_fn(out, batch_tgt)
                         if args.safe_accumulation_steps > 1:
                             loss = loss / args.safe_accumulation_steps
@@ -332,7 +332,7 @@ def prune_safe(args, model, tokenizer, device, prune_n=0, prune_m=0):
                                     if OPTDecoderLayer and isinstance(layer, OPTDecoderLayer):
                                         l2 = loss_fn(layer(cached, attention_mask=attention_mask)[0], batch_tgt)
                                     else:
-                                        l2 = loss_fn(layer(cached, attention_mask=attention_mask, position_ids=position_ids)[0], batch_tgt)
+                                        l2 = loss_fn(layer(cached, attention_mask=attention_mask, position_ids=position_ids, position_embeddings=position_embeddings)[0], batch_tgt)
                                     if args.safe_accumulation_steps > 1:
                                         l2 = l2 / args.safe_accumulation_steps
                                 l2.backward()
@@ -342,7 +342,7 @@ def prune_safe(args, model, tokenizer, device, prune_n=0, prune_m=0):
                                 if OPTDecoderLayer and isinstance(layer, OPTDecoderLayer):
                                     lp = loss_fn(layer(batch_in, attention_mask=attention_mask)[0], batch_tgt)
                                 else:
-                                    lp = loss_fn(layer(batch_in, attention_mask=attention_mask, position_ids=position_ids)[0], batch_tgt)
+                                    lp = loss_fn(layer(batch_in, attention_mask=attention_mask, position_ids=position_ids, position_embeddings=position_embeddings)[0], batch_tgt)
                             lp.backward()
                         opt.second_step(zero_grad=True)
                     opt.zero_grad(set_to_none=True)
@@ -360,7 +360,7 @@ def prune_safe(args, model, tokenizer, device, prune_n=0, prune_m=0):
                 if OPTDecoderLayer and isinstance(layer, OPTDecoderLayer):
                     current_layer_outputs[j] = layer(inp_j, attention_mask=attention_mask)[0].cpu()
                 else:
-                    current_layer_outputs[j] = layer(inp_j, attention_mask=attention_mask, position_ids=position_ids)[0].cpu()
+                    current_layer_outputs[j] = layer(inp_j, attention_mask=attention_mask, position_ids=position_ids, position_embeddings=position_embeddings)[0].cpu()
 
         layers[i] = layer.to('cpu')
         del opt, lr_scheduler, tensordata, loader, prunable
