@@ -251,8 +251,8 @@ def prune_safe(args, model, tokenizer, device, prune_n=0, prune_m=0):
     logging.info(f'SAFE calibration prepared: {inps.shape}')
 
     for i in range(len(layers)):
-        layer = layers[i].float().to(device)
-        current_inps = inps.float().to(device)
+        layer = layers[i].to(device)
+        current_inps = inps.to(device)
 
         dense_layer_targets = torch.zeros_like(current_inps, device='cpu')
         with torch.no_grad():
