@@ -2,15 +2,22 @@ import time
 import torch
 import math
 import torch.nn as nn
+from torch.amp import autocast
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from .data import get_loaders, get_dataset
+from transformers.optimization import get_linear_schedule_with_warmup
+from .data import get_loaders, get_dataset, TensorData, TensorDataLoader
 from .utils import *
+from .optimizers import SAFE
 from .trainer import ADMMTrainer, Trainer
 from absl import logging
 from pathlib import Path
 from datetime import datetime
 from dataclasses import dataclass, field
 from transformers import TrainingArguments, Trainer
+try:
+    from transformers.models.opt.modeling_opt import OPTDecoderLayer
+except ImportError:
+    OPTDecoderLayer = None
 try:
     import wandb
     has_wandb = True
@@ -221,3 +228,146 @@ def globalprune_admm(FLAGS, model, tokenizer, device, prune_n=0, prune_m=0):
         return admm_output_dir_str
 
     return None
+
+
+def prune_safe(args, model, tokenizer, device, prune_n=0, prune_m=0):
+    """Layer-by-layer SAFE pruning (ADMM + SAM). Minimizes MSE(sparse_out, dense_out)."""
+    logging.info('Starting SAFE pruning...')
+    dataloader, _ = get_loaders(
+        args.dataset, nsamples=args.nsamples, seed=args.seed,
+        seqlen=model.seqlen, tokenizer=tokenizer, data_path=getattr(args, 'data_path', None)
+    )
+    use_cache = getattr(model.config, 'use_cache', None)
+    if use_cache is not None:
+        model.config.use_cache = False
+
+    with torch.no_grad():
+        inps, _, attention_mask, position_ids = prepare_calibration_input(
+            model, dataloader, device, nsamples=args.nsamples
+        )
+
+    layers = get_model_layers(model)
+    current_layer_outputs = torch.zeros_like(inps)
+    logging.info(f'SAFE calibration prepared: {inps.shape}')
+
+    for i in range(len(layers)):
+        layer = layers[i].float().to(device)
+        current_inps = inps.float().to(device)
+
+        dense_layer_targets = torch.zeros_like(current_inps, device='cpu')
+        with torch.no_grad():
+            for j in range(current_inps.shape[0]):
+                inp_j = current_inps[j].unsqueeze(0)
+                if OPTDecoderLayer and isinstance(layer, OPTDecoderLayer):
+                    dense_layer_targets[j] = layer(inp_j, attention_mask=attention_mask)[0].detach().cpu()
+                else:
+                    dense_layer_targets[j] = layer(inp_j, attention_mask=attention_mask, position_ids=position_ids)[0].detach().cpu()
+
+        tensordata = TensorData(current_inps.cpu(), dense_layer_targets, device)
+        loader = TensorDataLoader(tensordata, args.safe_batch_size, shuffle=True, num_workers=0).get_loader()
+
+        num_steps_per_epoch = max(len(loader), 1)
+        max_steps = math.ceil(args.safe_epochs * num_steps_per_epoch)
+        warmup_steps = math.ceil(args.safe_warmup_epochs * num_steps_per_epoch)
+
+        prunable = find_layers(layer)
+        safe_params, safe_ids = [], set()
+        for name in prunable:
+            w = prunable[name].weight
+            if w.requires_grad:
+                safe_params.append(w)
+                safe_ids.add(id(w))
+
+        other_params = [p for p in layer.parameters() if p.requires_grad and id(p) not in safe_ids]
+
+        param_groups = []
+        if safe_params:
+            param_groups.append({'params': safe_params, 'admm': True})
+        if other_params:
+            param_groups.append({'params': other_params, 'admm': False})
+
+        opt = SAFE(
+            param_groups,
+            projection_fn=projection,
+            lmda=args.safe_lmda,
+            sparsity=args.sparsity_ratio,
+            interval=args.safe_interval,
+            lr=args.safe_lr,
+            rho=args.safe_rho,
+            prune_n=prune_n,
+            prune_m=prune_m,
+            betas=(args.admm_beta1, args.admm_beta2),
+        )
+
+        loss_fn = torch.nn.MSELoss().to(device)
+        lr_scheduler = get_linear_schedule_with_warmup(opt.base_optimizer.base_optimizer, warmup_steps, max_steps)
+
+        global_step = 0
+        sam_cache = []
+
+        for epoch in range(args.safe_epochs):
+            t0 = time.time()
+            total_loss = 0.0
+            for batch_in, batch_tgt in loader:
+                with torch.enable_grad():
+                    with autocast(device_type='cuda', dtype=torch.bfloat16):
+                        if OPTDecoderLayer and isinstance(layer, OPTDecoderLayer):
+                            out = layer(batch_in, attention_mask=attention_mask)[0]
+                        else:
+                            out = layer(batch_in, attention_mask=attention_mask, position_ids=position_ids)[0]
+                        loss = loss_fn(out, batch_tgt)
+                        if args.safe_accumulation_steps > 1:
+                            loss = loss / args.safe_accumulation_steps
+                    loss.backward()
+                    global_step += 1
+                    if args.safe_accumulation_steps > 1:
+                        sam_cache.append(batch_in.detach().clone())
+
+                if global_step % args.safe_accumulation_steps == 0:
+                    with torch.enable_grad():
+                        opt.first_step(zero_grad=True)
+                        if sam_cache:
+                            for cached in sam_cache:
+                                with autocast(device_type='cuda', dtype=torch.bfloat16):
+                                    if OPTDecoderLayer and isinstance(layer, OPTDecoderLayer):
+                                        l2 = loss_fn(layer(cached, attention_mask=attention_mask)[0], batch_tgt)
+                                    else:
+                                        l2 = loss_fn(layer(cached, attention_mask=attention_mask, position_ids=position_ids)[0], batch_tgt)
+                                    if args.safe_accumulation_steps > 1:
+                                        l2 = l2 / args.safe_accumulation_steps
+                                l2.backward()
+                            sam_cache = []
+                        else:
+                            with autocast(device_type='cuda', dtype=torch.bfloat16):
+                                if OPTDecoderLayer and isinstance(layer, OPTDecoderLayer):
+                                    lp = loss_fn(layer(batch_in, attention_mask=attention_mask)[0], batch_tgt)
+                                else:
+                                    lp = loss_fn(layer(batch_in, attention_mask=attention_mask, position_ids=position_ids)[0], batch_tgt)
+                            lp.backward()
+                        opt.second_step(zero_grad=True)
+                    opt.zero_grad(set_to_none=True)
+                    lr_scheduler.step()
+                total_loss += loss.item() * len(batch_in)
+
+            avg_loss = total_loss / max(len(tensordata), 1)
+            logging.info(f'Layer {i} epoch {epoch+1}/{args.safe_epochs} loss={avg_loss:.6f} t={time.time()-t0:.1f}s')
+
+        opt.final_projection()
+
+        with torch.no_grad():
+            for j in range(current_inps.shape[0]):
+                inp_j = current_inps[j].unsqueeze(0)
+                if OPTDecoderLayer and isinstance(layer, OPTDecoderLayer):
+                    current_layer_outputs[j] = layer(inp_j, attention_mask=attention_mask)[0].cpu()
+                else:
+                    current_layer_outputs[j] = layer(inp_j, attention_mask=attention_mask, position_ids=position_ids)[0].cpu()
+
+        layers[i] = layer.to('cpu')
+        del opt, lr_scheduler, tensordata, loader, prunable
+        torch.cuda.empty_cache()
+        inps, current_layer_outputs = current_layer_outputs, inps
+
+    if use_cache is not None:
+        model.config.use_cache = use_cache
+    torch.cuda.empty_cache()
+    logging.info('SAFE pruning finished.')

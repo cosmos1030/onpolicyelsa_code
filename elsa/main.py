@@ -5,6 +5,7 @@ from transformers import AutoTokenizer
 from lib.prune import globalprune_admm
 from lib.eval import eval_ppl, eval_zero_shot
 from lib.lighteval_math500 import run_lighteval_math500
+from lib.lighteval_5bench import run_lighteval_5bench
 from lib.utils import check_sparsity, get_llm
 from lib.on_policy_distill import run_on_policy_distillation
 from lib.gkd_admm import globalprune_admm_kd
@@ -98,12 +99,23 @@ def main(argv):
         else:
             group = "ntp_admm"
 
-        wandb.init(
-            project=FLAGS.wandb_project,
-            group=group,
-            name="pending",
-            save_code=True,
-        )
+        try:
+            wandb.init(
+                project=FLAGS.wandb_project,
+                group=group,
+                name="pending",
+                save_code=True,
+            )
+        except Exception as _wandb_e:
+            logging.warning(f"wandb online init failed ({_wandb_e}), retrying in offline mode")
+            import os as _os
+            _os.environ["WANDB_MODE"] = "offline"
+            wandb.init(
+                project=FLAGS.wandb_project,
+                group=group,
+                name="pending",
+                save_code=False,
+            )
 
         if not dict(wandb.config):
             wandb.config.update(arguments)
@@ -277,6 +289,12 @@ def main(argv):
             if getattr(FLAGS, 'gmp_kd_lambda', 0.0) > 0 or getattr(FLAGS, 'gmp_hidden_lambda', 0.0) > 0 or getattr(FLAGS, 'gmp_onpolicy_kd_lambda', 0.0) > 0 or getattr(FLAGS, 'gmp_anchor_kd_lambda', 0.0) > 0 or getattr(FLAGS, 'gmp_teacher_seqkd', False):
                 gmp_teacher = get_llm(FLAGS.model, FLAGS.seqlen)
                 gmp_teacher.to(device)
+                gmp_teacher.eval()
+                for p in gmp_teacher.parameters():
+                    p.requires_grad_(False)
+                if gmp_use_fsdp and is_distributed:
+                    gmp_teacher = gmp_teacher.to(torch.bfloat16)
+                    logging.info(f"[rank {local_rank}] Teacher kept as plain model (no FSDP) — no NCCL needed for eval-only teacher")
             # DPO dense model: reuse teacher if loaded, else load separately
             gmp_dpo_dense = None
             if getattr(FLAGS, 'gmp_dpo_lambda', 0.0) > 0:
@@ -306,6 +324,20 @@ def main(argv):
             saved_pruned_model_path = globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device, offpolicy_kd=True)
             del teacher_model
             torch.cuda.empty_cache()
+        elif getattr(FLAGS, 'do_safe', False):
+            from lib.prune import prune_safe
+            model.seqlen = FLAGS.seqlen
+            prune_safe(FLAGS, model, tokenizer, device, prune_n=prune_n, prune_m=prune_m)
+            if getattr(FLAGS, 'save_model', False) and getattr(FLAGS, 'admm_save_path', None):
+                from pathlib import Path as _Path
+                from datetime import datetime as _dt
+                _model_name = FLAGS.model.split('/')[-1]
+                _sdir = _Path(FLAGS.admm_save_path) / f"{_model_name}_safe_s{int(FLAGS.sparsity_ratio*100)}pct_{_dt.now().strftime('%Y%m%d_%H%M')}"
+                _sdir.mkdir(parents=True, exist_ok=True)
+                model.save_pretrained(str(_sdir))
+                tokenizer.save_pretrained(str(_sdir))
+                logging.info(f"Saved SAFE pruned model to {_sdir}")
+                saved_pruned_model_path = str(_sdir)
         elif getattr(FLAGS, 'dataset', '') == 'math_cot':
             # NTP with full problem context: no teacher, no KD, uses MathCotKDDataset
             saved_pruned_model_path = globalprune_admm_kd(FLAGS, model, None, tokenizer, device)
@@ -319,15 +351,25 @@ def main(argv):
 
     if is_distributed:
         dist.barrier()
-        state_dict_options = StateDictOptions(full_state_dict=True, cpu_offload=True)
-        full_state = get_model_state_dict(model, options=state_dict_options)
-        if local_rank == 0:
-            model = get_llm(FLAGS.model, FLAGS.seqlen)
-            model.load_state_dict(full_state)
-        dist.destroy_process_group()
-        import gc as _gc
-        _gc.collect()
-        torch.cuda.empty_cache()
+        # FLAGS are identical on all ranks; saved_pruned_model_path is only set on rank 0.
+        # Use FLAGS-based condition so both ranks take the same branch.
+        _fsdp_trainer_saved = getattr(FLAGS, 'do_gmp', False) and getattr(FLAGS, 'save_model', False)
+        if _fsdp_trainer_saved:
+            # GMP trainer already saved via FSDP.summon_full_params; both ranks destroy PG together.
+            dist.destroy_process_group()
+            import gc as _gc; _gc.collect(); torch.cuda.empty_cache()
+            if local_rank == 0 and saved_pruned_model_path:
+                model = get_llm(saved_pruned_model_path, FLAGS.seqlen)
+        else:
+            state_dict_options = StateDictOptions(full_state_dict=True, cpu_offload=True)
+            full_state = get_model_state_dict(model, options=state_dict_options)
+            if local_rank == 0:
+                model = get_llm(FLAGS.model, FLAGS.seqlen)
+                model.load_state_dict(full_state)
+            dist.destroy_process_group()
+            import gc as _gc
+            _gc.collect()
+            torch.cuda.empty_cache()
 
 
     if FLAGS.do_distill:
@@ -364,10 +406,13 @@ def main(argv):
         logging.info("*"*30)
 
         # perplexity evaluation
-        ppl_test = eval_ppl(FLAGS, model, tokenizer, device,data_path=FLAGS.data_path)
-        logging.info([(key,ppl) for key,ppl in ppl_test.items()])
-        if FLAGS.wandb:
-            wandb.log({"sparsity_ratio": sparsity_ratio, **{f"ppl_test({key})": value for key, value in ppl_test.items()}})
+        try:
+            ppl_test = eval_ppl(FLAGS, model, tokenizer, device,data_path=FLAGS.data_path)
+            logging.info([(key,ppl) for key,ppl in ppl_test.items()])
+            if FLAGS.wandb:
+                wandb.log({"sparsity_ratio": sparsity_ratio, **{f"ppl_test({key})": value for key, value in ppl_test.items()}})
+        except Exception as _ppl_e:
+            logging.warning(f"PPL eval failed (network/cache issue?): {_ppl_e}")
         ## zero-shot evaluation (runs before math500 so model is still in GPU)
         if FLAGS.eval_zero_shot:
             logging.info(f"--- Evaluating After Pruning (global_admm, Zero-Shot) ---")
@@ -380,8 +425,8 @@ def main(argv):
             if FLAGS.wandb:
                 for task_name, metrics in results_after.items():
                     try:
-                        acc = metrics.get('acc,none', metrics.get('acc', None))
-                        stderr = metrics.get('acc_stderr,none', metrics.get('acc_stderr', None))
+                        acc = metrics.get('acc_norm,none', metrics.get('acc,none', metrics.get('acc', None)))
+                        stderr = metrics.get('acc_norm_stderr,none', metrics.get('acc_stderr,none', metrics.get('acc_stderr', None)))
                         if acc is not None:
                                 wandb.log({f"global_admm/{task_name}_acc": acc})
                         if stderr is not None:
@@ -460,6 +505,75 @@ def main(argv):
                 })
             if FLAGS.wandb:
                 wandb.log({"math500_pass@1": pass_at_1})
+
+        ## Full 5-benchmark evaluation via lighteval+vLLM
+        if getattr(FLAGS, 'eval_full_bench', False):
+            logging.info("--- Evaluating After Training (5-benchmark suite, lighteval+vLLM) ---")
+            # Resolve saved model path (same logic as eval_math500)
+            if FLAGS.math500_model_path:
+                _bench_model_path = FLAGS.math500_model_path
+            elif saved_pruned_model_path and os.path.isfile(os.path.join(saved_pruned_model_path, "config.json")):
+                _bench_model_path = saved_pruned_model_path
+            elif FLAGS.save_model and FLAGS.admm_save_path:
+                import glob as _glob
+                _subdirs = [
+                    p for p in _glob.glob(os.path.join(FLAGS.admm_save_path, "*"))
+                    if os.path.isfile(os.path.join(p, "config.json"))
+                ]
+                _subdirs = sorted(_subdirs, key=os.path.getmtime)
+                if _subdirs:
+                    _bench_model_path = _subdirs[-1]
+                else:
+                    import tempfile as _tmpfile
+                    _bench_model_path = _tmpfile.mkdtemp(prefix="elsa_eval_")
+                    model.save_pretrained(_bench_model_path)
+                    tokenizer.save_pretrained(_bench_model_path)
+            else:
+                import tempfile as _tmpfile
+                _bench_model_path = _tmpfile.mkdtemp(prefix="elsa_eval_")
+                model.save_pretrained(_bench_model_path)
+                tokenizer.save_pretrained(_bench_model_path)
+
+            # Free all VRAM for vLLM subprocess (skip if already freed by eval_math500)
+            if not FLAGS.eval_math500:
+                model.to("cpu")
+                import gc as _gc
+                del model
+                _gc.collect()
+                torch.cuda.empty_cache()
+                for _k in ['MASTER_ADDR', 'MASTER_PORT', 'WORLD_SIZE', 'LOCAL_RANK', 'RANK',
+                           'TORCHELASTIC_RESTART_COUNT', 'TORCHELASTIC_MAX_RESTARTS', 'TORCHELASTIC_RUN_ID']:
+                    os.environ.pop(_k, None)
+                os.environ['VLLM_USE_V1'] = '0'
+
+            _free_mem, _total_mem = torch.cuda.mem_get_info(0)
+            _vllm_gpu_util = (_free_mem / _total_mem) * 0.95
+            logging.info(f"vLLM gpu_memory_utilization: {_vllm_gpu_util:.3f}")
+
+            _out_base = os.path.join(_bench_model_path, "lighteval_5bench")
+            bench_metrics = run_lighteval_5bench(
+                model_path=_bench_model_path,
+                out_base=_out_base,
+                gpu_util=_vllm_gpu_util,
+                log_to_wandb=FLAGS.wandb,
+            )
+            # Also log math500_pass@1 as top-level for sweep metric
+            if "lighteval/math500" in bench_metrics and FLAGS.wandb:
+                wandb.log({"math500_pass@1": bench_metrics["lighteval/math500"]})
+
+        # Write eval context for SLURM-level lighteval (when eval_math500=false and FSDP)
+        if not FLAGS.eval_math500 and saved_pruned_model_path and is_distributed and local_rank == 0:
+            import json as _json
+            _ctx = {
+                "saved_model_path": saved_pruned_model_path,
+                "wandb_run_id": wandb.run.id if FLAGS.wandb and wandb.run else None,
+                "wandb_project": getattr(FLAGS, 'wandb_project', None),
+                "train_time_sec": _train_time_sec,
+            }
+            _ctx_file = os.path.join(saved_pruned_model_path, ".eval_ctx.json")
+            with open(_ctx_file, 'w') as _f:
+                _json.dump(_ctx, _f)
+            logging.info(f"Wrote eval context to {_ctx_file}")
 
         if getattr(FLAGS, 'push_to_hub', False):
             _hub_model_path = locals().get('_math500_model_path', None) or saved_pruned_model_path
@@ -566,6 +680,9 @@ if __name__ == '__main__':
     flags.DEFINE_string('gmp_dpo_loss_type', 'sigmoid', 'DPO/IPO loss type: sigmoid, ipo, hinge, robust, ca_ipo, etc.')
     flags.DEFINE_float('gmp_ca_ipo_eps_credit', 1e-6, 'Uniform fallback credit weight for CA-IPO (prevents zero-weight tokens).')
     flags.DEFINE_string('gmp_dpo_cache_dir', '/home1/doyoonkim/projects/elsa/.cache/dpo_chosen', 'Directory to persist chosen cache across runs. Set empty string to disable.')
+    flags.DEFINE_bool('gmp_dpo_use_vllm_chosen', False, 'Use vLLM offline engine for fast chosen cache generation (offloads dense_model to CPU during generation).')
+    flags.DEFINE_bool('gmp_dpo_use_vllm_rejected', False, 'Use vLLM engine for fast rejected generation each mask interval (weight-synced from student model).')
+    flags.DEFINE_float('gmp_dpo_vllm_gpu_mem', 0.35, 'vLLM gpu_memory_utilization for rejected generation engine.')
     flags.DEFINE_integer('gmp_steps', 4096, 'Total training steps for GMP.')
     flags.DEFINE_integer('gmp_batch_size', 1, 'Per-device batch size for GMP.')
     flags.DEFINE_integer('gmp_grad_accum', 8, 'Gradient accumulation steps for GMP.')
@@ -577,6 +694,7 @@ if __name__ == '__main__':
     flags.DEFINE_string('gmp_save_path', '/home1/doyoonkim/projects/elsa/models', 'Directory to save GMP pruned model.')
     flags.DEFINE_integer('gmp_max_prompt_len', 512, 'Max prompt length for GMP NTP dataset.')
     flags.DEFINE_integer('gmp_max_seq_len', 512, 'Max CoT sequence length for GMP NTP dataset.')
+    flags.DEFINE_float('gmp_ntp_lambda', 1.0, 'NTP loss weight for GMP (default 1.0).')
     flags.DEFINE_float('gmp_kd_lambda', 0.0, 'KD loss weight for GMP (0 = NTP only).')
     flags.DEFINE_float('gmp_kd_temperature', 2.0, 'Temperature for GMP token-level KD.')
     flags.DEFINE_integer('gmp_kd_topk', 0, 'Top-K for KD KL divergence (0 = full vocab).')
@@ -587,13 +705,30 @@ if __name__ == '__main__':
     flags.DEFINE_string('gmp_hidden_mask', 'cot', 'Mask for hidden matching: cot (labels!=-100) or all (attention_mask, prompt+CoT).')
     flags.DEFINE_string('gmp_hidden_layers', 'final', 'Layer scope: final (last layer only) or anneal_all_to_final (coarse-to-fine).')
     flags.DEFINE_float('gmp_onpolicy_kd_lambda', 0.0, 'Weight for on-policy KD loss in GMP (0 = disabled).')
-    flags.DEFINE_integer('gmp_onpolicy_kd_interval', 32, 'Optimizer steps between on-policy KD generations.')
+    flags.DEFINE_integer('gmp_onpolicy_kd_interval', 1, 'Optimizer steps between on-policy KD generations.')
     flags.DEFINE_integer('gmp_onpolicy_max_new_tokens', 256, 'Max new tokens for on-policy student generation.')
     flags.DEFINE_integer('gmp_onpolicy_kd_topk', 0, 'Top-K for on-policy KL divergence (0 = full vocab).')
     flags.DEFINE_float('gmp_onpolicy_temperature', 0.6, 'Sampling temperature for on-policy generation.')
     flags.DEFINE_integer('gmp_onpolicy_grad_accum', 1, 'Number of on-policy generate+KL micro-steps to accumulate per interval.')
     flags.DEFINE_float('gmp_onpolicy_grad_clip', 1.0, 'Gradient clip norm applied after each on-policy rollout backward.')
     flags.DEFINE_boolean('gmp_onpolicy_reverse_kl', False, 'Use reverse KL D(S||T) for on-policy KD instead of forward KL.')
+    flags.DEFINE_boolean('gmp_opkd_reuse_ipo_rollouts', False, 'If True, OPKD reuses IPO rejected rollouts (from RejectedQueue.rollout_pool) instead of generating new ones.')
+    flags.DEFINE_boolean('gmp_opkd_prev_mask_teacher', False, 'Use pre-mask-update model snapshot as OPKD teacher instead of the dense teacher.')
+    flags.DEFINE_float('gmp_prevmask_opkd_lambda', 0.0, 'Weight for prev-mask-teacher OPKD loss added on top of dense teacher OPKD (0=disabled).')
+    flags.DEFINE_float('gmp_opkd_vllm_gpu_mem', 0.35, 'GPU memory utilization for the OPKD vLLM engine.')
+    # TR-GMP: trust-region gradual mask selection
+    flags.DEFINE_boolean('gmp_tr_enabled', False, 'Use trust-region KL-constrained mask updates instead of cubic sparsity schedule.')
+    flags.DEFINE_float('gmp_tr_kl_threshold', 0.01, 'TR-GMP: max KL(old||cand) per token to accept a mask update.')
+    flags.DEFINE_float('gmp_tr_delta_init', 0.05, 'TR-GMP: initial sparsity step size (fraction of total params).')
+    flags.DEFINE_float('gmp_tr_delta_min', 0.005, 'TR-GMP: minimum sparsity step size; line search stops halving below this.')
+    flags.DEFINE_string('gmp_tr_kl_reduce', 'mean', "TR-GMP: KL aggregation over tokens — 'mean' or 'quantile'.")
+    flags.DEFINE_float('gmp_tr_kl_quantile', 0.95, 'TR-GMP: quantile level when gmp_tr_kl_reduce=quantile.')
+    flags.DEFINE_string('gmp_milestone_sparsities', '', 'Comma-separated sparsity checkpoints (e.g. "0.5,0.6,0.7"). Saves model at each level; post-hoc eval runs after training.')
+    flags.DEFINE_boolean('gmp_measure_grad_conflict', False, 'If True, measure cosine similarity between OPKD and IPO gradients at every OPKD step and log to wandb.')
+    flags.DEFINE_boolean('gmp_filter_grad_conflict', False, 'If True, filter OPKD gradient when cos_sim(g_opkd, g_ntp+g_ipo) < 0.')
+    flags.DEFINE_boolean('gmp_opkd_project_onto_combined', False, 'If True, project g_OPKD onto (g_NTP+g_DPO) direction: g̃_OPKD = scalar*(g_NTP+g_DPO).')
+    flags.DEFINE_boolean('gmp_opkd_filter_combined', False, 'If True, drop g_OPKD entirely when cos_sim(g_OPKD, g_NTP+g_DPO) < 0.')
+    flags.DEFINE_boolean('gmp_teacher_gen_kd', False, 'Pre-generate teacher rollouts once (total_steps*gbs entries) and use them for KD sequentially each micro-step.')
     flags.DEFINE_boolean('gmp_onpolicy_pg', False, 'Add MiniLLM-style long-term policy gradient loss to on-policy KD.')
     flags.DEFINE_float('gmp_onpolicy_pg_lambda', 1.0, 'Weight for the long-term PG loss.')
     flags.DEFINE_float('gmp_onpolicy_mixed_alpha', 0.0, 'Teacher-mixed sampling alpha: sample from alpha*p_T+(1-alpha)*q_S. 0=pure student.')
@@ -676,6 +811,14 @@ if __name__ == '__main__':
     flags.DEFINE_bool('data_ablation', False, 'Whether to use data ablation, for section 5.5. If True, we fix the step size and control the number of train samples with --admm_num_train_samples.')
     flags.DEFINE_bool('eval_zero_shot', True, 'Whether to evaluate zero-shot performance.')
     flags.DEFINE_bool('eval_math500', False, 'Whether to run MATH-500 pass@1 eval after pruning (via lighteval+vLLM).')
+    flags.DEFINE_bool('eval_full_bench', True, 'Whether to run all 5 benchmarks (MATH-500, GPQA, IFEval, MMLU-Redux, LCB) after training.')
+    flags.DEFINE_float('gmp_offline_ipo_lambda', 0.0, 'Weight for offline IPO loss (0 = disabled).')
+    flags.DEFINE_float('gmp_offline_ipo_beta', 0.1, 'IPO beta for offline preference pairs.')
+    flags.DEFINE_string('gmp_offline_ipo_datasets', 'HuggingFaceH4/ultrafeedback_binarized', 'Comma-separated HF preference dataset names.')
+    flags.DEFINE_string('gmp_offline_ipo_splits', 'train_prefs', 'Comma-separated splits for each offline IPO dataset.')
+    flags.DEFINE_string('gmp_offline_ipo_per_max', '8000', 'Comma-separated max samples per dataset (or single int applied to all).')
+    flags.DEFINE_integer('gmp_offline_ipo_max_length', 2048, 'Max sequence length for offline IPO pairs.')
+    flags.DEFINE_integer('gmp_offline_ipo_max_prompt_length', 1024, 'Max prompt length for offline IPO pairs.')
     flags.DEFINE_string('math500_model_path', None, 'Path to saved pruned model for lighteval eval. If None, saves model to temp dir.')
     flags.DEFINE_integer('math500_max_new_tokens', 4096, 'max_new_tokens for MATH-500 generation.')
     flags.DEFINE_integer('math500_max_samples', 0, 'Max samples for MATH-500 eval (0 = all 500).')
@@ -683,4 +826,16 @@ if __name__ == '__main__':
     flags.DEFINE_string('wandb_project', None, 'wandb project name.')
     flags.DEFINE_bool('push_to_hub', False, 'Whether to push the pruned model to HuggingFace Hub after eval.')
     flags.DEFINE_string('hub_model_id', None, 'HuggingFace Hub repo id (e.g. username/model-name) to push pruned model.')
+
+    # SAFE pruning (layer-by-layer ADMM + SAM)
+    flags.DEFINE_bool('do_safe', False, 'Use SAFE layer-by-layer pruning (ADMM + SAM).')
+    flags.DEFINE_float('safe_lr', 2e-4, 'Learning rate for SAFE optimizer.')
+    flags.DEFINE_float('safe_lmda', 1e-3, 'Lambda penalty for SAFE ADMM.')
+    flags.DEFINE_float('safe_rho', 0.05, 'SAM perturbation size (rho) for SAFE.')
+    flags.DEFINE_integer('safe_epochs', 30, 'Number of epochs per layer for SAFE.')
+    flags.DEFINE_integer('safe_warmup_epochs', 2, 'Warmup epochs per layer for SAFE.')
+    flags.DEFINE_integer('safe_interval', 32, 'ADMM dual update interval for SAFE.')
+    flags.DEFINE_integer('safe_batch_size', 4, 'Batch size for SAFE calibration dataloader.')
+    flags.DEFINE_integer('safe_accumulation_steps', 1, 'Gradient accumulation steps for SAFE.')
+
     app.run(main)

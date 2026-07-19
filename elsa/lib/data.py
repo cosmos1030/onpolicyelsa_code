@@ -25,14 +25,14 @@ def _get_raw_dataset(dataset_name, data_type="train", data_path=None):
             "validation": "en/c4-validation.00000-of-00008.json.gz"
         }
         if data_path:
+            local_file = os.path.join(data_path, data_files_config[split_name])
+            if not os.path.isfile(local_file):
+                # train shard not downloaded — use validation shard (eval only needs testloader)
+                split_name = "validation"
+                local_file = os.path.join(data_path, data_files_config["validation"])
             if local_rank == 0:
-                logging.info(f"Loading C4 raw data from local path: {data_path}")
-            files_to_load = {split: os.path.join(data_path, fname) for split, fname in data_files_config.items()}
-            return load_dataset(
-                'json',
-                data_files={split_name: files_to_load[split_name]},
-                split=split_name,
-            )
+                logging.info(f"Loading C4 raw data from local path: {local_file}")
+            return load_dataset('json', data_files={split_name: local_file}, split=split_name)
         else:
             if local_rank == 0:
                 logging.info("Loading C4 raw data from Hugging Face Hub (single shard only).")
@@ -41,11 +41,38 @@ def _get_raw_dataset(dataset_name, data_type="train", data_path=None):
             # ALL 1637 shards as Arrow files (~2.4TB). Loading via URL avoids this.
             hf_base = "https://huggingface.co/datasets/allenai/c4/resolve/main"
             url = f"{hf_base}/{data_files_config[split_name]}"
-            return load_dataset(
-                'json',
-                data_files={split_name: url},
-                split=split_name,
-            )
+            try:
+                return load_dataset(
+                    'json',
+                    data_files={split_name: url},
+                    split=split_name,
+                )
+            except Exception as e:
+                # Network unavailable — fall back to locally cached Arrow file
+                logging.warning(f"C4 URL load failed ({e}), trying local arrow cache...")
+                arrow_name = f"c4-{split_name}.arrow"
+                # Search candidate cache roots
+                cache_roots = []
+                hf_ds_cache = os.environ.get("HF_DATASETS_CACHE", "")
+                hf_home = os.environ.get("HF_HOME", "")
+                home_default = os.path.join(os.path.expanduser("~"), ".cache", "huggingface", "datasets")
+                for base in [hf_ds_cache, os.path.join(hf_home, "datasets"), home_default]:
+                    if base:
+                        cache_roots.append(os.path.join(base, "allenai___c4"))
+                for c4_root in cache_roots:
+                    if not os.path.isdir(c4_root):
+                        continue
+                    for root, dirs, files in os.walk(c4_root):
+                        if arrow_name in files:
+                            arrow_path = os.path.join(root, arrow_name)
+                            logging.info(f"Loading c4 from cached arrow: {arrow_path}")
+                            return Dataset.from_file(arrow_path)
+                # Last resort: use known absolute path
+                known = f"/home1/doyoonkim/.cache/huggingface/datasets/allenai___c4/default-c7bc8b0aefc5e48f/0.0.0/1588ec454efa1a09f29cd18ddd04fe05fc8653a2/{arrow_name}"
+                if os.path.isfile(known):
+                    logging.info(f"Loading c4 from known path: {known}")
+                    return Dataset.from_file(known)
+                raise RuntimeError(f"C4 not available online and no local arrow cache found (searched: {cache_roots})") from e
             
     elif "wikitext2" in dataset_name.lower():
         split_name = "train" if data_type == "train" else "test"
@@ -245,7 +272,6 @@ def get_loaders(
             - trainloader: A list of (input_tensor, target_tensor) tuples.
             - testenc: A TokenizerWrapper object containing test data.
     """
-    data_path = None
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
     if local_rank == 0:
         logging.info("Using `get_loaders` (legacy compatibility mode).")
@@ -278,6 +304,40 @@ def get_loaders(
         valdata = _get_raw_dataset("wikitext2", "validation",data_path=data_path)
         valenc = tokenizer("\n\n".join(valdata["text"]), return_tensors='pt')
         valenc = TokenizerWrapper(valenc.input_ids)
+    else:
+        valenc = None
 
     return trainloader, valenc
+
+
+class TensorData(torch.utils.data.Dataset):
+    def __init__(self, data, targets, device):
+        self.data = data
+        self.targets = targets
+        self.device = device
+
+    def __getitem__(self, index):
+        x = self.data[index]
+        y = self.targets[index]
+        return x.to(self.device), y.to(self.device)
+
+    def __len__(self):
+        return len(self.targets)
+
+
+class TensorDataLoader:
+    def __init__(self, dataset, batch_size, shuffle, num_workers):
+        self.dataset = dataset
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        self.num_workers = num_workers
+
+    def get_loader(self):
+        return torch.utils.data.DataLoader(
+            self.dataset,
+            batch_size=self.batch_size,
+            shuffle=self.shuffle,
+            num_workers=self.num_workers,
+            pin_memory=False
+        )
 

@@ -546,3 +546,98 @@ def agg_loss(
         raise ValueError(f"Invalid loss_agg_mode: {loss_agg_mode}")
 
     return loss
+
+def get_model_embeddings(model):
+    if hasattr(model, 'model') and hasattr(model.model, 'embed_tokens'):
+        return model.model.embed_tokens
+    elif hasattr(model, 'model') and hasattr(model.model, 'decoder') and hasattr(model.model.decoder, 'embed_tokens'):
+        return model.model.decoder.embed_tokens
+    else:
+        raise ValueError("Cannot find embedding layer in model architecture.")
+
+
+def get_model_norm(model):
+    if hasattr(model, 'model') and hasattr(model.model, 'norm'):
+        return model.model.norm
+    elif hasattr(model, 'model') and hasattr(model.model, 'decoder') and hasattr(model.model.decoder, 'final_layer_norm'):
+        return model.model.decoder.final_layer_norm
+    return None
+
+
+def get_model_rotary_emb(model):
+    if hasattr(model, 'model') and hasattr(model.model, 'rotary_emb'):
+        return model.model.rotary_emb
+    return None
+
+
+def prepare_calibration_input(model, dataloader, device, nsamples=128):
+    """Capture first-layer inputs for SAFE layer-by-layer pruning calibration."""
+    use_cache = getattr(model.config, 'use_cache', None)
+    if use_cache is not None:
+        model.config.use_cache = False
+
+    layers = get_model_layers(model)
+    embed_tokens = get_model_embeddings(model)
+    norm = get_model_norm(model)
+    rotary_emb = get_model_rotary_emb(model)
+
+    embed_tokens.to(device)
+    if norm is not None:
+        norm.to(device)
+    if rotary_emb is not None:
+        rotary_emb.to(device)
+    layers[0] = layers[0].to(device)
+
+    dtype = next(iter(model.parameters())).dtype
+    hidden_size = getattr(model.config, 'hidden_size', None) or getattr(model.config, 'dim', None)
+    if hidden_size is None:
+        raise ValueError("Could not find hidden_size in model config")
+
+    inps = torch.zeros((nsamples, model.seqlen, hidden_size), dtype=dtype, device=device)
+    inps.requires_grad = False
+    cache = {'i': 0, 'attention_mask': None, 'position_ids': None}
+
+    class Catcher(nn.Module):
+        def __init__(self, module):
+            super().__init__()
+            self.module = module
+
+        def forward(self, inp, **kwargs):
+            input_tensor = inp[0] if isinstance(inp, tuple) else inp
+            if cache['i'] < nsamples:
+                inps[cache['i']] = input_tensor.detach()
+            cache['i'] += 1
+            if 'attention_mask' in kwargs:
+                cache['attention_mask'] = kwargs['attention_mask']
+            if 'position_ids' in kwargs:
+                cache['position_ids'] = kwargs['position_ids']
+            raise ValueError
+
+    original_first_layer = layers[0]
+    layers[0] = Catcher(layers[0])
+
+    samples_collected = 0
+    for batch in dataloader:
+        if samples_collected >= nsamples:
+            break
+        try:
+            model(batch[0].to(device))
+        except ValueError:
+            pass
+        samples_collected = min(cache['i'], nsamples)
+
+    layers[0] = original_first_layer
+
+    if samples_collected < nsamples:
+        logging.warning(f"Collected {samples_collected} samples, less than {nsamples}.")
+        inps = inps[:samples_collected]
+
+    inps = inps.to('cpu')
+    outs = torch.zeros_like(inps)
+    attention_mask = cache['attention_mask']
+    position_ids = cache['position_ids']
+
+    if use_cache is not None:
+        model.config.use_cache = use_cache
+    torch.cuda.empty_cache()
+    return inps, outs, attention_mask, position_ids

@@ -519,3 +519,143 @@ class MaskedAdam(torch.optim.Adam):
                     if 'exp_avg' in self.state[p]:
                         self.state[p]['exp_avg'].mul_(mask) ## first moment masking
         super().step(closure)
+
+
+class SAM(torch.optim.Optimizer):
+    def __init__(self, params, base_optimizer, rho=0.05, adaptive=False, **kwargs):
+        assert rho >= 0.0, f"Invalid rho, should be non-negative: {rho}"
+        defaults = dict(rho=rho, adaptive=adaptive, **kwargs)
+        super(SAM, self).__init__(params, defaults)
+        self.base_optimizer = base_optimizer(self.param_groups, **kwargs)
+        self.param_groups = self.base_optimizer.param_groups
+        self.defaults.update(self.base_optimizer.defaults)
+
+    @torch.no_grad()
+    def first_step(self, zero_grad=False):
+        for group in self.param_groups:
+            grad_norm = self._grad_norm()
+            scale = group["rho"] / (grad_norm + 1e-12)
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+                self.state[p]["old_p"] = p.data.clone()
+                e_w = (torch.pow(p, 2) if group["adaptive"] else 1.0) * p.grad * scale.to(p)
+                p.add_(e_w)
+        if zero_grad:
+            self.zero_grad()
+
+    @torch.no_grad()
+    def second_step(self, zero_grad=False):
+        for group in self.param_groups:
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+                p.data = self.state[p]["old_p"]
+        self.base_optimizer.step()
+        if zero_grad:
+            self.zero_grad()
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        assert closure is not None, "SAM requires closure"
+        closure = torch.enable_grad()(closure)
+        self.first_step(zero_grad=True)
+        closure()
+        self.second_step()
+
+    def _grad_norm(self):
+        shared_device = self.param_groups[0]["params"][0].device
+        norm = torch.norm(
+            torch.stack([
+                ((torch.abs(p) if group["adaptive"] else 1.0) * p.grad).norm(p=2).to(shared_device)
+                for group in self.param_groups
+                for p in group["params"]
+                if p.grad is not None
+            ]),
+            p=2,
+        )
+        return norm
+
+    def load_state_dict(self, state_dict):
+        super().load_state_dict(state_dict)
+        self.base_optimizer.param_groups = self.param_groups
+
+
+class SAFE(torch.optim.Optimizer):
+    """ADMM optimizer with SAM (Sharpness-Aware Minimization) as base optimizer."""
+
+    def __init__(self, param_groups, projection_fn, sparsity, interval,
+                 base_optimizer=torch.optim.Adam, lmda=1e-3, lr=2e-4,
+                 rho=0.05, prune_n=0, prune_m=0, importance_matrix=None,
+                 comparison_group='layer', betas=(0.9, 0.999), **kwargs):
+        if not callable(projection_fn):
+            raise TypeError("projection_fn must be callable")
+        self.projection = projection_fn
+        self.comparison_group = comparison_group.lower()
+        self.importance_matrix = importance_matrix
+        self.sparsity = sparsity
+        self.interval = interval
+        self.current_step = 0
+        self.prune_n = prune_n
+        self.prune_m = prune_m
+        self.alpha = 1.0
+
+        processed = []
+        for i, group in enumerate(param_groups):
+            if group.get('admm', False) and group['params']:
+                admm_params = group['params']
+                group['duals'] = [torch.zeros_like(p, device=p.device) for p in admm_params]
+                group['splits'] = self.projection(admm_params, sparsity, prune_n, prune_m,
+                                                   importance_matrix, comparison_group=self.comparison_group)
+                if 'lmda' not in group:
+                    group['lmda'] = lmda
+            processed.append(group)
+
+        defaults = dict(lr=lr, rho=rho, betas=betas, **kwargs)
+        super(SAFE, self).__init__(processed, defaults)
+
+        sam_pgs = [{k: v for k, v in pg.items() if k not in ['duals', 'splits', 'admm', 'lmda']}
+                   for pg in self.param_groups]
+        self.base_optimizer = SAM(sam_pgs, base_optimizer, rho=rho, betas=betas, **kwargs)
+
+    @torch.no_grad()
+    def first_step(self, zero_grad=False):
+        self.base_optimizer.first_step(zero_grad)
+
+    @torch.no_grad()
+    def second_step(self, zero_grad=False):
+        for group in self.param_groups:
+            if group.get('admm', False):
+                weights, lmda = group['params'], group['lmda']
+                duals, splits = group['duals'], group['splits']
+                for i in range(len(weights)):
+                    proximal = lmda * (weights[i].detach() - splits[i].detach() + duals[i].detach())
+                    weights[i].grad.add_(proximal)
+        self.base_optimizer.second_step(zero_grad)
+
+        if (self.current_step + 1) % self.interval == 0:
+            with torch.no_grad():
+                for group in self.param_groups:
+                    if group.get('admm', False):
+                        weights, duals, splits = group['params'], group['duals'], group['splits']
+                        for i in range(len(duals)):
+                            z_in = weights[i].detach() + duals[i].detach()
+                            z_new = self.projection([z_in], self.sparsity, prune_n=self.prune_n,
+                                                    prune_m=self.prune_m,
+                                                    importance_matrix=self.importance_matrix,
+                                                    comparison_group=self.comparison_group)[0]
+                            u_new = duals[i].detach() + self.alpha * (weights[i].detach() - z_new)
+                            duals[i].copy_(u_new)
+                            splits[i].copy_(z_new)
+        self.current_step += 1
+
+    def final_projection(self):
+        for group in self.param_groups:
+            if group.get('admm', False):
+                weights = group['params']
+                final_weights = self.projection(weights, self.sparsity, prune_n=self.prune_n,
+                                                prune_m=self.prune_m,
+                                                importance_matrix=self.importance_matrix,
+                                                comparison_group=self.comparison_group)
+                for w, fw in zip(weights, final_weights):
+                    w.data.copy_(fw)
