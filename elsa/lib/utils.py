@@ -100,12 +100,12 @@ def _proj_impl_dense(
 
     # ---- Unstructured sparsity ----
     if comparison_group == "layer":
-        # Global threshold within this tensor
+        # Global threshold within this tensor — use topk to zero exactly k elements,
+        # avoiding over-sparsification from ties (common with bfloat16 weight precision)
         k = int(new_z.numel() * sparsity)
         if k > 0:
-            flat_sorted = torch.sort(z_metric.flatten(), stable=True)[0]
-            kth = flat_sorted[min(k - 1, flat_sorted.numel() - 1)]
-            new_z[z_metric <= kth] = 0
+            _, topk_idx = torch.topk(z_metric.flatten(), k=k, largest=False)
+            new_z.view(-1)[topk_idx] = 0
         return new_z
 
     elif comparison_group == "column":

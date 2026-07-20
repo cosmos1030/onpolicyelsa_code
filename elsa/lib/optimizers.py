@@ -604,9 +604,11 @@ class SAFE(torch.optim.Optimizer):
         for i, group in enumerate(param_groups):
             if group.get('admm', False) and group['params']:
                 admm_params = group['params']
-                group['duals'] = [torch.zeros_like(p, device=p.device) for p in admm_params]
-                group['splits'] = self.projection(admm_params, sparsity, prune_n, prune_m,
-                                                   importance_matrix, comparison_group=self.comparison_group)
+                # Keep duals/splits in float32 regardless of weight dtype (bfloat16 has insufficient
+                # precision for ADMM residual accumulation — small (w-z) values round to 0)
+                group['duals'] = [torch.zeros(p.shape, dtype=torch.float32, device=p.device) for p in admm_params]
+                group['splits'] = [s.float() for s in self.projection(admm_params, sparsity, prune_n, prune_m,
+                                                                       importance_matrix, comparison_group=self.comparison_group)]
                 if 'lmda' not in group:
                     group['lmda'] = lmda
             processed.append(group)
@@ -629,8 +631,9 @@ class SAFE(torch.optim.Optimizer):
                 weights, lmda = group['params'], group['lmda']
                 duals, splits = group['duals'], group['splits']
                 for i in range(len(weights)):
-                    proximal = lmda * (weights[i].detach() - splits[i].detach() + duals[i].detach())
-                    weights[i].grad.add_(proximal)
+                    # Compute proximal term in float32; duals/splits are already float32
+                    proximal = lmda * (weights[i].detach().float() - splits[i] + duals[i])
+                    weights[i].grad.add_(proximal.to(weights[i].dtype))
         self.base_optimizer.second_step(zero_grad)
 
         if (self.current_step + 1) % self.interval == 0:
@@ -639,12 +642,13 @@ class SAFE(torch.optim.Optimizer):
                     if group.get('admm', False):
                         weights, duals, splits = group['params'], group['duals'], group['splits']
                         for i in range(len(duals)):
-                            z_in = weights[i].detach() + duals[i].detach()
+                            # All arithmetic in float32 — duals/splits are float32
+                            z_in = weights[i].detach().float() + duals[i]
                             z_new = self.projection([z_in], self.sparsity, prune_n=self.prune_n,
                                                     prune_m=self.prune_m,
                                                     importance_matrix=self.importance_matrix,
-                                                    comparison_group=self.comparison_group)[0]
-                            u_new = duals[i].detach() + self.alpha * (weights[i].detach() - z_new)
+                                                    comparison_group=self.comparison_group)[0].float()
+                            u_new = duals[i] + self.alpha * (weights[i].detach().float() - z_new)
                             duals[i].copy_(u_new)
                             splits[i].copy_(z_new)
         self.current_step += 1
