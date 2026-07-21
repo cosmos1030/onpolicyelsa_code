@@ -688,6 +688,7 @@ if __name__ == '__main__':
     flags.DEFINE_integer('gmp_grad_accum', 8, 'Gradient accumulation steps for GMP.')
     flags.DEFINE_float('gmp_lr', 1e-5, 'Peak learning rate for GMP.')
     flags.DEFINE_float('gmp_warmup_ratio', 0.05, 'Fraction of steps for LR warmup in GMP.')
+    flags.DEFINE_integer('gmp_dense_warmup_steps', 0, 'Steps to train fully dense before GMP pruning schedule starts.')
     flags.DEFINE_float('gmp_pruning_end_ratio', 1.0, 'Fraction of steps at which pruning completes; remaining steps do sparse training with fixed mask.')
     flags.DEFINE_integer('gmp_mask_interval', 32, 'Steps between mask updates in GMP.')
     flags.DEFINE_float('gmp_fisher_beta', 0.999, 'EMA beta for Fisher diagonal accumulation.')
