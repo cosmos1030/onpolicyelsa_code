@@ -6,8 +6,9 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
-#SBATCH --time=0-00:30:00
+#SBATCH --time=0-01:30:00
 #SBATCH --output=/home1/doyoonkim/projects/elsa/logs/debug_safe_%j.out
+#SBATCH --exclude=n3,n60,n76,n77,n80
 exec 2>&1
 
 PYTHON=/home1/doyoonkim/miniconda3/envs/rac/bin/python

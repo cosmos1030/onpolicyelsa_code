@@ -251,8 +251,9 @@ def prune_safe(args, model, tokenizer, device, prune_n=0, prune_m=0):
     logging.info(f'SAFE calibration prepared: {inps.shape}')
 
     for i in range(len(layers)):
-        layer = layers[i].to(device)
-        current_inps = inps.to(device)
+        # Reference SAFE converts to float32: Adam state in bf16 rounds small updates to zero
+        layer = layers[i].float().to(device)
+        current_inps = inps.float().to(device)
 
         dense_layer_targets = torch.zeros_like(current_inps, device='cpu')
         with torch.no_grad():
@@ -362,7 +363,7 @@ def prune_safe(args, model, tokenizer, device, prune_n=0, prune_m=0):
                 else:
                     current_layer_outputs[j] = layer(inp_j, attention_mask=attention_mask, position_ids=position_ids, position_embeddings=position_embeddings)[0].cpu()
 
-        layers[i] = layer.to('cpu')
+        layers[i] = layer.to(torch.bfloat16).to('cpu')  # convert back to bf16 before saving
         del opt, lr_scheduler, tensordata, loader, prunable
         torch.cuda.empty_cache()
         inps, current_layer_outputs = current_layer_outputs, inps
