@@ -250,6 +250,11 @@ def prune_safe(args, model, tokenizer, device, prune_n=0, prune_m=0):
     current_layer_outputs = torch.zeros_like(inps)
     logging.info(f'SAFE calibration prepared: {inps.shape}')
 
+    # fp32 layer + FlashAttention conflict: FlashAttn rejects fp32 inputs.
+    # Switch to eager attention (supports fp32) for the entire SAFE loop.
+    _orig_attn_impl = getattr(model.config, '_attn_implementation', 'flash_attention_2')
+    model.config._attn_implementation = 'eager'
+
     for i in range(len(layers)):
         # Reference SAFE converts to float32: Adam state in bf16 rounds small updates to zero
         layer = layers[i].float().to(device)
@@ -369,6 +374,8 @@ def prune_safe(args, model, tokenizer, device, prune_n=0, prune_m=0):
         del opt, lr_scheduler, tensordata, loader, prunable
         torch.cuda.empty_cache()
         inps, current_layer_outputs = current_layer_outputs, inps
+
+    model.config._attn_implementation = _orig_attn_impl
 
     if use_cache is not None:
         model.config.use_cache = use_cache
