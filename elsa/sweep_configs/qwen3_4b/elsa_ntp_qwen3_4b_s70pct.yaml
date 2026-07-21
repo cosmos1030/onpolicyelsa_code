@@ -1,0 +1,63 @@
+program: main.py
+method: grid
+project: elsa_qwen3_4b
+name: sweep_elsa_ntp_qwen3_4b_s70pct
+
+command:
+  - /home1/doyoonkim/miniconda3/envs/rac/bin/python
+  - ${program}
+  - ${args}
+
+metric:
+  name: math500_pass@1
+  goal: maximize
+
+parameters:
+  admm_lr:
+    values: [1.0e-5, 5.0e-5, 1.0e-4]
+  admm_lmda:
+    values: [1.0e-3, 5.0e-3, 1.0e-2]
+  model:
+    value: "/home1/doyoonkim/.cache/huggingface/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c"
+  dataset:
+    value: "math_cot"
+  data_path:
+    value: "/home1/doyoonkim/projects/elsa/data/math_220k_cot.jsonl"
+  sparsity_ratio:
+    value: 0.70
+  sparsity_type:
+    value: "unstructured"
+  admm_steps:
+    value: 8192
+  admm_batch_size:
+    value: 1
+  admm_gradient_accumulation_steps:
+    value: 8
+  admm_lmda_schedule_mode:
+    value: "cosine"
+  admm_beta2:
+    value: 0.999
+  admm_interval:
+    value: 32
+  admm_base_optimizer:
+    value: "adamw"
+  admm_precision:
+    value: "bf16"
+  kd_max_prompt_len:
+    value: 512
+  save_model:
+    value: true
+  admm_save_path:
+    value: "/home1/doyoonkim/projects/elsa/models"
+  eval_math500:
+    value: false
+  eval_zero_shot:
+    value: true
+  wandb_project:
+    value: "elsa_qwen3_4b"
+  wandb:
+    value: true
+  seed:
+    value: 42
+  push_to_hub:
+    value: false

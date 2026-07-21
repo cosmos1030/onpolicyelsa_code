@@ -259,10 +259,12 @@ def prune_safe(args, model, tokenizer, device, prune_n=0, prune_m=0):
         with torch.no_grad():
             for j in range(current_inps.shape[0]):
                 inp_j = current_inps[j].unsqueeze(0)
-                if OPTDecoderLayer and isinstance(layer, OPTDecoderLayer):
-                    dense_layer_targets[j] = layer(inp_j, attention_mask=attention_mask)[0].detach().cpu()
-                else:
-                    dense_layer_targets[j] = layer(inp_j, attention_mask=attention_mask, position_ids=position_ids, position_embeddings=position_embeddings)[0].detach().cpu()
+                # autocast: weights stay fp32 (precise Adam), but ops run bf16 (FlashAttn requires fp16/bf16)
+                with autocast(device_type='cuda', dtype=torch.bfloat16):
+                    if OPTDecoderLayer and isinstance(layer, OPTDecoderLayer):
+                        dense_layer_targets[j] = layer(inp_j, attention_mask=attention_mask)[0].detach().cpu()
+                    else:
+                        dense_layer_targets[j] = layer(inp_j, attention_mask=attention_mask, position_ids=position_ids, position_embeddings=position_embeddings)[0].detach().cpu()
 
         tensordata = TensorData(current_inps.cpu(), dense_layer_targets, device)
         loader = TensorDataLoader(tensordata, args.safe_batch_size, shuffle=True, num_workers=0).get_loader()
