@@ -258,12 +258,12 @@ def prune_safe(args, model, tokenizer, device, prune_n=0, prune_m=0):
     for i in range(len(layers)):
         # Reference SAFE converts to float32: Adam state in bf16 rounds small updates to zero
         layer = layers[i].float().to(device)
-        current_inps = inps.float().to(device)
+        current_inps = inps.float()  # keep on CPU; 64GB+ in fp32 would OOM on A6000
 
         dense_layer_targets = torch.zeros_like(current_inps, device='cpu')
         with torch.no_grad():
             for j in range(current_inps.shape[0]):
-                inp_j = current_inps[j].unsqueeze(0)
+                inp_j = current_inps[j].unsqueeze(0).to(device)
                 # autocast: weights stay fp32 (precise Adam), but ops run bf16 (FlashAttn requires fp16/bf16)
                 with autocast(device_type='cuda', dtype=torch.bfloat16):
                     if OPTDecoderLayer and isinstance(layer, OPTDecoderLayer):
@@ -364,7 +364,7 @@ def prune_safe(args, model, tokenizer, device, prune_n=0, prune_m=0):
 
         with torch.no_grad():
             for j in range(current_inps.shape[0]):
-                inp_j = current_inps[j].unsqueeze(0)
+                inp_j = current_inps[j].unsqueeze(0).to(device)
                 if OPTDecoderLayer and isinstance(layer, OPTDecoderLayer):
                     current_layer_outputs[j] = layer(inp_j, attention_mask=attention_mask)[0].cpu()
                 else:
