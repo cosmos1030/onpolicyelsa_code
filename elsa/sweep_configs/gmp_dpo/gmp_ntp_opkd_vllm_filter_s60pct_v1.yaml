@@ -1,0 +1,108 @@
+program: main.py
+method: grid
+project: gmp_opkd_interval_1.5b
+name: gmp_ntp_opkd_vllm_filter_s60pct_v1
+entity: dyk6208-gwangju-institute-of-science-and-technology
+
+# NTP + OPKD (no IPO), vLLM rollout, interval=1, drop g_OPKD when dot(g_OPKD, g_NTP) < 0
+
+command:
+  - /home1/doyoonkim/miniconda3/envs/rac/bin/python
+  - ${program}
+  - ${args}
+
+metric:
+  name: math500_pass@1
+  goal: maximize
+
+parameters:
+  seed:
+    value: 42
+  sparsity_ratio:
+    value: 0.60
+  model:
+    value: "/home1/doyoonkim/.cache/huggingface/hub/models--deepseek-ai--DeepSeek-R1-Distill-Qwen-1.5B/snapshots/ad9f0ae0864d7fbcd1cd905e3c6c5b069cc8b562"
+  dataset:
+    value: "math_cot"
+  data_path:
+    value: "/home1/doyoonkim/projects/elsa/data/math_220k_unified.jsonl"
+  gmp_prompt_path:
+    value: "/home1/doyoonkim/projects/elsa/data/math_220k_unified.jsonl"
+  do_gmp:
+    value: true
+  gmp_steps:
+    value: 1024
+  gmp_batch_size:
+    value: 1
+  gmp_grad_accum:
+    value: 8
+  gmp_lr:
+    value: 1e-4
+  gmp_warmup_ratio:
+    value: 0.05
+  gmp_mask_interval:
+    value: 32
+  gmp_fisher_beta:
+    value: 0.999
+  gmp_kd_lambda:
+    value: 1.0
+  gmp_max_seq_len:
+    value: 2048
+  gmp_max_prompt_len:
+    value: 512
+  gmp_dpo_lambda:
+    value: 0.0
+  gmp_dpo_gen_batch:
+    value: 8
+  gmp_dpo_max_new_tokens:
+    value: 512
+  gmp_dpo_temperature:
+    value: 0.7
+  gmp_dpo_use_vllm_rejected:
+    value: true
+  gmp_dpo_vllm_gpu_mem:
+    value: 0.35
+  gmp_onpolicy_kd_lambda:
+    value: 1
+  gmp_onpolicy_pg:
+    value: false
+  gmp_opkd_reuse_ipo_rollouts:
+    value: true
+  gmp_opkd_project_onto_combined:
+    value: false
+  gmp_opkd_filter_combined:
+    value: true
+  gmp_filter_grad_conflict:
+    value: false
+  gmp_rollout_buffer_size:
+    value: 0
+  gmp_onpolicy_kd_interval:
+    value: 1
+  gmp_onpolicy_max_new_tokens:
+    value: 512
+  gmp_onpolicy_kd_topk:
+    value: 100
+  gmp_onpolicy_reverse_kl:
+    value: true
+  gmp_onpolicy_temperature:
+    value: 1
+  gmp_onpolicy_grad_clip:
+    value: 1
+  gmp_save_path:
+    value: "/home1/doyoonkim/projects/elsa/models"
+  save_model:
+    value: true
+  eval_math500:
+    value: true
+  math500_max_new_tokens:
+    value: 8192
+  math500_max_samples:
+    value: 500
+  eval_zero_shot:
+    value: false
+  wandb:
+    value: true
+  wandb_project:
+    value: "gmp_opkd_interval_1.5b"
+  push_to_hub:
+    value: true
