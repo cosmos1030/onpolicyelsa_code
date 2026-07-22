@@ -189,8 +189,9 @@ class MathPromptDataset(Dataset):
         with open(jsonl_path) as f:
             records = [json.loads(line) for line in f if line.strip()]
 
+        random.shuffle(records)
         if nsamples and nsamples < len(records):
-            records = random.sample(records, nsamples)
+            records = records[:nsamples]
 
         self.samples = []
         for rec in records:
@@ -286,8 +287,9 @@ class MathCotKDDataset(Dataset):
         with open(jsonl_path) as f:
             records = [json.loads(line) for line in f if line.strip()]
 
+        random.shuffle(records)
         if nsamples and nsamples < len(records):
-            records = random.sample(records, nsamples)
+            records = records[:nsamples]
 
         self.samples = []
         for rec in records:
@@ -295,21 +297,27 @@ class MathCotKDDataset(Dataset):
             if not text:
                 continue
 
-            # Split at <think>
-            idx = text.find(self.THINK_TAG)
-            if idx == -1:
-                # fallback: split at first double-newline
-                idx = text.find("\n\n")
-                if idx == -1:
-                    continue
-                prompt_text = text[:idx]
-                cot_text = text[idx + 2:]
-            else:
-                prompt_text = text[:idx + len(self.THINK_TAG)]
-                cot_text = text[idx:]  # includes <think>CoT</think>answer
+            is_pretrain = rec.get("pretrain", False)
 
-            if not cot_text.strip():
-                continue
+            if is_pretrain:
+                # Pretrain data (e.g. FineWeb-Edu): no prompt masking, gradient flows everywhere.
+                prompt_text = ""
+                prompt_len = 0
+            else:
+                # Split at <think>
+                idx = text.find(self.THINK_TAG)
+                if idx == -1:
+                    # fallback: split at first double-newline
+                    idx = text.find("\n\n")
+                    if idx == -1:
+                        continue
+                    prompt_text = text[:idx]
+                else:
+                    prompt_text = text[:idx + len(self.THINK_TAG)]
+
+                cot_text = text[len(prompt_text):]
+                if not cot_text.strip():
+                    continue
 
             # Full sequence for NTP
             full_enc = tokenizer(
@@ -333,20 +341,25 @@ class MathCotKDDataset(Dataset):
                 full_mask = full_enc["attention_mask"].squeeze(0)
 
             # Prompt for KD generation
-            prompt_enc = tokenizer(
-                prompt_text,
-                truncation=True,
-                max_length=max_prompt_len,
-                return_tensors="pt",
-                padding=False,
-            )
-            prompt_ids = prompt_enc["input_ids"].squeeze(0)
-            prompt_mask_t = prompt_enc["attention_mask"].squeeze(0)
-            prompt_len = prompt_ids.shape[0]
+            if is_pretrain:
+                prompt_ids = torch.zeros(0, dtype=torch.long)
+                prompt_mask_t = torch.zeros(0, dtype=torch.long)
+            else:
+                prompt_enc = tokenizer(
+                    prompt_text,
+                    truncation=True,
+                    max_length=max_prompt_len,
+                    return_tensors="pt",
+                    padding=False,
+                )
+                prompt_ids = prompt_enc["input_ids"].squeeze(0)
+                prompt_mask_t = prompt_enc["attention_mask"].squeeze(0)
+                prompt_len = prompt_ids.shape[0]
 
-            # Labels: mask problem tokens with -100, keep CoT tokens
+            # Labels: mask problem tokens with -100 (pretrain: no masking)
             labels = full_ids.clone()
-            labels[:prompt_len] = -100
+            if not is_pretrain:
+                labels[:prompt_len] = -100
 
             self.samples.append({
                 "input_ids": full_ids,
@@ -365,6 +378,24 @@ class MathCotKDDataset(Dataset):
 
     def __getitem__(self, idx):
         return self.samples[idx]
+
+
+class NTPPromptWrapper(Dataset):
+    """
+    Thin wrapper over MathCotKDDataset that exposes prompt_ids/prompt_mask
+    as input_ids/attention_mask so it can be used with collate_prompts /
+    generate_chosen_cache while preserving the same sample order as the NTP
+    DataLoader (shuffle=False on both sides).
+    """
+    def __init__(self, ntp_dataset):
+        self.dataset = ntp_dataset
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx):
+        s = self.dataset[idx]
+        return {"input_ids": s["prompt_ids"], "attention_mask": s["prompt_mask"]}
 
 
 def collate_cot_kd(pad_token_id):
