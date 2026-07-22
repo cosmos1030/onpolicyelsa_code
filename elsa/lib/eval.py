@@ -31,16 +31,19 @@ def eval_ppl(
     for d in dataset:
         # Print status
         logging.info(f"evaluating on {d}")
-
-        # Get the test loader
-        _, testloader = get_loaders(
-            d, seed=args.seed, seqlen=model.seqlen, tokenizer=tokenizer, data_path=data_path 
-        )
-        # Evaluate ppl in no grad context to avoid updating the model
-        with torch.no_grad():
-            ppl_test = calculate_ppl(model, testloader,tokenizer, 1)
-            ppls[d] = ppl_test
-    return ppls 
+        try:
+            # Get the test loader
+            _, testloader = get_loaders(
+                d, seed=args.seed, seqlen=model.seqlen, tokenizer=tokenizer, data_path=data_path
+            )
+            # Evaluate ppl in no grad context to avoid updating the model
+            with torch.no_grad():
+                ppl_test = calculate_ppl(model, testloader, tokenizer, 1)
+                ppls[d] = ppl_test
+            logging.info(f"ppl/{d}: {ppl_test:.4f}")
+        except Exception as e:
+            logging.warning(f"PPL eval failed for {d}: {e}")
+    return ppls
 
 @torch.no_grad()
 def calculate_ppl(

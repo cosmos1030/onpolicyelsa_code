@@ -72,6 +72,13 @@ def run_lighteval_math500(
     print(f"[lighteval_math500] Running: {' '.join(cmd)}", flush=True)
 
     env = os.environ.copy()
+    # torchrun restricts CUDA_VISIBLE_DEVICES to one GPU per rank; expose all for vLLM TP
+    env["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in range(tensor_parallel_size))
+    # Allow dataset download if not cached; model loading uses local cache only
+    env["HF_DATASETS_OFFLINE"] = "0"
+    env["TRANSFORMERS_OFFLINE"] = "0"
+    # vLLM IP detection fails on some nodes; force localhost for single-node TP
+    env.setdefault("VLLM_HOST_IP", "127.0.0.1")
     result = subprocess.run(cmd, env=env, capture_output=False)
     if result.returncode != 0:
         logger.warning(f"[lighteval_math500] lighteval exited with code {result.returncode}")
