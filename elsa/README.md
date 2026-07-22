@@ -19,10 +19,15 @@ If you have any questions, please contact: kwanhee.lee@postech.ac.kr
 ## Setup
 
 ```bash
-conda create -n elsa python=3.10
-conda activate elsa
+conda create -n rac python=3.10
+conda activate rac
 pip install -r requirements.txt
 ```
+
+> **Note:** The conda environment name used in SLURM scripts is `rac`. `requirements.txt` reflects the actual environment (torch 2.7.1, transformers 4.56.2, vllm 0.10.0, trl 0.21.0). Flash Attention is installed separately:
+> ```bash
+> pip install flash-attn --no-build-isolation
+> ```
 
 
 ## Running ELSA
