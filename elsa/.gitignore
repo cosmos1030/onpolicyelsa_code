@@ -8,3 +8,14 @@ __pycache__/
 admm*/
 dataset/
 distill_output/
+models/
+.cache/
+eval_outputs/
+tmp_scripts/
+logs/
+*.pkl
+*.json
+runs_db.json
+sweep_agent_log.txt
+*.txt
+!elsa/scripts/register_qwen3_sweeps.sh
