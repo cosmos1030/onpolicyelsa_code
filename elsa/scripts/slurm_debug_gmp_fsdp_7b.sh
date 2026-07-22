@@ -16,7 +16,7 @@ mkdir -p /local-data/user-data/$USER/job_$SLURM_JOB_ID/slurm
 mkdir -p /local-data/user-data/$USER/job_$SLURM_JOB_ID/wandb
 
 export WANDB_DIR=/local-data/user-data/$USER/job_$SLURM_JOB_ID/wandb
-export WANDB_API_KEY=$(grep WANDB_API_KEY ~/.bashrc | cut -d'"' -f2 | tail -1)
+export WANDB_API_KEY=$(grep WANDB_API_KEY ~/.bashrc | cut -d'=' -f2 | tail -1)
 export HF_TOKEN=$(cat ~/.hf_token 2>/dev/null || echo "")
 export TOKENIZERS_PARALLELISM=false
 export OMP_NUM_THREADS=8

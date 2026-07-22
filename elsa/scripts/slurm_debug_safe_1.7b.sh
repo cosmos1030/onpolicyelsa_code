@@ -30,8 +30,8 @@ cd /home1/doyoonkim/projects/elsa
 
 $PYTHON main.py \
     --model="$MODEL" \
-    --dataset=math_cot \
-    --data_path="/home1/doyoonkim/projects/elsa/data/ot3_fineweb_20k.jsonl" \
+    --dataset=c4 \
+    --data_path="/home1/doyoonkim/projects/elsa/data/c4" \
     --nsamples=8 \
     --sparsity_ratio=0.5 \
     --sparsity_type=unstructured \
@@ -49,6 +49,7 @@ $PYTHON main.py \
     --save_model=false \
     --eval_math500=false \
     --eval_zero_shot=false \
+    --eval_full_bench=false \
     --wandb=false \
     --seed=42
 

@@ -12,6 +12,8 @@
 #SBATCH --exclude=n3,n42,n51,n52,n54,n55,n58,n60,n76,n77,n80
 exec 2>&1
 
+module load cuda/12.8
+
 echo "NODE=$(hostname)  JOB=$SLURM_JOB_ID"
 nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader
 

@@ -1,15 +1,15 @@
 #!/bin/bash
 #SBATCH --job-name=safe_prune_1.7b
-#SBATCH --partition=A100-80GB
-#SBATCH --qos=hpgpu
+#SBATCH --partition=A6000
+#SBATCH --qos=normal
 #SBATCH --gres=gpu:1
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=10
-#SBATCH --mem=80G
-#SBATCH --time=3-00:00:00
-#SBATCH --output=/local-data/user-data/%u/safe_prune_1.7b_%j/slurm_%j.out
-#SBATCH --exclude=n3,n42,n51,n52,n54,n55,n58,n60,n76,n77,n80
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=48G
+#SBATCH --time=2-00:00:00
+#SBATCH --output=/home1/doyoonkim/projects/elsa/logs/safe_prune_1.7b_%j.out
+#SBATCH --exclude=n3,n42,n46,n51,n52,n54,n55,n58,n60,n76,n77,n80,n91
 exec 2>&1
 
 # SAFE pruning for Qwen3-1.7B — S50/60/70
@@ -22,7 +22,7 @@ PYTHON=/home1/doyoonkim/miniconda3/envs/rac/bin/python
 MODEL="/home1/doyoonkim/.cache/huggingface/hub/models--Qwen--Qwen3-1.7B/snapshots/70d244cc86ccca08cf5af4e1e306ecf908b1ad5e"
 SAVE_DIR="/home1/doyoonkim/projects/elsa/models"
 
-LOCAL_JOB_BASE="/local-data/user-data/${USER}/safe_prune_1.7b_${SLURM_JOB_ID}"
+LOCAL_JOB_BASE="/home1/doyoonkim/projects/elsa/logs/safe_prune_1.7b_${SLURM_JOB_ID}"
 mkdir -p "$LOCAL_JOB_BASE/wandb" "$LOCAL_JOB_BASE/eval_out"
 
 export WANDB_DIR="$LOCAL_JOB_BASE/wandb"
@@ -55,15 +55,15 @@ $PYTHON main.py \
     --model="$MODEL" \
     --dataset=math_cot \
     --data_path="/home1/doyoonkim/projects/elsa/data/ot3_fineweb_20k.jsonl" \
-    --nsamples=128 \
+    --nsamples=3840 \
     --sparsity_ratio=${SPARSITY} \
     --sparsity_type=unstructured \
     --do_safe=true \
     --safe_lr=2e-4 \
     --safe_lmda=1e-3 \
     --safe_rho=0.05 \
-    --safe_epochs=30 \
-    --safe_warmup_epochs=2 \
+    --safe_epochs=1 \
+    --safe_warmup_epochs=0 \
     --safe_interval=32 \
     --safe_batch_size=4 \
     --safe_accumulation_steps=1 \

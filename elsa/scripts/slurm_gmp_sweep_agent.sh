@@ -1,14 +1,14 @@
 #!/bin/bash
 #SBATCH --job-name=gmp_sweep
-#SBATCH --partition=A6000
-#SBATCH --qos=normal
+#SBATCH --partition=A100-80GB
+#SBATCH --qos=hpgpu
 #SBATCH --gres=gpu:1
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=10
 #SBATCH --output=/local-data/user-data/%u/job_%j/slurm/%x_%j.out
 #SBATCH -t 3-00:00:00
-#SBATCH --exclude=n3,n60,n76,n80
+#SBATCH --exclude=n3,n52,n55,n58,n60,n76,n80
 
 # Usage:
 #   wandb sweep sweep_configs/gmp_ntp_deepseek_1.5b.yaml
@@ -24,7 +24,7 @@ fi
 
 # If no slashes, assume it's a bare ID and prepend entity/project
 if [[ "$SWEEP_ARG" != *"/"* ]]; then
-    SWEEP_ARG="dyk6208-gwangju-institute-of-science-and-technology/gmp_qwen3_1.5b_v2/${SWEEP_ARG}"
+    SWEEP_ARG="dyk6208-gwangju-institute-of-science-and-technology/gmp_dpo_1.5b/${SWEEP_ARG}"
 fi
 
 ENV_FILE="/run/slurm/job_env_${SLURM_JOB_ID}"
@@ -41,6 +41,7 @@ cd /home1/doyoonkim/projects/elsa
 export TRITON_CACHE_DIR=/tmp/triton_cache_doyoon
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export HF_TOKEN=$(cat ~/.hf_token 2>/dev/null || echo "")
+export WANDB_API_KEY=$(grep WANDB_API_KEY ~/.bashrc | cut -d'=' -f2 | tail -1)
 export WANDB_DIR="$LOCAL_JOB_BASE/wandb"
 export WANDB_START_METHOD=thread
 
