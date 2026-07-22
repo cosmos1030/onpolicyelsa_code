@@ -278,7 +278,6 @@ def _flush_right(attention_mask, *tensors):
 # DPO loss (ported from DPOTrainer.dpo_loss)
 # ---------------------------------------------------------------------------
 
-@torch.no_grad()
 def get_completion_token_logps(
     model: nn.Module,
     prompt_input_ids: torch.Tensor,
@@ -354,10 +353,16 @@ def ca_ipo_loss(
             (policy_rejected_logps_avg - ref_rejected_logps_avg)
     e = (delta - tau).detach()
 
-    # CA-IPO surrogate margin
-    delta_w = (w_pos * z_s_pos).sum(dim=-1) - (w_neg * z_s_neg).sum(dim=-1)
+    # CA-IPO surrogate margin (length-normalized to match delta's scale)
+    # With uniform w=1: delta_w = avg(z_s_pos) - avg(z_s_neg) = delta
+    # Factor of 2 matches IPO's chain rule: d/dθ (delta-tau)^2 = 2*(delta-tau)*d(delta)/dθ
+    # → uniform CA-IPO gradient per token = 2*e/chosen_len = IPO gradient per token
+    chosen_len   = chosen_mask.sum(dim=-1).clamp_min(1.0)
+    rejected_len = rejected_mask.sum(dim=-1).clamp_min(1.0)
+    delta_w = (w_pos * z_s_pos).sum(dim=-1) / chosen_len \
+            - (w_neg * z_s_neg).sum(dim=-1) / rejected_len
 
-    loss = (e * delta_w).mean()
+    loss = 2.0 * (e * delta_w).mean()
 
     metrics = {
         "ca_ipo/loss":       loss.detach(),
@@ -368,6 +373,8 @@ def ca_ipo_loss(
         "ca_ipo/w_neg_max":  w_neg.max(dim=-1).values.mean(),
         "ca_ipo/w_pos_mean": (w_pos * chosen_mask).sum() / chosen_mask.sum().clamp_min(1),
         "ca_ipo/w_neg_mean": (w_neg * rejected_mask).sum() / rejected_mask.sum().clamp_min(1),
+        "ca_ipo/w_pos_std":  w_pos[chosen_mask.bool()].std() if chosen_mask.sum() > 1 else torch.tensor(0.0),
+        "ca_ipo/w_neg_std":  w_neg[rejected_mask.bool()].std() if rejected_mask.sum() > 1 else torch.tensor(0.0),
         "ca_ipo/a_pos_mean": (a_pos * chosen_mask).sum() / chosen_mask.sum().clamp_min(1),
         "ca_ipo/a_neg_mean": (a_neg * rejected_mask).sum() / rejected_mask.sum().clamp_min(1),
     }
@@ -533,6 +540,8 @@ def generate_chosen_cache(
     cache_dir: str | None = None,
     prompt_path: str = "",
     store_teacher_logps: bool = False,
+    use_vllm: bool = False,
+    model_path: str | None = None,
 ) -> list[dict]:
     """
     Pre-generate chosen (dense) continuations for n_pairs prompts.
@@ -541,6 +550,9 @@ def generate_chosen_cache(
 
     If cache_dir is given, saves/loads cache from disk keyed by generation params.
     Cache is invalidated automatically when n_pairs/max_new_tokens/temperature/prompt_path change.
+
+    use_vllm=True: offload dense_model to CPU, use vLLM offline engine for fast batch generation.
+    model_path must be provided when use_vllm=True.
     """
     from lib.gkd_admm_trainer import collate_prompts
 
@@ -551,47 +563,109 @@ def generate_chosen_cache(
             logging.info(f"Loading chosen cache from disk: {cache_file}")
             return torch.load(cache_file, map_location="cpu")
 
+    # ── collect all prompts first ───────────────────────────────────────────
     loader = DataLoader(
         prompt_dataset,
         batch_size=gen_batch_size,
         shuffle=False,
         collate_fn=collate_prompts(tokenizer.pad_token_id or 0),
     )
+    all_prompt_ids, all_prompt_masks = [], []
+    for batch in loader:
+        if len(all_prompt_ids) >= n_pairs:
+            break
+        for i in range(batch["input_ids"].shape[0]):
+            if len(all_prompt_ids) >= n_pairs:
+                break
+            all_prompt_ids.append(batch["input_ids"][i])
+            all_prompt_masks.append(batch["attention_mask"][i])
 
     cache = []
-    dense_model.eval()
-    logging.info(f"Generating chosen cache: {n_pairs} pairs (batch={gen_batch_size}) ...")
-    for batch in loader:
-        if len(cache) >= n_pairs:
-            break
-        prompt_ids  = batch["input_ids"].to(device)
-        prompt_mask = batch["attention_mask"].to(device)
+    logging.info(f"Generating chosen cache: {n_pairs} pairs ...")
 
-        cont_ids, cont_mask = generate_continuations(
-            dense_model, tokenizer, prompt_ids, prompt_mask,
-            max_new_tokens=max_new_tokens, temperature=temperature,
+    if use_vllm and model_path:
+        # ── vLLM offline batch generation ──────────────────────────────────
+        import gc
+        logging.info(f"[vLLM] Offloading dense_model to CPU for chosen cache generation ...")
+        dense_model.cpu()
+        torch.cuda.empty_cache()
+        gc.collect()
+
+        os.environ["VLLM_USE_V1"] = "0"
+        from vllm import LLM, SamplingParams
+        llm = LLM(
+            model=model_path,
+            dtype="bfloat16",
+            gpu_memory_utilization=0.85,
+            max_model_len=max_new_tokens + 1024,
+            enforce_eager=True,
+            trust_remote_code=True,
         )
+        sampling_params = SamplingParams(
+            max_tokens=max_new_tokens,
+            temperature=temperature,
+            seed=42,
+        )
+        pad_id = tokenizer.pad_token_id or 0
+        # strip left padding before feeding to vLLM
+        token_ids_list = []
+        for ids in all_prompt_ids:
+            ids_list = ids.tolist()
+            # remove leading pad tokens
+            while ids_list and ids_list[0] == pad_id:
+                ids_list.pop(0)
+            token_ids_list.append(ids_list)
 
-        # Optionally compute teacher (dense model) token logps for CA-IPO
-        if store_teacher_logps:
-            teacher_tok_logps = get_completion_token_logps(
-                dense_model,
-                prompt_ids, prompt_mask,
-                cont_ids.to(device), cont_mask.to(device),
-            ).cpu()
+        logging.info(f"[vLLM] Running batch generation for {len(token_ids_list)} prompts ...")
+        outputs = llm.generate(prompt_token_ids=token_ids_list, sampling_params=sampling_params)
 
-        for i in range(prompt_ids.shape[0]):
-            if len(cache) >= n_pairs:
-                break
-            entry = {
-                "prompt_input_ids":       prompt_ids[i:i+1].cpu(),
-                "prompt_attention_mask":  prompt_mask[i:i+1].cpu(),
-                "chosen_input_ids":       cont_ids[i:i+1].cpu(),
-                "chosen_attention_mask":  cont_mask[i:i+1].cpu(),
-            }
+        for i, out in enumerate(outputs):
+            cont_tokens = out.outputs[0].token_ids
+            cont_ids  = torch.tensor(cont_tokens, dtype=torch.long).unsqueeze(0)
+            cont_mask = torch.ones_like(cont_ids)
+            cache.append({
+                "prompt_input_ids":      all_prompt_ids[i].unsqueeze(0),
+                "prompt_attention_mask": all_prompt_masks[i].unsqueeze(0),
+                "chosen_input_ids":      cont_ids,
+                "chosen_attention_mask": cont_mask,
+            })
+
+        del llm
+        torch.cuda.empty_cache()
+        gc.collect()
+        logging.info(f"[vLLM] Done. Restoring dense_model to {device} ...")
+        dense_model.to(device)
+    else:
+        # ── HF generate (original path) ─────────────────────────────────────
+        dense_model.eval()
+        for start in range(0, len(all_prompt_ids), gen_batch_size):
+            chunk_ids  = torch.stack(all_prompt_ids[start:start+gen_batch_size]).to(device)
+            chunk_mask = torch.stack(all_prompt_masks[start:start+gen_batch_size]).to(device)
+
+            cont_ids, cont_mask = generate_continuations(
+                dense_model, tokenizer, chunk_ids, chunk_mask,
+                max_new_tokens=max_new_tokens, temperature=temperature,
+            )
+
             if store_teacher_logps:
-                entry["teacher_chosen_token_logps"] = teacher_tok_logps[i:i+1]
-            cache.append(entry)
+                with torch.no_grad():
+                    teacher_tok_logps = get_completion_token_logps(
+                        dense_model,
+                        chunk_ids, chunk_mask,
+                        cont_ids.to(device), cont_mask.to(device),
+                    ).cpu()
+
+            for i in range(chunk_ids.shape[0]):
+                entry = {
+                    "prompt_input_ids":      all_prompt_ids[start+i].unsqueeze(0),
+                    "prompt_attention_mask": all_prompt_masks[start+i].unsqueeze(0),
+                    "chosen_input_ids":      cont_ids[i:i+1].cpu(),
+                    "chosen_attention_mask": cont_mask[i:i+1].cpu(),
+                }
+                if store_teacher_logps:
+                    entry["teacher_chosen_token_logps"] = teacher_tok_logps[i:i+1]
+                cache.append(entry)
+
     logging.info(f"Chosen cache ready: {len(cache)} pairs")
 
     if cache_dir:
@@ -626,6 +700,10 @@ class RejectedQueue:
         max_new_tokens: int = 512,
         temperature: float = 0.7,
         teacher_model: nn.Module | None = None,
+        grad_accum: int = 1,
+        use_vllm: bool = False,
+        model_path: str | None = None,
+        vllm_gpu_memory_utilization: float = 0.35,
     ):
         self.chosen_cache   = chosen_cache
         self.mask_interval  = mask_interval
@@ -633,15 +711,43 @@ class RejectedQueue:
         self.max_new_tokens = max_new_tokens
         self.temperature    = temperature
         self.teacher_model  = teacher_model  # for CA-IPO: compute teacher logps on rejected
+        self.grad_accum     = grad_accum
         self._queue: deque  = deque()
         self._ptr: int      = 0   # pointer into chosen_cache
+        self.rollout_pool: list[dict] = []  # (prompt+rejected) full seqs for OPKD reuse
+        self._pool_ptr: int = 0
+
+        # vLLM engine for fast rejected generation (initialized once, weights synced each refill)
+        self.use_vllm = use_vllm
+        self._vllm_engine = None
+        self._vllm_sampling_params = None
+        if use_vllm and model_path:
+            os.environ["VLLM_USE_V1"] = "0"
+            from vllm import LLM, SamplingParams
+            logging.info(f"[RejectedQueue] Initializing vLLM engine from {model_path} "
+                         f"(gpu_memory_utilization={vllm_gpu_memory_utilization}) ...")
+            self._vllm_engine = LLM(
+                model=model_path,
+                dtype="bfloat16",
+                gpu_memory_utilization=vllm_gpu_memory_utilization,
+                max_model_len=max_new_tokens + 1024,
+                enforce_eager=True,
+                trust_remote_code=True,
+            )
+            self._vllm_sampling_params = SamplingParams(
+                max_tokens=max_new_tokens,
+                temperature=temperature,
+                seed=42,
+            )
+            logging.info("[RejectedQueue] vLLM engine ready.")
 
     def refill(self, sparse_model: nn.Module, tokenizer, device: str):
         """
-        Generate mask_interval rejected continuations from sparse_model
+        Generate mask_interval * grad_accum rejected continuations from sparse_model
         and push (chosen_entry, rejected_cont) pairs into the queue.
+        Each optimizer step consumes grad_accum pairs, matching NTP accumulation.
         """
-        n = min(self.mask_interval, len(self.chosen_cache))
+        n = min(self.mask_interval * self.grad_accum, len(self.chosen_cache))
         idxs = [(self._ptr + i) % len(self.chosen_cache) for i in range(n)]
         self._ptr = (self._ptr + n) % len(self.chosen_cache)
 
@@ -653,16 +759,37 @@ class RejectedQueue:
             all_prompt_masks.append(self.chosen_cache[idx]["prompt_attention_mask"])
 
         all_cont_ids, all_cont_masks = [], []
-        for start in range(0, len(idxs), self.gen_batch_size):
-            end   = start + self.gen_batch_size
-            p_ids = torch.cat(all_prompt_ids[start:end], dim=0).to(device)
-            p_msk = torch.cat(all_prompt_masks[start:end], dim=0).to(device)
-            cont_ids, cont_mask = generate_continuations(
-                sparse_model, tokenizer, p_ids, p_msk,
-                max_new_tokens=self.max_new_tokens, temperature=self.temperature,
+        if self.use_vllm and self._vllm_engine is not None:
+            # ── vLLM path: sync weights then batch-generate all at once ────
+            self._sync_weights_to_vllm(sparse_model)
+            pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
+            token_ids_list = []
+            for ids in all_prompt_ids:
+                ids_list = ids.squeeze(0).tolist()
+                while ids_list and ids_list[0] == pad_id:
+                    ids_list.pop(0)
+                token_ids_list.append(ids_list)
+            outputs = self._vllm_engine.generate(
+                prompt_token_ids=token_ids_list,
+                sampling_params=self._vllm_sampling_params,
             )
-            all_cont_ids.append(cont_ids.cpu())
-            all_cont_masks.append(cont_mask.cpu())
+            for out in outputs:
+                cont_tokens = out.outputs[0].token_ids
+                cont_ids_t  = torch.tensor(cont_tokens, dtype=torch.long).unsqueeze(0)
+                all_cont_ids.append(cont_ids_t)
+                all_cont_masks.append(torch.ones_like(cont_ids_t))
+        else:
+            # ── HF generate path ────────────────────────────────────────────
+            for start in range(0, len(idxs), self.gen_batch_size):
+                end   = start + self.gen_batch_size
+                p_ids = torch.cat(all_prompt_ids[start:end], dim=0).to(device)
+                p_msk = torch.cat(all_prompt_masks[start:end], dim=0).to(device)
+                cont_ids, cont_mask = generate_continuations(
+                    sparse_model, tokenizer, p_ids, p_msk,
+                    max_new_tokens=self.max_new_tokens, temperature=self.temperature,
+                )
+                all_cont_ids.append(cont_ids.cpu())
+                all_cont_masks.append(cont_mask.cpu())
 
         # pad all batches to the same continuation length for stacking
         max_cont_len = max(c.shape[1] for c in all_cont_ids)
@@ -685,12 +812,15 @@ class RejectedQueue:
                 r_ids  = results_ids[start:end].to(device)
                 r_msk  = results_mask[start:end].to(device)
                 # Pad rejected to same length within this sub-batch (already same via stacking above)
-                t_logps = get_completion_token_logps(
-                    self.teacher_model, p_ids, p_msk, r_ids, r_msk,
-                )
+                with torch.no_grad():
+                    t_logps = get_completion_token_logps(
+                        self.teacher_model, p_ids, p_msk, r_ids, r_msk,
+                    )
                 teacher_logps_list.append(t_logps.cpu())
             teacher_rejected_logps = torch.cat(teacher_logps_list, dim=0)  # [n, max_cont_len]
 
+        self.rollout_pool = []
+        self._pool_ptr = 0
         for local_i, global_idx in enumerate(idxs):
             entry = {
                 **self.chosen_cache[global_idx],
@@ -700,7 +830,32 @@ class RejectedQueue:
             if teacher_rejected_logps is not None:
                 entry["teacher_rejected_token_logps"] = teacher_rejected_logps[local_i:local_i+1]
             self._queue.append(entry)
-        logging.info(f"RejectedQueue refilled: {len(self._queue)} pairs ready")
+            # store full seq (prompt + rejected) for OPKD reuse
+            p_ids = self.chosen_cache[global_idx]["prompt_input_ids"]  # (1, prompt_len)
+            full_seq = torch.cat([p_ids, results_ids[local_i:local_i+1]], dim=1)
+            self.rollout_pool.append({
+                "full_seq": full_seq,
+                "prompt_len": p_ids.shape[1],
+            })
+        logging.info(f"RejectedQueue refilled: {len(self._queue)} pairs ready, rollout_pool={len(self.rollout_pool)}")
+
+    def _sync_weights_to_vllm(self, model: nn.Module):
+        """Copy current student weights into the vLLM engine (bfloat16)."""
+        vllm_model = (self._vllm_engine.llm_engine
+                      .model_executor.driver_worker
+                      .model_runner.model)
+        vllm_state = {k: v for k, v in vllm_model.named_parameters()}
+        for name, param in model.named_parameters():
+            if name in vllm_state:
+                vllm_state[name].data.copy_(param.data.to(vllm_state[name].dtype))
+
+    def sample_from_pool(self) -> dict | None:
+        """Round-robin sample from rollout_pool for OPKD reuse."""
+        if not self.rollout_pool:
+            return None
+        item = self.rollout_pool[self._pool_ptr % len(self.rollout_pool)]
+        self._pool_ptr += 1
+        return item
 
     def pop(self) -> dict | None:
         if not self._queue:
@@ -742,3 +897,133 @@ def compute_teacher_delta(
         delta = out["chosen_logps"] - out["rejected_logps"]  # [1]
         deltas.append(delta.cpu())
     return torch.cat(deltas, dim=0)  # [N]
+
+
+# ---------------------------------------------------------------------------
+# Offline IPO dataset (UltraFeedback-style preference pairs)
+# ---------------------------------------------------------------------------
+
+def _apply_chat_template(tokenizer, messages, add_generation_prompt):
+    return tokenizer.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=add_generation_prompt
+    )
+
+
+def _preprocess_pref_dataset(ds, tokenizer):
+    """Normalize arbitrary preference datasets to {prompt, chosen, rejected} rows."""
+    cols = set(ds.column_names)
+
+    def _convert(ex):
+        if "chosen" in cols and "rejected" in cols and "prompt" not in cols:
+            cho = ex["chosen"]
+            if isinstance(cho, list):
+                prompt_msgs = cho[:-1]
+                chosen_resp = cho[-1]["content"]
+                rej = ex["rejected"]
+                rejected_resp = rej[-1]["content"] if isinstance(rej, list) else rej
+            else:
+                return None
+            if not prompt_msgs:
+                return None
+            return {
+                "prompt": _apply_chat_template(tokenizer, prompt_msgs, True),
+                "chosen": chosen_resp,
+                "rejected": rejected_resp,
+            }
+        elif "prompt" in cols and "chosen" in cols:
+            cho = ex["chosen"]
+            rej = ex["rejected"]
+            chosen_resp = cho[-1]["content"] if isinstance(cho, list) else cho
+            rejected_resp = rej[-1]["content"] if isinstance(rej, list) else rej
+            msgs = [{"role": "user", "content": ex["prompt"]}]
+            return {
+                "prompt": _apply_chat_template(tokenizer, msgs, True),
+                "chosen": chosen_resp,
+                "rejected": rejected_resp,
+            }
+        else:
+            return None
+
+    return ds.map(_convert, remove_columns=list(cols), num_proc=4)
+
+
+def _tokenize_pref_pair(example, tokenizer, max_length, max_prompt_length):
+    prompt_ids = tokenizer.encode(example["prompt"], add_special_tokens=False)[:max_prompt_length]
+    prompt_len = len(prompt_ids)
+    out = {}
+    for key in ("chosen", "rejected"):
+        resp_ids = tokenizer.encode(example[key], add_special_tokens=False)
+        if not resp_ids or resp_ids[-1] != tokenizer.eos_token_id:
+            resp_ids = resp_ids + [tokenizer.eos_token_id]
+        full = (prompt_ids + resp_ids)[:max_length]
+        labels = ([-100] * prompt_len + resp_ids)[:max_length]
+        out[f"{key}_input_ids"] = full
+        out[f"{key}_labels"] = labels
+        out[f"{key}_attention_mask"] = [1] * len(full)
+    return out
+
+
+def build_offline_ipo_dataset(
+    dataset_names: list[str],
+    splits: list[str],
+    per_maxs: list[int],
+    tokenizer,
+    max_length: int = 2048,
+    max_prompt_length: int = 1024,
+    seed: int = 42,
+):
+    """Load and tokenize offline preference pairs for IPO training.
+
+    Returns a HuggingFace Dataset with columns:
+      chosen_input_ids, chosen_labels, chosen_attention_mask,
+      rejected_input_ids, rejected_labels, rejected_attention_mask
+    """
+    from datasets import load_dataset, concatenate_datasets
+
+    all_ds = []
+    for name, split, per_max in zip(dataset_names, splits, per_maxs):
+        logging.info(f"[offline_ipo] Loading {name} split={split}")
+        d = load_dataset(name, split=split)
+        d = d.shuffle(seed=seed)
+        if per_max < len(d):
+            d = d.select(range(per_max))
+        d = _preprocess_pref_dataset(d, tokenizer)
+        d = d.filter(lambda ex: ex is not None and ex.get("prompt") is not None and
+                     ex.get("chosen") is not None and ex.get("rejected") is not None)
+        d = d.map(
+            lambda ex: _tokenize_pref_pair(ex, tokenizer, max_length, max_prompt_length),
+            remove_columns=d.column_names,
+            num_proc=4,
+        )
+        all_ds.append(d)
+        logging.info(f"[offline_ipo]   → {len(d)} samples")
+
+    combined = concatenate_datasets(all_ds).shuffle(seed=seed)
+    logging.info(f"[offline_ipo] Total: {len(combined)} preference pairs")
+    return combined
+
+
+class OfflineIPOCollator:
+    """Collate offline IPO preference pairs into padded batch tensors."""
+
+    def __init__(self, pad_token_id: int):
+        self.pad = pad_token_id
+
+    def __call__(self, batch):
+        import torch
+
+        def _pad(seqs, pad_val):
+            max_len = max(len(s) for s in seqs)
+            return torch.tensor(
+                [s + [pad_val] * (max_len - len(s)) for s in seqs],
+                dtype=torch.long,
+            )
+
+        return {
+            "chosen_input_ids":      _pad([b["chosen_input_ids"]   for b in batch], self.pad),
+            "chosen_labels":         _pad([b["chosen_labels"]       for b in batch], -100),
+            "chosen_attention_mask": _pad([b["chosen_attention_mask"] for b in batch], 0),
+            "rejected_input_ids":      _pad([b["rejected_input_ids"]   for b in batch], self.pad),
+            "rejected_labels":         _pad([b["rejected_labels"]       for b in batch], -100),
+            "rejected_attention_mask": _pad([b["rejected_attention_mask"] for b in batch], 0),
+        }
