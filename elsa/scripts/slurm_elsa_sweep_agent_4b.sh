@@ -62,9 +62,10 @@ if [ $TRAIN_EXIT -ne 0 ]; then
 fi
 
 # ── Find saved model ──────────────────────────────────────────────────────────
-SAVED_MODEL=$(grep -oP "(?<=Saved pruned model to )\S+" "$TRAIN_LOG" | tail -1)
+# Match both "KD-ADMM pruned model saved to" and legacy "Saved pruned model to"
+SAVED_MODEL=$(grep -oP "(?<=KD-ADMM pruned model saved to )\S+|(?<=Saved pruned model to )\S+" "$TRAIN_LOG" | tail -1)
 if [ -z "$SAVED_MODEL" ] || [ ! -f "$SAVED_MODEL/config.json" ]; then
-    SAVED_MODEL=$(ls -td /home1/doyoonkim/projects/elsa/models/Qwen3-4B_pruned* 2>/dev/null | head -1)
+    SAVED_MODEL=$(ls -td /home1/doyoonkim/projects/elsa/models/*pruned* 2>/dev/null | head -1)
     echo "WARNING: log parse failed, using most recent: $SAVED_MODEL"
 fi
 echo "=== Saved model: $SAVED_MODEL ==="
