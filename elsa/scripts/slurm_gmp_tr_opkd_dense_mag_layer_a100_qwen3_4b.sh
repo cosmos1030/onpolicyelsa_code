@@ -1,14 +1,14 @@
 #!/bin/bash
 #SBATCH --job-name=tr_opkd_mag_layer_4b
-#SBATCH --partition=A100-80GB
-#SBATCH --qos=hpgpu
+#SBATCH --partition=H200-PCIe-ZT
+#SBATCH --qos=zt
 #SBATCH --gres=gpu:1
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=80G
 #SBATCH --time=3-00:00:00
-#SBATCH --exclude=n3,n51,n54,n60,n76,n77,n80
+#SBATCH --exclude=n91
 #SBATCH --output=/home1/doyoonkim/projects/elsa/logs/tr_opkd_mag_layer_4b_%j.out
 exec 2>&1
 
