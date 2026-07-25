@@ -1226,6 +1226,10 @@ def globalprune_gmp(
         else:
             logging.info(f"  L1 mode={l1_mode}: lambda={l1_lambda}")
 
+    if getattr(FLAGS, 'gmp_gradient_checkpointing', False):
+        model.gradient_checkpointing_enable()
+        logging.info("  Gradient checkpointing ENABLED (reduces activation memory)")
+
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.0)
     fisher  = FisherAccumulator(named_params, optimizer, saliency=FLAGS.gmp_saliency)
     maskmgr = GradualMaskManager(named_params, fsdp_model, prune_n=prune_n, prune_m=prune_m,

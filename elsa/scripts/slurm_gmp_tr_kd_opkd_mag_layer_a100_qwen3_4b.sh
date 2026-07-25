@@ -67,6 +67,7 @@ $PYTHON main.py \
     --gmp_opkd_prev_mask_teacher=false \
     --gmp_opkd_vllm_gpu_mem=0.15 \
     --gmp_opkd_vllm_enforce_eager=true \
+    --gmp_gradient_checkpointing=true \
     --gmp_prompt_path="$DATA_PATH" \
     --gmp_tr_enabled=true \
     --gmp_tr_delta_init=0.05 \

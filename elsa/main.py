@@ -722,6 +722,7 @@ if __name__ == '__main__':
     flags.DEFINE_float('gmp_prevmask_opkd_lambda', 0.0, 'Weight for prev-mask-teacher OPKD loss added on top of dense teacher OPKD (0=disabled).')
     flags.DEFINE_float('gmp_opkd_vllm_gpu_mem', 0.35, 'GPU memory utilization for the OPKD vLLM engine.')
     flags.DEFINE_boolean('gmp_opkd_vllm_enforce_eager', False, 'If True, disable vLLM CUDA graph capture (enforce_eager=True) to save peak memory.')
+    flags.DEFINE_boolean('gmp_gradient_checkpointing', False, 'If True, enable gradient checkpointing to reduce activation memory (trades compute for memory).')
     # TR-GMP: trust-region gradual mask selection
     flags.DEFINE_boolean('gmp_tr_enabled', False, 'Use trust-region KL-constrained mask updates instead of cubic sparsity schedule.')
     flags.DEFINE_float('gmp_tr_kl_threshold', 0.01, 'TR-GMP: max KL(old||cand) per token to accept a mask update.')
