@@ -692,6 +692,10 @@ if __name__ == '__main__':
     flags.DEFINE_float('gmp_pruning_end_ratio', 1.0, 'Fraction of steps at which pruning completes; remaining steps do sparse training with fixed mask.')
     flags.DEFINE_integer('gmp_mask_interval', 32, 'Steps between mask updates in GMP.')
     flags.DEFINE_float('gmp_fisher_beta', 0.999, 'EMA beta for Fisher diagonal accumulation.')
+    flags.DEFINE_enum('gmp_saliency', 'fisher', ['fisher', 'magnitude'],
+                      'Importance score for GMP pruning: fisher=F_hat*w^2 (Adam 2nd moment), magnitude=w^2.')
+    flags.DEFINE_enum('gmp_pruning_scope', 'global', ['global', 'layer'],
+                      'Pruning scope: global=single threshold across all layers, layer=per-layer threshold (each layer hits target sparsity exactly).')
     flags.DEFINE_string('gmp_save_path', '/home1/doyoonkim/projects/elsa/models', 'Directory to save GMP pruned model.')
     flags.DEFINE_integer('gmp_max_prompt_len', 512, 'Max prompt length for GMP NTP dataset.')
     flags.DEFINE_integer('gmp_max_seq_len', 512, 'Max CoT sequence length for GMP NTP dataset.')
@@ -717,6 +721,7 @@ if __name__ == '__main__':
     flags.DEFINE_boolean('gmp_opkd_prev_mask_teacher', False, 'Use pre-mask-update model snapshot as OPKD teacher instead of the dense teacher.')
     flags.DEFINE_float('gmp_prevmask_opkd_lambda', 0.0, 'Weight for prev-mask-teacher OPKD loss added on top of dense teacher OPKD (0=disabled).')
     flags.DEFINE_float('gmp_opkd_vllm_gpu_mem', 0.35, 'GPU memory utilization for the OPKD vLLM engine.')
+    flags.DEFINE_boolean('gmp_opkd_vllm_enforce_eager', False, 'If True, disable vLLM CUDA graph capture (enforce_eager=True) to save peak memory.')
     # TR-GMP: trust-region gradual mask selection
     flags.DEFINE_boolean('gmp_tr_enabled', False, 'Use trust-region KL-constrained mask updates instead of cubic sparsity schedule.')
     flags.DEFINE_float('gmp_tr_kl_threshold', 0.01, 'TR-GMP: max KL(old||cand) per token to accept a mask update.')

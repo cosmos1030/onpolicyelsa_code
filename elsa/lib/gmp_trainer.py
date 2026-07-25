@@ -171,10 +171,11 @@ class FisherAccumulator:
     hand-rolled FisherAccumulator it replaces — no separate bookkeeping needed.
     """
 
-    def __init__(self, named_params, optimizer, beta=0.999):
+    def __init__(self, named_params, optimizer, beta=0.999, saliency='fisher'):
         self.named_params = named_params  # {name: param}
         self.optimizer = optimizer
         self._step = 0
+        self.saliency = saliency  # 'fisher' or 'magnitude'
 
     def update(self):
         """No-op: Adam updates exp_avg_sq automatically in optimizer.step()."""
@@ -201,13 +202,15 @@ class FisherAccumulator:
         return f
 
     def importance(self, name, param):
-        """Fisher-weighted magnitude: v_hat_ii * w_i^2, using Adam's exp_avg_sq."""
+        """Importance score for pruning. 'fisher': F_hat*w^2, 'magnitude': w^2."""
+        if self.saliency == 'magnitude':
+            return param.data.float() ** 2
         f = self.fisher_factor(param)
         if f is None:
-            return param.data ** 2  # fallback before first optimizer step
-        imp = f * param.data ** 2
+            return param.data.float() ** 2  # fallback before first optimizer step
+        imp = f * param.data.float() ** 2
         if imp.sum() == 0:
-            imp = param.data ** 2
+            imp = param.data.float() ** 2
         return imp
 
 
@@ -218,10 +221,11 @@ class FisherAccumulator:
 class GradualMaskManager:
     """Maintains binary masks and updates them on a schedule."""
 
-    def __init__(self, named_params, fsdp_model=None, prune_n=0, prune_m=0):
+    def __init__(self, named_params, fsdp_model=None, prune_n=0, prune_m=0, pruning_scope='global'):
         self.named_params = named_params
         self.prune_n = prune_n  # N for N:M semi-structured sparsity (0 = unstructured)
         self.prune_m = prune_m  # M for N:M semi-structured sparsity
+        self.pruning_scope = pruning_scope  # 'global' or 'layer' (per-layer)
         # With FSDP, p.data is a local shard — masks live at local shard shape.
         # summon_full_params is NOT used here: importance scoring and mask application
         # operate on local shards directly (all-gather used for global threshold only).
@@ -368,6 +372,27 @@ class GradualMaskManager:
                 threshold = torch.tensor(hi, device=_dev, dtype=next(iter(local_imps.values())).dtype)
                 logging.info(f"  [Fisher/FSDP] global threshold={hi:.4e} (n_total={n_total}, k={k})")
             else:
+                # ── per-layer pruning: each param independently hits target sparsity ──
+                if self.pruning_scope == 'layer':
+                    new_masks = {}
+                    for name, param in self.named_params.items():
+                        imp = local_imps[name]
+                        if torch.isnan(imp).any() or torch.isinf(imp).any():
+                            new_masks[name] = self.masks[name].clone()
+                            continue
+                        n_elems = imp.numel()
+                        k_l = int(n_elems * sparsity)
+                        if k_l == 0:
+                            new_masks[name] = torch.ones_like(imp, dtype=torch.bool)
+                            continue
+                        if k_l >= n_elems:
+                            new_masks[name] = torch.zeros_like(imp, dtype=torch.bool)
+                            continue
+                        threshold = torch.kthvalue(imp.flatten(), k_l).values
+                        new_masks[name] = imp > threshold
+                    return new_masks
+
+                # ── global pruning: single threshold across all layers ─────────────
                 all_scores = torch.cat([v.flatten() for v in local_imps.values()])
                 if torch.isnan(all_scores).any() or torch.isinf(all_scores).any():
                     logging.warning("NaN/Inf in Fisher importance scores, skipping candidate mask")
@@ -1146,12 +1171,14 @@ def globalprune_gmp(
         from vllm.inputs import TokensPrompt as _TokensPrompt
         _model_path_for_opkd = getattr(FLAGS, 'model', None)
         logging.info(f"  OPKD vLLM: initializing engine gpu_mem={opkd_vllm_gpu_mem} ...")
+        _opkd_vllm_enforce_eager = getattr(FLAGS, 'gmp_opkd_vllm_enforce_eager', False)
         _opkd_vllm_engine = LLM(
             _model_path_for_opkd,
             dtype="bfloat16",
             gpu_memory_utilization=opkd_vllm_gpu_mem,
             trust_remote_code=True,
             max_model_len=onpolicy_max_new + getattr(FLAGS, 'gmp_max_prompt_len', 512),
+            enforce_eager=_opkd_vllm_enforce_eager,
         )
         _opkd_vllm_params = _VLLMSamplingParams(
             max_tokens=onpolicy_max_new,
@@ -1200,8 +1227,9 @@ def globalprune_gmp(
             logging.info(f"  L1 mode={l1_mode}: lambda={l1_lambda}")
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.0)
-    fisher  = FisherAccumulator(named_params, optimizer)
-    maskmgr = GradualMaskManager(named_params, fsdp_model, prune_n=prune_n, prune_m=prune_m)
+    fisher  = FisherAccumulator(named_params, optimizer, saliency=FLAGS.gmp_saliency)
+    maskmgr = GradualMaskManager(named_params, fsdp_model, prune_n=prune_n, prune_m=prune_m,
+                                  pruning_scope=getattr(FLAGS, 'gmp_pruning_scope', 'global'))
     if fixed_mask:
         maskmgr.init_from_weights()
         maskmgr.apply(fsdp_model)
@@ -1389,12 +1417,15 @@ def globalprune_gmp(
 
     # Milestone checkpointing (TR-GMP multi-target): save model at each milestone sparsity,
     # then eval post-hoc after training. Avoids vLLM mid-training memory conflicts.
+    # Recovery: wait `mask_interval` steps after first crossing milestone before saving,
+    # so the checkpoint reflects one full mask-interval of training at the new sparsity.
     _milestone_sparsities = []
     _ms_str = getattr(FLAGS, 'gmp_milestone_sparsities', '')
     if _ms_str:
         _milestone_sparsities = sorted([float(x) for x in str(_ms_str).split(',') if x.strip()])
         logging.info(f"  Milestone sparsities: {_milestone_sparsities}")
-    _passed_milestones: dict = {}  # sp -> saved_path
+    _passed_milestones: dict = {}   # sp -> saved_path
+    _milestone_reached_at: dict = {}  # sp -> step when first crossed
     accum_loss      = 0.0
     accum_ntp       = 0.0
     accum_kd        = 0.0
@@ -1747,22 +1778,32 @@ def globalprune_gmp(
                 _opkd_standalone_pool_ptr = 0
                 logging.info(f"  OPKD vLLM pool refilled: {len(_opkd_standalone_pool)} rollouts (step={step})")
 
-            # Milestone checkpoint: save model when real sparsity crosses a target level.
+            # Milestone checkpoint: save model after `mask_interval` recovery steps past milestone.
+            # Two-phase: (1) record step when sparsity first crosses milestone,
+            #            (2) save checkpoint one mask_interval later so weights have adapted.
             # Eval is run post-hoc after training to avoid vLLM memory conflicts mid-training.
             if _milestone_sparsities and is_main_process:
                 _real_sp_now = maskmgr.current_sparsity()
                 for _ms in _milestone_sparsities:
-                    if _ms not in _passed_milestones and _real_sp_now >= _ms - 5e-3:
-                        _passed_milestones[_ms] = None
-                        _ms_tag = f"sp{int(_ms * 100):02d}"
-                        logging.info(f"[Milestone] sparsity={_real_sp_now:.4f} >= {_ms:.2f} at step={step}")
-                        if do_save:
-                            _ms_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                            _ms_path = f"{FLAGS.gmp_save_path}/{_run_tag(FLAGS)}_{_ms_tag}_{_ms_ts}"
-                            model.save_pretrained(_ms_path)
-                            tokenizer.save_pretrained(_ms_path)
-                            _passed_milestones[_ms] = _ms_path
-                            logging.info(f"[Milestone] saved to {_ms_path}")
+                    if _ms not in _passed_milestones:
+                        # Phase 1: first time sparsity crosses the milestone threshold
+                        if _ms not in _milestone_reached_at and _real_sp_now >= _ms - 5e-3:
+                            _milestone_reached_at[_ms] = step
+                            logging.info(f"[Milestone] sparsity={_real_sp_now:.4f} >= {_ms:.2f} at step={step}"
+                                         f" — saving in {mask_interval} recovery steps (step {step + mask_interval})")
+                        # Phase 2: mask_interval steps after crossing → save checkpoint
+                        elif _ms in _milestone_reached_at and step >= _milestone_reached_at[_ms] + mask_interval:
+                            _passed_milestones[_ms] = None
+                            _ms_tag = f"sp{int(_ms * 100):02d}"
+                            logging.info(f"[Milestone] saving checkpoint at step={step}"
+                                         f" ({mask_interval} steps after {_ms:.2f} milestone)")
+                            if do_save:
+                                _ms_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                                _ms_path = f"{FLAGS.gmp_save_path}/{_run_tag(FLAGS)}_{_ms_tag}_{_ms_ts}"
+                                model.save_pretrained(_ms_path)
+                                tokenizer.save_pretrained(_ms_path)
+                                _passed_milestones[_ms] = _ms_path
+                                logging.info(f"[Milestone] saved to {_ms_path}")
 
         # Snapshot NTP grads before OPKD (for gradient conflict filter / projection)
         if ((filter_grad_conflict or project_opkd_onto_combined or filter_opkd_combined)
