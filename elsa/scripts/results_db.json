@@ -3410,6 +3410,13 @@
           "arcc": 55.5,
           "c4": 23.78,
           "wt2": 14.08
+        },
+        {
+          "badge": "alps",
+          "name": "ALPS",
+          "sub": "rho=300 · nsamples=128",
+          "math": 87.4,
+          "_note": "math from parquet cache (approx); gpqa/ifeval/lcb pending"
         }
       ],
       "S60": [
@@ -3475,6 +3482,13 @@
           "arcc": 54.5,
           "c4": 23.9,
           "wt2": 14.97
+        },
+        {
+          "badge": "alps",
+          "name": "ALPS",
+          "sub": "rho=300 · nsamples=128",
+          "math": 83.2,
+          "_note": "math from parquet cache (approx); gpqa/ifeval/lcb pending"
         }
       ],
       "S70": [
@@ -3542,6 +3556,27 @@
           "boolq": 84.0,
           "arce": 77.5,
           "arcc": 55.0
+        },
+        {
+          "badge": "alps",
+          "name": "ALPS",
+          "sub": "rho=300 · nsamples=128",
+          "wbid": "3ohz3w9b",
+          "math": 50.8,
+          "gpqa": 25.8,
+          "ifeval": 20.5,
+          "lcb": 0.0,
+          "c4": 68.17,
+          "wt2": 47.92,
+          "wino": 54.1,
+          "rte": 64.6,
+          "race": 32.0,
+          "piqa": 61.0,
+          "ob": 27.2,
+          "hella": 37.5,
+          "boolq": 67.2,
+          "arce": 45.1,
+          "arcc": 30.6
         }
       ]
     }
