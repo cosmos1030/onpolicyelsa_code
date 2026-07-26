@@ -2749,7 +2749,6 @@
           "arcc": 46.2,
           "c4": 23.16,
           "wt2": 15.91,
-          "pending": true,
           "wandb_project": "reasoning_qwen3_4b",
           "train_wbid": "57gzx958"
         },
@@ -3159,7 +3158,6 @@
           "arcc": 43.6,
           "c4": 27.17,
           "wt2": 18.46,
-          "pending": true,
           "wandb_project": "reasoning_qwen3_4b",
           "train_wbid": "57gzx958"
         },
