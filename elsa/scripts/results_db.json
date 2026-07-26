@@ -8,9 +8,9 @@
       "display": "DeepSeek-R1-Distill-Qwen-1.5B",
       "wb_project": "reasoning_pruning_v2",
       "notes": [
-        "S70 TR-GMP NTP+KD kl=0.005 (ze6qflhi) \u2014 LCB \ubbf8\uce21\uc815, OpenBook=acc(not acc_norm)",
-        "S60/S70 Prev Mask & Dual kl=0.0025 \u2014 32k \uc7ac\uc2e4\ud589 \uc911 (job 611383/385/386/387)",
-        "\u2020 OpenBook: acc_norm \ubbf8\uae30\ub85d, acc \uac12 \uc0ac\uc6a9 \u2014 \uc2e4\uc81c\ubcf4\ub2e4 \ub0ae\uc744 \uc218 \uc788\uc74c"
+        "S70 TR-GMP NTP+KD kl=0.005 (ze6qflhi) — LCB 미측정, OpenBook=acc(not acc_norm)",
+        "S60/S70 Prev Mask & Dual kl=0.0025 — 32k 재실행 중 (job 611383/385/386/387)",
+        "† OpenBook: acc_norm 미기록, acc 값 사용 — 실제보다 낮을 수 있음"
       ],
       "S50": [
         {
@@ -84,7 +84,7 @@
         {
           "badge": "opkd",
           "name": "GMP NTP+KD+OPKD",
-          "sub": "dense teacher \u00b7 lr=1e-4",
+          "sub": "dense teacher · lr=1e-4",
           "wbid": "2je0fyab",
           "hf": "cosmos1030/gmp-kd1e0-s50pct-lr1e-4_20260706_020934",
           "steps": 1024,
@@ -314,7 +314,7 @@
         {
           "badge": "tropkd",
           "name": "TR-GMP + NTP+KD + OPKD (Dual)",
-          "sub": "8k \u00b7 kl=0.005",
+          "sub": "8k · kl=0.005",
           "wbid": "mjfwh085",
           "hf": "cosmos1030/gmp-kd1e0-s50pct-lr1e-4_20260708_123251",
           "steps": 800,
@@ -337,7 +337,7 @@
         {
           "badge": "tropkd",
           "name": "TR-GMP + NTP+KD + OPKD (Dual)",
-          "sub": "8k \u00b7 kl=0.01",
+          "sub": "8k · kl=0.01",
           "wbid": "v85j5bdl",
           "hf": "cosmos1030/gmp-kd1e0-s50pct-lr1e-4_20260708_120835",
           "steps": 448,
@@ -360,7 +360,7 @@
         {
           "badge": "tropkd",
           "name": "TR-GMP + NTP+KD + OPKD (Dual)",
-          "sub": "8k \u00b7 kl=0.02",
+          "sub": "8k · kl=0.02",
           "wbid": "15btrmnv",
           "hf": "cosmos1030/gmp-kd1e0-s50pct-lr1e-4_20260708_120030",
           "steps": 224,
@@ -499,7 +499,7 @@
         {
           "badge": "opkd",
           "name": "GMP NTP+KD+OPKD",
-          "sub": "dense teacher \u00b7 lr=1e-4",
+          "sub": "dense teacher · lr=1e-4",
           "wbid": "ebf8oski",
           "hf": "cosmos1030/gmp-kd1e0-s60pct-lr1e-4_20260706_022219",
           "steps": 1024,
@@ -660,7 +660,7 @@
         {
           "badge": "opkd",
           "name": "GMP NTP+KD+OPKD (Prev Mask)",
-          "sub": "kl=0.0025 \u00b7 32k \uc7ac\uc2e4\ud589 \uc911",
+          "sub": "kl=0.0025 · 32k 재실행 중",
           "wbid": "cxjsv04f",
           "hf": "cosmos1030/gmp-kd1e0-s60pct-lr1e-4_20260712_073213",
           "steps": 32768.0,
@@ -683,7 +683,7 @@
         {
           "badge": "tropkd",
           "name": "TR-GMP + NTP+KD + OPKD (Dual)",
-          "sub": "kl=0.0025 \u00b7 32k \uc7ac\uc2e4\ud589 \uc911",
+          "sub": "kl=0.0025 · 32k 재실행 중",
           "wbid": "sesjbe9j",
           "hf": "cosmos1030/gmp-kd1e0-s60pct-lr1e-4_20260712_023504",
           "steps": 26368.0,
@@ -776,7 +776,7 @@
         {
           "badge": "opkd",
           "name": "GMP NTP+KD+OPKD",
-          "sub": "dense teacher \u00b7 lr=1e-4",
+          "sub": "dense teacher · lr=1e-4",
           "wbid": "xn5x8fdy",
           "hf": "cosmos1030/gmp-kd1e0-s70pct-lr1e-4_20260706_023531",
           "steps": 1024,
@@ -935,7 +935,7 @@
         {
           "badge": "opkd",
           "name": "GMP NTP+KD+OPKD (Prev Mask)",
-          "sub": "kl=0.0025 \u00b7 32k \uc7ac\uc2e4\ud589 \uc911",
+          "sub": "kl=0.0025 · 32k 재실행 중",
           "wbid": "y0ae9lmj",
           "hf": "cosmos1030/gmp-kd1e0-s70pct-lr1e-4_20260712_072156",
           "steps": 32768.0,
@@ -958,7 +958,7 @@
         {
           "badge": "tropkd",
           "name": "TR-GMP + NTP+KD + OPKD (Dual)",
-          "sub": "kl=0.0025 \u00b7 32k \uc7ac\uc2e4\ud589 \uc911",
+          "sub": "kl=0.0025 · 32k 재실행 중",
           "wbid": "das8tm7h",
           "hf": "cosmos1030/gmp-kd1e0-s70pct-lr1e-4_20260712_080022",
           "steps": 32768.0,
@@ -984,15 +984,15 @@
       "display": "Qwen3-1.7B",
       "wb_project": "reasoning_qwen3_1.7b",
       "notes": [
-        "ELSA NTP-ADMM: ADMM \uae30\ubc18 pruning+NTP \u2014 S50 best=lr1e-4/lmda1e-3 (ef2zr9qy), S60 best=lr1e-4/lmda1e-3 (e6a16chc), S70 best=lr1e-4/lmda5e-3 (c2pp4ud8) \u2014 PPL \ubbf8\uce21\uc815",
-        "TR-GMP NTP+KD S60 kl=0.005 (tpg4vr99) \u2014 TR\uc774 sp=50%\uc5d0\uc11c \uc870\uae30 \uc885\ub8cc (target 60%), 4096 steps \uc644\uc8fc",
-        "TR-GMP NTP+KD S70 kl=0.005/0.01 \u2014 sp \uac01\uac01 48%/59% \ub2ec\uc131 \ud6c4 training 4096 steps \uc644\uc8fc, math\u22480",
-        "Dual S70 kl=0.005 (xfiafo8q) math=0, kl=0.01 (oomrjlla) math=2.6 \u2014 S70 collapse \uc2ec\uac01",
-        "PrevMask S70 kl=0.005 (vcyefies) crashed, 8mg06201 \uc7ac\uc2e4\ud589 \uc644\ub8cc math=0 \u2014 S70 GMP\uacc4\uc5f4 collapse",
-        "ELSA S70 sweep \uc644\ub8cc \u2014 best: lr=1e-4/lmda=5e-3, math=23.6%, PPL c4=84.6/wt2=59.3",
-        "SAFE (ADMM+SAM): S50/S60/S70 \uc804\ubd80 catastrophic collapse \u2014 math=0%, PPL \uc218\ubc31\ub9cc~\uc218\ucc9c\ub9cc (run 7n7jye8g/y54usm9i/5m6h66wo). 2nd run 636933/934\ub3c4 \ub3d9\uc77c collapse \ud655\uc778",
-        "HF \uc5c5\ub85c\ub4dc \uc644\ub8cc (job 638344) \u2014 ELSA S50/60/70, SparseLLM S50/60/70, ALPS S50/60/70 \ubaa8\ub450 cosmos1030/ \uc5c5\ub85c\ub4dc\ub428",
-        "macko_spmv \uc18d\ub3c4 \ubca4\uce58\ub9c8\ud06c (RTX 3090, batch=1, 8192 tokens): Dense=33.18 tok/s, GMP-S70-TR-OPKD-kl0.02=26.52 tok/s \u2192 speedup=0.799x (\ud604\uc7ac macko \ucee4\ub110\uc774 dense\ubcf4\ub2e4 \ub290\ub9bc)"
+        "ELSA NTP-ADMM: ADMM 기반 pruning+NTP — S50 best=lr1e-4/lmda1e-3 (ef2zr9qy), S60 best=lr1e-4/lmda1e-3 (e6a16chc), S70 best=lr1e-4/lmda5e-3 (c2pp4ud8) — PPL 미측정",
+        "TR-GMP NTP+KD S60 kl=0.005 (tpg4vr99) — TR이 sp=50%에서 조기 종료 (target 60%), 4096 steps 완주",
+        "TR-GMP NTP+KD S70 kl=0.005/0.01 — sp 각각 48%/59% 달성 후 training 4096 steps 완주, math≈0",
+        "Dual S70 kl=0.005 (xfiafo8q) math=0, kl=0.01 (oomrjlla) math=2.6 — S70 collapse 심각",
+        "PrevMask S70 kl=0.005 (vcyefies) crashed, 8mg06201 재실행 완료 math=0 — S70 GMP계열 collapse",
+        "ELSA S70 sweep 완료 — best: lr=1e-4/lmda=5e-3, math=23.6%, PPL c4=84.6/wt2=59.3",
+        "SAFE (ADMM+SAM): S50/S60/S70 전부 catastrophic collapse — math=0%, PPL 수백만~수천만 (run 7n7jye8g/y54usm9i/5m6h66wo). 2nd run 636933/934도 동일 collapse 확인",
+        "HF 업로드 완료 (job 638344) — ELSA S50/60/70, SparseLLM S50/60/70, ALPS S50/60/70 모두 cosmos1030/ 업로드됨",
+        "macko_spmv 속도 벤치마크 (RTX 3090, batch=1, 8192 tokens): Dense=33.18 tok/s, GMP-S70-TR-OPKD-kl0.02=26.52 tok/s → speedup=0.799x (현재 macko 커널이 dense보다 느림)"
       ],
       "S50": [
         {
@@ -1134,7 +1134,7 @@
         {
           "badge": "opkd",
           "name": "GMP NTP+KD+OPKD (Dense)",
-          "sub": "cubic 32k steps \u00b7 lr=1e-4",
+          "sub": "cubic 32k steps · lr=1e-4",
           "wbid": "95z4mrtx",
           "steps": 32768,
           "math": 69.4,
@@ -1248,7 +1248,7 @@
         {
           "badge": "tropkd",
           "name": "TR-GMP + NTP+KD + OPKD (Dual)",
-          "sub": "kl=0.02 \u00b7 True Dual (dense+prevmask)",
+          "sub": "kl=0.02 · True Dual (dense+prevmask)",
           "wbid": "fjivswpi",
           "hf": "cosmos1030/gmp-kd1e0-s50pct-lr1e-4_20260712_183815",
           "steps": 800,
@@ -1271,7 +1271,7 @@
         {
           "badge": "tropkd",
           "name": "TR-GMP + NTP+KD + OPKD (Dual)",
-          "sub": "kl=0.01 \u00b7 True Dual (dense+prevmask)",
+          "sub": "kl=0.01 · True Dual (dense+prevmask)",
           "wbid": "l1vrrdiw",
           "hf": "cosmos1030/gmp-kd1e0-s50pct-lr1e-4_20260712_203917",
           "steps": 2144,
@@ -1294,7 +1294,7 @@
         {
           "badge": "elsa",
           "name": "ELSA NTP-ADMM 50%",
-          "sub": "lr=1e-4 \u00b7 lmda=1e-3 \u00b7 8192 steps",
+          "sub": "lr=1e-4 · lmda=1e-3 · 8192 steps",
           "wbid": "ef2zr9qy",
           "hf": "cosmos1030/elsa-ntp-admm-qwen3-1.7b-s50pct",
           "steps": 8192,
@@ -1317,7 +1317,7 @@
         {
           "badge": "sparsellm",
           "name": "SparseLLM 50%",
-          "sub": "one-shot \u00b7 no fine-tuning",
+          "sub": "one-shot · no fine-tuning",
           "wbid": "qea9fzd4",
           "hf": "cosmos1030/sparsellm-qwen3-1.7b-s50pct",
           "math": 54.8,
@@ -1339,7 +1339,7 @@
         {
           "badge": "alps",
           "name": "ALPS 50%",
-          "sub": "one-shot \u00b7 no fine-tuning",
+          "sub": "one-shot · no fine-tuning",
           "wbid": "cmcym5wn",
           "hf": "cosmos1030/alps-qwen3-1.7b-s50pct",
           "math": 75.6,
@@ -1360,8 +1360,8 @@
         },
         {
           "badge": "safe",
-          "name": "SAFE S50 \u26a0\ufe0f",
-          "sub": "ADMM+SAM \u00b7 model collapsed \u00b7 wt2 PPL\u224842M",
+          "name": "SAFE S50 ⚠️",
+          "sub": "ADMM+SAM · model collapsed · wt2 PPL≈42M",
           "wbid": "vs2qi1zh",
           "math": 0.0,
           "lcb": 0.0,
@@ -1520,7 +1520,7 @@
         {
           "badge": "opkd",
           "name": "GMP NTP+KD+OPKD (Dense)",
-          "sub": "cubic 32k steps \u00b7 lr=1e-4",
+          "sub": "cubic 32k steps · lr=1e-4",
           "wbid": "rxvwx6u1",
           "steps": 32768,
           "math": 47.2,
@@ -1657,7 +1657,7 @@
         {
           "badge": "tropkd",
           "name": "TR-GMP + NTP+KD + OPKD (Dual)",
-          "sub": "kl=0.02 \u00b7 True Dual (dense+prevmask)",
+          "sub": "kl=0.02 · True Dual (dense+prevmask)",
           "wbid": "dwlif4kh",
           "hf": "cosmos1030/gmp-kd1e0-s60pct-lr1e-4_20260712_193204",
           "steps": 1184,
@@ -1680,7 +1680,7 @@
         {
           "badge": "tropkd",
           "name": "TR-GMP + NTP+KD + OPKD (Dual)",
-          "sub": "kl=0.01 \u00b7 True Dual (dense+prevmask)",
+          "sub": "kl=0.01 · True Dual (dense+prevmask)",
           "wbid": "59ctppvk",
           "hf": "cosmos1030/gmp-kd1e0-s60pct-lr1e-4_20260712_221513",
           "steps": 3296,
@@ -1703,7 +1703,7 @@
         {
           "badge": "elsa",
           "name": "ELSA NTP-ADMM 60%",
-          "sub": "lr=1e-4 \u00b7 lmda=1e-3 \u00b7 8192 steps",
+          "sub": "lr=1e-4 · lmda=1e-3 · 8192 steps",
           "wbid": "e6a16chc",
           "hf": "cosmos1030/elsa-ntp-admm-qwen3-1.7b-s60pct",
           "steps": 8192,
@@ -1726,7 +1726,7 @@
         {
           "badge": "sparsellm",
           "name": "SparseLLM 60%",
-          "sub": "one-shot \u00b7 no fine-tuning",
+          "sub": "one-shot · no fine-tuning",
           "wbid": "gk2oko7m",
           "hf": "cosmos1030/sparsellm-qwen3-1.7b-s60pct",
           "math": 23.6,
@@ -1748,7 +1748,7 @@
         {
           "badge": "alps",
           "name": "ALPS 60%",
-          "sub": "one-shot \u00b7 no fine-tuning",
+          "sub": "one-shot · no fine-tuning",
           "wbid": "u7ipj4qj",
           "hf": "cosmos1030/alps-qwen3-1.7b-s60pct",
           "math": 56.0,
@@ -1769,8 +1769,8 @@
         },
         {
           "badge": "safe",
-          "name": "SAFE S60 \u26a0\ufe0f",
-          "sub": "ADMM+SAM \u00b7 model collapsed \u00b7 wt2 PPL\u22483.4M",
+          "name": "SAFE S60 ⚠️",
+          "sub": "ADMM+SAM · model collapsed · wt2 PPL≈3.4M",
           "wbid": "ig0ea9ms",
           "math": 0.0,
           "lcb": 0.0,
@@ -1975,7 +1975,7 @@
         {
           "badge": "tropkd",
           "name": "TR-GMP + NTP+KD + OPKD (Dense)",
-          "sub": "kl=0.02 \u00b7 1536 steps",
+          "sub": "kl=0.02 · 1536 steps",
           "wbid": "89hbf71t",
           "hf": "cosmos1030/gmp-kd1e0-s70pct-lr1e-4_20260712_144947",
           "steps": 1536.0,
@@ -2021,7 +2021,7 @@
         {
           "badge": "tropkd",
           "name": "TR-GMP + NTP+KD + OPKD (Prev Mask)",
-          "sub": "kl=0.005 \u00b7 8192 steps",
+          "sub": "kl=0.005 · 8192 steps",
           "wbid": "8mg06201",
           "steps": 8192,
           "math": 0,
@@ -2043,7 +2043,7 @@
         {
           "badge": "elsa",
           "name": "ELSA NTP-ADMM 70%",
-          "sub": "lr=1e-4 \u00b7 lmda=5e-3 \u00b7 8192 steps",
+          "sub": "lr=1e-4 · lmda=5e-3 · 8192 steps",
           "wbid": "c2pp4ud8",
           "hf": "cosmos1030/elsa-ntp-admm-qwen3-1.7b-s70pct",
           "steps": 8192,
@@ -2066,7 +2066,7 @@
         {
           "badge": "sparsellm",
           "name": "SparseLLM 70%",
-          "sub": "one-shot \u00b7 no fine-tuning",
+          "sub": "one-shot · no fine-tuning",
           "wbid": "w5cln4hy",
           "hf": "cosmos1030/sparsellm-qwen3-1.7b-s70pct",
           "math": 4.0,
@@ -2088,7 +2088,7 @@
         {
           "badge": "alps",
           "name": "ALPS 70%",
-          "sub": "one-shot \u00b7 no fine-tuning",
+          "sub": "one-shot · no fine-tuning",
           "wbid": "zxh6vivg",
           "hf": "cosmos1030/alps-qwen3-1.7b-s70pct",
           "math": 8.4,
@@ -2109,8 +2109,8 @@
         },
         {
           "badge": "safe",
-          "name": "SAFE S70 \u26a0\ufe0f",
-          "sub": "ADMM+SAM \u00b7 model collapsed \u00b7 wt2 PPL\u224820M",
+          "name": "SAFE S70 ⚠️",
+          "sub": "ADMM+SAM · model collapsed · wt2 PPL≈20M",
           "wbid": "ojb131fn",
           "math": 0.0,
           "lcb": 0.0,
@@ -2134,15 +2134,15 @@
       "display": "Qwen3-4B",
       "wb_project": "reasoning_qwen3_4b",
       "notes": [
-        "GMP NTP+KD 8192-step eval_full \uc644\ub8cc (reasoning_pruning_v2: gmp_ntp_kd_s*_8192)",
-        "ELSA sweep \uc9c4\ud589\uc911 (elsa_qwen3_4b) \u2014 S50 \uc644\ub8cc(\ucd5c\uace0: lr=5e-5 math=82.0), S60 \uc9c4\ud589\uc911(\ucd5c\uace0: lr=1e-4 math=67.6), S70 \uc9c4\ud589\uc911",
-        "OPKD 8192-step \uc644\ub8cc (reasoning_qwen3_4b: gmp_ntp_kd_opkd_s*)",
-        "TR-GMP+OPKD \uc644\ub8cc (kl=0.0005/0.001/0.002 \u2014 reasoning_qwen3_4b: tr_opkd_*)",
-        "S60 TR-GMP NTP+KD kl=0.01 \u2014 LCB \ubbf8\uce21\uc815 (eval \ub3c4\uc911 lighteval/lcb \ub204\ub77d)",
-        "SparseLLM 4B \u2705S50/S60/S70 \uc644\ub8cc (S70: math=31%/gpqa=21.2%/ifeval=11.1%/lcb=0%)",
-        "ALPS 4B \u2705S50/S60/S70 \uc644\ub8cc (S70: math=33.8%/gpqa=27.8%/ifeval=15.9%/lcb=0%)",
-        "Wanda (S50/S60/S70): activation-weighted magnitude pruning \u00b7 one-shot \u00b7 no fine-tuning \u00b7 128 calib samples",
-        "TR-GMP+OPKD (Mag) Global/Layer: magnitude saliency \u00b7 kl=0.01/0.02/0.04 \u00b7 S50\u2192S60\u2192S70 milestones \u00b7 \uacb0\uacfc \ub300\uae30 \uc911"
+        "GMP NTP+KD 8192-step eval_full 완료 (reasoning_pruning_v2: gmp_ntp_kd_s*_8192)",
+        "ELSA sweep 진행중 (elsa_qwen3_4b) — S50 완료(최고: lr=5e-5 math=82.0), S60 진행중(최고: lr=1e-4 math=67.6), S70 진행중",
+        "OPKD 8192-step 완료 (reasoning_qwen3_4b: gmp_ntp_kd_opkd_s*)",
+        "TR-GMP+OPKD 완료 (kl=0.0005/0.001/0.002 — reasoning_qwen3_4b: tr_opkd_*)",
+        "S60 TR-GMP NTP+KD kl=0.01 — LCB 미측정 (eval 도중 lighteval/lcb 누락)",
+        "SparseLLM 4B ✅S50/S60/S70 완료 (S70: math=31%/gpqa=21.2%/ifeval=11.1%/lcb=0%)",
+        "ALPS 4B ✅S50/S60/S70 완료 (S70: math=33.8%/gpqa=27.8%/ifeval=15.9%/lcb=0%)",
+        "Wanda (S50/S60/S70): activation-weighted magnitude pruning · one-shot · no fine-tuning · 128 calib samples",
+        "TR-GMP+OPKD (Mag) Global/Layer: magnitude saliency · kl=0.01/0.02/0.04 · S50→S60→S70 milestones · 결과 대기 중"
       ],
       "S50": [
         {
@@ -2193,7 +2193,7 @@
         {
           "badge": "wanda",
           "name": "Wanda 50%",
-          "sub": "one-shot \u00b7 no fine-tuning",
+          "sub": "one-shot · no fine-tuning",
           "wbid": "nd37ledt",
           "math": 7.6,
           "lcb": 0.0,
@@ -2214,7 +2214,7 @@
         {
           "badge": "gmp",
           "name": "GMP NTP+KD",
-          "sub": "lr=1e-4 \u00b7 8192 steps",
+          "sub": "lr=1e-4 · 8192 steps",
           "wbid": "7ngmh3g9",
           "hf": "cosmos1030/Qwen3-4B-GMP-NTP-KD-S50",
           "steps": 8192,
@@ -2237,7 +2237,7 @@
         {
           "badge": "opkd",
           "name": "GMP NTP+KD+OPKD (Dense)",
-          "sub": "lr=1e-4 \u00b7 8192 steps",
+          "sub": "lr=1e-4 · 8192 steps",
           "wbid": "40t0ae56",
           "steps": 8192,
           "math": 72.2,
@@ -2353,7 +2353,7 @@
         {
           "badge": "tr",
           "name": "TR-GMP dwup-only",
-          "sub": "S50 ckpt of S70 training \u00b7 dwup",
+          "sub": "S50 ckpt of S70 training · dwup",
           "wbid": "zzgsbclt",
           "steps": 2305,
           "math": 64.0,
@@ -2376,7 +2376,7 @@
         {
           "badge": "tr",
           "name": "TR-GMP dwup+lasso",
-          "sub": "S50 ckpt of S70 training \u00b7 dwup+lasso",
+          "sub": "S50 ckpt of S70 training · dwup+lasso",
           "wbid": "dnuosqxr",
           "steps": 2304,
           "math": 69.4,
@@ -2399,7 +2399,7 @@
         {
           "badge": "sparsellm",
           "name": "SparseLLM 50%",
-          "sub": "one-shot \u00b7 no fine-tuning",
+          "sub": "one-shot · no fine-tuning",
           "wbid": "lurwi0ni",
           "math": 86.0,
           "lcb": 18.7,
@@ -2420,7 +2420,7 @@
         {
           "badge": "alps",
           "name": "ALPS 50%",
-          "sub": "one-shot \u00b7 no fine-tuning",
+          "sub": "one-shot · no fine-tuning",
           "wbid": "54q7yvlw",
           "math": 88.6,
           "lcb": 16.4,
@@ -2441,7 +2441,7 @@
         {
           "badge": "elsa",
           "name": "ELSA NTP",
-          "sub": "lr=5e-5 \u00b7 lmda=1e-3 \u00b7 8192 steps \u00b7 best of 9",
+          "sub": "lr=5e-5 · lmda=1e-3 · 8192 steps · best of 9",
           "wbid": "ng28it84",
           "steps": 8192,
           "math": 82.2,
@@ -2463,7 +2463,7 @@
         {
           "badge": "tr",
           "name": "GMP lasso-only",
-          "sub": "onpol lasso \u03bb=0.33 \u00b7 8192 steps",
+          "sub": "onpol lasso λ=0.33 · 8192 steps",
           "wbid": "5x8dd5j3",
           "steps": 8192,
           "math": 80.8,
@@ -2486,7 +2486,7 @@
         {
           "badge": "gmp",
           "name": "GMP KD-only",
-          "sub": "kd_weight=0.5 \u00b7 8192 steps",
+          "sub": "kd_weight=0.5 · 8192 steps",
           "steps": 8192,
           "math": 78.8,
           "lcb": 15.7,
@@ -2496,7 +2496,7 @@
         {
           "badge": "tr",
           "name": "GMP lasso-only",
-          "sub": "onpol lasso \u03bb=0.33 \u00b7 2048 steps",
+          "sub": "onpol lasso λ=0.33 · 2048 steps",
           "wbid": "0xmn1hl3",
           "steps": 2048,
           "math": 72.2,
@@ -2520,7 +2520,44 @@
           "badge": "tropkd",
           "name": "TR-GMP NTP+KD + OPKD (Dense)",
           "sub": "kl=0.04",
-          "pending": true
+          "wbid": "3l9rg0aj",
+          "steps": 288,
+          "math": 82.8,
+          "gpqa": 41.9,
+          "ifeval": 66.9,
+          "lcb": 19.4,
+          "wt2": 18.55,
+          "c4": 24.12,
+          "train_wbid": "a3sk60oz",
+          "wandb_project": "reasoning_qwen3_4b"
+        },
+        {
+          "badge": "tropkd",
+          "name": "TR-GMP NTP+KD + OPKD (Dense)",
+          "sub": "kl=0.02",
+          "wbid": "4rxum7lx",
+          "steps": 480,
+          "math": 85.6,
+          "gpqa": 41.9,
+          "ifeval": 70.1,
+          "lcb": 22.8,
+          "wt2": 15.74,
+          "c4": 20.91,
+          "train_wbid": "yzum7q9y",
+          "wandb_project": "reasoning_qwen3_4b"
+        },
+        {
+          "badge": "sgpt_sft",
+          "name": "SparseGPT + Sparse SFT (NTP)",
+          "sub": "2048 steps · fixed mask",
+          "wbid": "8ksg2sey",
+          "steps": 2048,
+          "math": 82.8,
+          "gpqa": 34.3,
+          "ifeval": 35.3,
+          "lcb": 14.2,
+          "wt2": 15.63,
+          "wandb_project": "reasoning_qwen3_4b"
         }
       ],
       "S60": [
@@ -2572,7 +2609,7 @@
         {
           "badge": "wanda",
           "name": "Wanda 60%",
-          "sub": "one-shot \u00b7 no fine-tuning",
+          "sub": "one-shot · no fine-tuning",
           "wbid": "",
           "math": 2.2,
           "lcb": 0.0,
@@ -2593,7 +2630,7 @@
         {
           "badge": "gmp",
           "name": "GMP NTP+KD",
-          "sub": "lr=1e-4 \u00b7 8192 steps",
+          "sub": "lr=1e-4 · 8192 steps",
           "wbid": "mauh42px",
           "hf": "cosmos1030/Qwen3-4B-GMP-NTP-KD-S60",
           "steps": 8192,
@@ -2616,7 +2653,7 @@
         {
           "badge": "opkd",
           "name": "GMP NTP+KD+OPKD (Dense)",
-          "sub": "lr=1e-4 \u00b7 8192 steps",
+          "sub": "lr=1e-4 · 8192 steps",
           "wbid": "jh8zxskl",
           "steps": 8192,
           "math": 72.6,
@@ -2779,7 +2816,7 @@
         {
           "badge": "sparsellm",
           "name": "SparseLLM 60%",
-          "sub": "one-shot \u00b7 no fine-tuning",
+          "sub": "one-shot · no fine-tuning",
           "wbid": "kh6indij",
           "math": 73.4,
           "lcb": 3.7,
@@ -2800,7 +2837,7 @@
         {
           "badge": "alps",
           "name": "ALPS 60%",
-          "sub": "one-shot \u00b7 no fine-tuning",
+          "sub": "one-shot · no fine-tuning",
           "wbid": "jn0vsqi1",
           "math": 78.2,
           "lcb": 9.0,
@@ -2821,7 +2858,7 @@
         {
           "badge": "elsa",
           "name": "ELSA NTP",
-          "sub": "lr=5e-5 \u00b7 lmda=5e-3 \u00b7 8192 steps \u00b7 best of 9",
+          "sub": "lr=5e-5 · lmda=5e-3 · 8192 steps · best of 9",
           "wbid": "fqcfkllx",
           "steps": 8192,
           "math": 68.4,
@@ -2843,7 +2880,7 @@
         {
           "badge": "tr",
           "name": "GMP lasso-only",
-          "sub": "onpol lasso \u03bb=0.33 \u00b7 8192 steps",
+          "sub": "onpol lasso λ=0.33 · 8192 steps",
           "wbid": "721b2k95",
           "steps": 8192,
           "math": 76.4,
@@ -2866,7 +2903,7 @@
         {
           "badge": "gmp",
           "name": "GMP KD-only",
-          "sub": "kd_weight=0.5 \u00b7 8192 steps",
+          "sub": "kd_weight=0.5 · 8192 steps",
           "steps": 8192,
           "math": 71.8,
           "lcb": 9.3,
@@ -2877,7 +2914,7 @@
         {
           "badge": "tr",
           "name": "GMP lasso-only",
-          "sub": "onpol lasso \u03bb=0.33 \u00b7 2048 steps",
+          "sub": "onpol lasso λ=0.33 · 2048 steps",
           "wbid": "mlmltqtj",
           "steps": 2048,
           "math": 72.6,
@@ -2901,7 +2938,29 @@
           "badge": "tropkd",
           "name": "TR-GMP NTP+KD + OPKD (Dense)",
           "sub": "kl=0.04",
-          "pending": true
+          "wbid": "tasf6y3n",
+          "steps": 480,
+          "math": 74.4,
+          "gpqa": 32.8,
+          "ifeval": 45.1,
+          "lcb": 11.9,
+          "wt2": 22.73,
+          "c4": 30.14,
+          "train_wbid": "a3sk60oz",
+          "wandb_project": "reasoning_qwen3_4b"
+        },
+        {
+          "badge": "sgpt_sft",
+          "name": "SparseGPT + Sparse SFT (NTP)",
+          "sub": "2048 steps · fixed mask",
+          "wbid": "lz2u0cyq",
+          "steps": 2048,
+          "math": 76.8,
+          "gpqa": 29.3,
+          "ifeval": 26.1,
+          "lcb": 2.2,
+          "wt2": 22.22,
+          "wandb_project": "reasoning_qwen3_4b"
         }
       ],
       "S70": [
@@ -2953,7 +3012,7 @@
         {
           "badge": "wanda",
           "name": "Wanda 70%",
-          "sub": "one-shot \u00b7 no fine-tuning",
+          "sub": "one-shot · no fine-tuning",
           "wbid": "",
           "math": 0.4,
           "lcb": 0.0,
@@ -2974,7 +3033,7 @@
         {
           "badge": "gmp",
           "name": "GMP NTP+KD",
-          "sub": "lr=1e-4 \u00b7 8192 steps",
+          "sub": "lr=1e-4 · 8192 steps",
           "wbid": "mr2mfkxs",
           "steps": 8192,
           "math": 53.8,
@@ -2996,7 +3055,7 @@
         {
           "badge": "opkd",
           "name": "GMP NTP+KD+OPKD (Dense)",
-          "sub": "lr=1e-4 \u00b7 8192 steps",
+          "sub": "lr=1e-4 · 8192 steps",
           "wbid": "5spei7jy",
           "steps": 8192,
           "math": 52.2,
@@ -3089,7 +3148,7 @@
         {
           "badge": "tr",
           "name": "TR-GMP dwup-only",
-          "sub": "dwup \u00b7 S70 \u00b7 32768 steps",
+          "sub": "dwup · S70 · 32768 steps",
           "steps": 32768,
           "math": 67.0,
           "lcb": 9.7,
@@ -3100,7 +3159,7 @@
         {
           "badge": "sparsellm",
           "name": "SparseLLM 70%",
-          "sub": "one-shot \u00b7 no fine-tuning",
+          "sub": "one-shot · no fine-tuning",
           "wbid": "50ugpxrr",
           "math": 31.0,
           "lcb": 0.0,
@@ -3121,7 +3180,7 @@
         {
           "badge": "alps",
           "name": "ALPS 70%",
-          "sub": "one-shot \u00b7 no fine-tuning",
+          "sub": "one-shot · no fine-tuning",
           "wbid": "alps4b_s70_local",
           "math": 33.8,
           "lcb": 0.0,
@@ -3142,7 +3201,7 @@
         {
           "badge": "elsa",
           "name": "ELSA NTP",
-          "sub": "lr=1e-4 \u00b7 lmda=5e-3 \u00b7 8192 steps \u00b7 full eval \uc9c4\ud589\uc911",
+          "sub": "lr=1e-4 · lmda=5e-3 · 8192 steps · full eval 진행중",
           "wbid": "0uqv2ogw",
           "steps": 8192,
           "math": 49.2,
@@ -3164,7 +3223,7 @@
         {
           "badge": "tr",
           "name": "GMP lasso-only",
-          "sub": "onpol lasso \u03bb=0.33 \u00b7 8192 steps",
+          "sub": "onpol lasso λ=0.33 · 8192 steps",
           "wbid": "nraku9fi",
           "steps": 8192,
           "math": 52.2,
@@ -3187,7 +3246,7 @@
         {
           "badge": "gmp",
           "name": "GMP KD-only",
-          "sub": "kd_weight=0.5 \u00b7 8192 steps",
+          "sub": "kd_weight=0.5 · 8192 steps",
           "steps": 8192,
           "math": 52.8,
           "lcb": 6.0,
@@ -3198,7 +3257,7 @@
         {
           "badge": "tr",
           "name": "GMP lasso-only",
-          "sub": "onpol lasso \u03bb=0.33 \u00b7 2048 steps",
+          "sub": "onpol lasso λ=0.33 · 2048 steps",
           "wbid": "n4hc8nas",
           "steps": 2048,
           "math": 44.8,
@@ -3230,7 +3289,7 @@
       "display": "Qwen3-8B",
       "wb_project": "reasoning_qwen3_4b",
       "notes": [
-        "Dense Qwen3-8B eval wbid \ubbf8\uae30\ub85d \u2014 \uacb0\uacfc\uac12\uc740 \uae30\ub85d\ub428"
+        "Dense Qwen3-8B eval wbid 미기록 — 결과값은 기록됨"
       ],
       "S50": [
         {
@@ -3258,7 +3317,7 @@
         {
           "badge": "sgpt",
           "name": "SparseGPT 50%",
-          "sub": "OT 80% + FW 20% \u00b7 realized 46.2%",
+          "sub": "OT 80% + FW 20% · realized 46.2%",
           "math": 86.2,
           "lcb": 23.5,
           "gpqa": 41.4,
@@ -3278,7 +3337,7 @@
         {
           "badge": "gmp",
           "name": "GMP NTP+KD",
-          "sub": "lr=1e-4 \u00b7 pure NTP+KD",
+          "sub": "lr=1e-4 · pure NTP+KD",
           "wbid": "rs5ynftm",
           "math": 86.2,
           "lcb": 13.8,
@@ -3323,7 +3382,7 @@
         {
           "badge": "sgpt",
           "name": "SparseGPT 60%",
-          "sub": "OT 80% + FW 20% \u00b7 realized 55.4%",
+          "sub": "OT 80% + FW 20% · realized 55.4%",
           "math": 73.6,
           "lcb": 1.1,
           "gpqa": 29.8,
@@ -3343,7 +3402,7 @@
         {
           "badge": "gmp",
           "name": "GMP NTP+KD",
-          "sub": "lr=1e-4 \u00b7 pure NTP+KD",
+          "sub": "lr=1e-4 · pure NTP+KD",
           "wbid": "h8squxiz",
           "math": 81.8,
           "lcb": 23.5,
@@ -3388,7 +3447,7 @@
         {
           "badge": "sgpt",
           "name": "SparseGPT 70%",
-          "sub": "OT 80% + FW 20% \u00b7 realized 64.7%",
+          "sub": "OT 80% + FW 20% · realized 64.7%",
           "math": 25.6,
           "lcb": 0.0,
           "gpqa": 29.3,
@@ -3404,6 +3463,20 @@
           "arcc": 27.9,
           "c4": 105.86,
           "wt2": 60.57
+        },
+        {
+          "badge": "gmp",
+          "name": "GMP NTP+KD",
+          "sub": "lr=1e-4 · pure NTP+KD",
+          "wbid": "hitphk5l",
+          "math": 72.8,
+          "gpqa": 29.3,
+          "ifeval": 39.4,
+          "lcb": 11.6,
+          "wt2": 16.57,
+          "c4": 24.93,
+          "train_wbid": "j0q5b1rb",
+          "wandb_project": "reasoning_qwen3_8b"
         }
       ]
     }
