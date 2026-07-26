@@ -27,6 +27,7 @@ mkdir -p "$LOCAL_JOB_BASE/wandb"
 mkdir -p /home1/doyoonkim/projects/elsa/logs
 
 export WANDB_DIR="$LOCAL_JOB_BASE/wandb"
+export WANDB_RUN_ID_OUTPUT="$LOCAL_JOB_BASE/wandb_run_id"
 export WANDB_SERVICE_WAIT=300
 export TMPDIR=/tmp
 export HF_TOKEN=$(cat ~/.hf_token 2>/dev/null || echo "")
@@ -85,5 +86,21 @@ $PYTHON main.py \
     --gmp_pruning_scope=layer \
     --wandb_project=reasoning_qwen3_4b \
     --seed=42
+
+# === rundb: register milestone results ===
+_WBID=$(cat "$WANDB_RUN_ID_OUTPUT" 2>/dev/null | tr -d '\n')
+if [ -n "$_WBID" ]; then
+    cd /home1/doyoonkim/projects/elsa/scripts
+    /home1/doyoonkim/miniconda3/envs/rac/bin/python rundb/cli.py register \
+        --model qwen3_4b \
+        --sparsities "0.5,0.6,0.7" \
+        --badge tropkd_layer \
+        --name "TR-GMP KD+OPKD (Mag, Layer) kl=${KL_THRESHOLD}" \
+        --sub "magnitude · layer · kd-only · kl=${KL_THRESHOLD}" \
+        --wbid "$_WBID" 2>&1 || echo "rundb register failed (non-fatal)"
+else
+    echo "WARNING: wandb run ID not found, skipping rundb register"
+fi
+# ==========================================
 
 echo "##### END #####"

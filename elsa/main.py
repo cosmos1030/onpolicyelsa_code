@@ -618,6 +618,13 @@ def main(argv):
             else:
                 logging.warning("push_to_hub=True but no saved model path found. Skipping upload.")
 
+    # Write wandb run ID to file for SLURM post-job rundb hook
+    _run_id_file = os.environ.get("WANDB_RUN_ID_OUTPUT")
+    if _run_id_file and FLAGS.wandb and wandb.run:
+        with open(_run_id_file, "w") as _f:
+            _f.write(wandb.run.id + "\n")
+        logging.info(f"Wrote wandb run ID '{wandb.run.id}' to {_run_id_file}")
+
 
 if __name__ == '__main__':
     flags.DEFINE_string('model', 'facebook/opt-125m', 'model to prune. model name (hf repo) or local path to model snapshot')

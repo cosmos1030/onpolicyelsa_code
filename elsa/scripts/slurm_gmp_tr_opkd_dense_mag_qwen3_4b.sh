@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=tr_opkd_mag_layer_4b
+#SBATCH --job-name=tr_opkd_mag_4b
 #SBATCH --partition=H200-PCIe-ZT
 #SBATCH --qos=zt
 #SBATCH --gres=gpu:1
@@ -8,8 +8,7 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=80G
 #SBATCH --time=3-00:00:00
-#SBATCH --exclude=n91
-#SBATCH --output=/home1/doyoonkim/projects/elsa/logs/tr_opkd_mag_layer_4b_%j.out
+#SBATCH --output=/home1/doyoonkim/projects/elsa/logs/tr_opkd_mag_4b_%j.out
 exec 2>&1
 
 # TR-GMP NTP+KD+OPKD (Dense teacher) Qwen3-4B, milestone checkpointing at S50/S60/S70
@@ -39,7 +38,7 @@ export TRITON_CACHE_DIR=/tmp/triton_cache_${USER}
 export HF_DATASETS_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 
-echo "=== TR-GMP NTP+KD+OPKD(Dense) Qwen3-4B magnitude saliency layer-scope kl=${KL_THRESHOLD} (milestones: s50/s60/s70) ==="
+echo "=== TR-GMP NTP+KD+OPKD(Dense) Qwen3-4B magnitude saliency kl=${KL_THRESHOLD} (milestones: s50/s60/s70) ==="
 echo "NODE=$(hostname)  JOB=$SLURM_JOB_ID"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 
@@ -67,8 +66,6 @@ $PYTHON main.py \
     --gmp_onpolicy_max_new_tokens=256 \
     --gmp_opkd_prev_mask_teacher=false \
     --gmp_opkd_vllm_gpu_mem=0.15 \
-    --gmp_opkd_vllm_enforce_eager=true \
-    --gmp_gradient_checkpointing=true \
     --gmp_prompt_path="$DATA_PATH" \
     --gmp_tr_enabled=true \
     --gmp_tr_delta_init=0.05 \
@@ -83,7 +80,6 @@ $PYTHON main.py \
     --eval_full_bench=true \
     --eval_zero_shot=true \
     --wandb=true \
-    --gmp_pruning_scope=layer \
     --wandb_project=reasoning_qwen3_4b \
     --seed=42
 
@@ -94,9 +90,9 @@ if [ -n "$_WBID" ]; then
     /home1/doyoonkim/miniconda3/envs/rac/bin/python rundb/cli.py register \
         --model qwen3_4b \
         --sparsities "0.5,0.6,0.7" \
-        --badge tropkd_layer \
-        --name "TR-GMP NTP+KD+OPKD (Mag, Layer) kl=${KL_THRESHOLD}" \
-        --sub "magnitude · layer · kl=${KL_THRESHOLD}" \
+        --badge tropkd_mag \
+        --name "TR-GMP NTP+KD+OPKD (Mag, Global) kl=${KL_THRESHOLD}" \
+        --sub "magnitude · global · kl=${KL_THRESHOLD}" \
         --wbid "$_WBID" 2>&1 || echo "rundb register failed (non-fatal)"
 else
     echo "WARNING: wandb run ID not found, skipping rundb register"
