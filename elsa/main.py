@@ -64,6 +64,9 @@ def _build_run_name(FLAGS):
         name = f"gmp_s{sp}pct_{method}_lr{lr}_{steps}steps"
         if prune_end < 1.0:
             name += f"_prune{int(prune_end*100)}pct"
+        mi = getattr(F, 'gmp_mask_interval', 32)
+        if mi != 32:
+            name += f"_mi{mi}"
         return name
 
     elif getattr(F, 'do_kd_admm', False):
@@ -603,6 +606,10 @@ def main(argv):
                         _lmda_tag = f"lmda{_fmt_float(FLAGS.admm_lmda)}"
                         _hub_repo = f"cosmos1030/{_method_tag}-{_sparsity_tag}-{_lr_tag}-{_lmda_tag}_{_now}"
                 logging.info(f"Uploading model to HuggingFace Hub: {_hub_repo}")
+                # TRANSFORMERS_OFFLINE blocks push_to_hub — unset for upload only
+                import os as _os
+                for _env in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "HF_DATASETS_OFFLINE"):
+                    _os.environ.pop(_env, None)
                 api = HfApi()
                 api.create_repo(repo_id=_hub_repo, exist_ok=True)
                 api.upload_folder(
