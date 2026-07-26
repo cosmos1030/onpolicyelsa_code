@@ -100,4 +100,14 @@ else
 fi
 # ==========================================
 
+# === git push results_db.json ===
+_GIT_ROOT="/home1/doyoonkim/projects"
+git -C "$_GIT_ROOT" add elsa/scripts/results_db.json
+if ! git -C "$_GIT_ROOT" diff --cached --quiet; then
+    git -C "$_GIT_ROOT" commit -m "chore: auto-update results_db (job ${SLURM_JOB_ID})" \
+        && git -C "$_GIT_ROOT" push 2>&1 \
+        || echo "WARNING: git push failed (non-fatal)"
+fi
+# ================================
+
 echo "##### END #####"
