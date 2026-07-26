@@ -2515,6 +2515,28 @@
           "c4": 20.02,
           "wt2": 13.23,
           "train_wbid": "nj7jrkdu"
+        },
+        {
+          "badge": "tropkd",
+          "name": "TR-GMP NTP+KD + OPKD (Dense)",
+          "sub": "kl=0.04",
+          "wbid": null,
+          "pending": true,
+          "math": null,
+          "lcb": null,
+          "gpqa": null,
+          "ifeval": null,
+          "wino": null,
+          "rte": null,
+          "race": null,
+          "piqa": null,
+          "ob": null,
+          "hella": null,
+          "boolq": null,
+          "arce": null,
+          "arcc": null,
+          "c4": null,
+          "wt2": null
         }
       ],
       "S60": [
@@ -2889,6 +2911,28 @@
           "c4": 24.25,
           "wt2": 16.95,
           "train_wbid": "emsn4l5z"
+        },
+        {
+          "badge": "tropkd",
+          "name": "TR-GMP NTP+KD + OPKD (Dense)",
+          "sub": "kl=0.04",
+          "wbid": null,
+          "pending": true,
+          "math": null,
+          "lcb": null,
+          "gpqa": null,
+          "ifeval": null,
+          "wino": null,
+          "rte": null,
+          "race": null,
+          "piqa": null,
+          "ob": null,
+          "hella": null,
+          "boolq": null,
+          "arce": null,
+          "arcc": null,
+          "c4": null,
+          "wt2": null
         }
       ],
       "S70": [
@@ -3203,6 +3247,28 @@
           "c4": 33.93,
           "wt2": 23.87,
           "train_wbid": "uf9c923k"
+        },
+        {
+          "badge": "tropkd",
+          "name": "TR-GMP NTP+KD + OPKD (Dense)",
+          "sub": "kl=0.04",
+          "wbid": null,
+          "pending": true,
+          "math": null,
+          "lcb": null,
+          "gpqa": null,
+          "ifeval": null,
+          "wino": null,
+          "rte": null,
+          "race": null,
+          "piqa": null,
+          "ob": null,
+          "hella": null,
+          "boolq": null,
+          "arce": null,
+          "arcc": null,
+          "c4": null,
+          "wt2": null
         }
       ]
     },

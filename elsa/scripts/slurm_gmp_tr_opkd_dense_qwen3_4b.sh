@@ -8,6 +8,7 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=80G
 #SBATCH --time=3-00:00:00
+#SBATCH --exclude=n3,n42,n46,n51,n52,n54,n55,n58,n60,n76,n77,n80,n91
 #SBATCH --output=/home1/doyoonkim/projects/elsa/logs/tr_opkd_4b_%j.out
 exec 2>&1
 
@@ -26,6 +27,7 @@ mkdir -p "$LOCAL_JOB_BASE/wandb"
 mkdir -p /home1/doyoonkim/projects/elsa/logs
 
 export WANDB_DIR="$LOCAL_JOB_BASE/wandb"
+export WANDB_RUN_ID_OUTPUT="$LOCAL_JOB_BASE/wandb_run_id"
 export WANDB_SERVICE_WAIT=300
 export TMPDIR=/tmp
 export HF_TOKEN=$(cat ~/.hf_token 2>/dev/null || echo "")
@@ -74,10 +76,37 @@ $PYTHON main.py \
     --gmp_save_path=/home1/doyoonkim/projects/elsa/models \
     --save_model=true \
     --push_to_hub=true \
-    --eval_math500=true \
+    --eval_math500=false \
+    --eval_full_bench=true \
     --eval_zero_shot=true \
     --wandb=true \
     --wandb_project=reasoning_qwen3_4b \
     --seed=42
+
+# === rundb: register milestone results ===
+_WBID=$(cat "$WANDB_RUN_ID_OUTPUT" 2>/dev/null | tr -d '\n')
+if [ -n "$_WBID" ]; then
+    cd /home1/doyoonkim/projects/elsa/scripts
+    /home1/doyoonkim/miniconda3/envs/rac/bin/python rundb/cli.py register \
+        --model qwen3_4b \
+        --sparsities "0.5,0.6,0.7" \
+        --badge tropkd \
+        --name "TR-GMP NTP+KD + OPKD (Dense)" \
+        --sub "kl=${KL_THRESHOLD}" \
+        --wbid "$_WBID" 2>&1 || echo "rundb register failed (non-fatal)"
+else
+    echo "WARNING: wandb run ID not found, skipping rundb register"
+fi
+# ==========================================
+
+# === git push results_db.json ===
+_GIT_ROOT="/home1/doyoonkim/projects"
+git -C "$_GIT_ROOT" add elsa/scripts/results_db.json
+if ! git -C "$_GIT_ROOT" diff --cached --quiet; then
+    git -C "$_GIT_ROOT" commit -m "chore: auto-update results_db (job ${SLURM_JOB_ID})" \
+        && git -C "$_GIT_ROOT" push 2>&1 \
+        || echo "WARNING: git push failed (non-fatal)"
+fi
+# ================================
 
 echo "##### END #####"
