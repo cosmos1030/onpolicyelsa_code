@@ -2308,7 +2308,7 @@
           "badge": "tropkd",
           "name": "TR-GMP NTP+KD + OPKD (Dense)",
           "sub": "kl=0.005",
-          "wbid": "ond41vy0",
+          "wbid": "a3sk60oz",
           "steps": 2688,
           "math": 71.8,
           "lcb": 13.4,
@@ -2325,6 +2325,8 @@
           "arcc": 48.0,
           "c4": 20.4,
           "wt2": 13.12,
+          "pending": true,
+          "wandb_project": "reasoning_qwen3_4b",
           "train_wbid": "gavzqd83"
         },
         {
@@ -2520,23 +2522,7 @@
           "badge": "tropkd",
           "name": "TR-GMP NTP+KD + OPKD (Dense)",
           "sub": "kl=0.04",
-          "wbid": null,
-          "pending": true,
-          "math": null,
-          "lcb": null,
-          "gpqa": null,
-          "ifeval": null,
-          "wino": null,
-          "rte": null,
-          "race": null,
-          "piqa": null,
-          "ob": null,
-          "hella": null,
-          "boolq": null,
-          "arce": null,
-          "arcc": null,
-          "c4": null,
-          "wt2": null
+          "pending": true
         }
       ],
       "S60": [
@@ -2702,7 +2688,7 @@
           "badge": "tropkd",
           "name": "TR-GMP NTP+KD + OPKD (Dense)",
           "sub": "kl=0.01",
-          "wbid": "59isumpu",
+          "wbid": "a3sk60oz",
           "steps": 1920,
           "math": 66.0,
           "lcb": 13.4,
@@ -2719,6 +2705,8 @@
           "arcc": 46.2,
           "c4": 23.16,
           "wt2": 15.91,
+          "pending": true,
+          "wandb_project": "reasoning_qwen3_4b",
           "train_wbid": "57gzx958"
         },
         {
@@ -2852,8 +2840,7 @@
           "arce": 51.1,
           "arcc": 34.3,
           "c4": 37.21,
-          "wt2": 24.81,
-          "pending": false
+          "wt2": 24.81
         },
         {
           "badge": "tr",
@@ -2916,23 +2903,7 @@
           "badge": "tropkd",
           "name": "TR-GMP NTP+KD + OPKD (Dense)",
           "sub": "kl=0.04",
-          "wbid": null,
-          "pending": true,
-          "math": null,
-          "lcb": null,
-          "gpqa": null,
-          "ifeval": null,
-          "wino": null,
-          "rte": null,
-          "race": null,
-          "piqa": null,
-          "ob": null,
-          "hella": null,
-          "boolq": null,
-          "arce": null,
-          "arcc": null,
-          "c4": null,
-          "wt2": null
+          "pending": true
         }
       ],
       "S70": [
@@ -3096,7 +3067,7 @@
           "badge": "tropkd",
           "name": "TR-GMP NTP+KD + OPKD (Dense)",
           "sub": "kl=0.01",
-          "wbid": "q1pxt0yq",
+          "wbid": "a3sk60oz",
           "steps": 5856,
           "math": 64.4,
           "lcb": 4.5,
@@ -3113,6 +3084,8 @@
           "arcc": 43.6,
           "c4": 27.17,
           "wt2": 18.46,
+          "pending": true,
+          "wandb_project": "reasoning_qwen3_4b",
           "train_wbid": "57gzx958"
         },
         {
@@ -3178,7 +3151,6 @@
           "lcb": 0.0,
           "gpqa": 17.7,
           "ifeval": 18.7,
-          "pending": false,
           "wino": 53.7,
           "rte": 52.7,
           "race": 31.5,
@@ -3252,23 +3224,7 @@
           "badge": "tropkd",
           "name": "TR-GMP NTP+KD + OPKD (Dense)",
           "sub": "kl=0.04",
-          "wbid": null,
-          "pending": true,
-          "math": null,
-          "lcb": null,
-          "gpqa": null,
-          "ifeval": null,
-          "wino": null,
-          "rte": null,
-          "race": null,
-          "piqa": null,
-          "ob": null,
-          "hella": null,
-          "boolq": null,
-          "arce": null,
-          "arcc": null,
-          "c4": null,
-          "wt2": null
+          "pending": true
         }
       ]
     },
