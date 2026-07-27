@@ -87,8 +87,56 @@ def main(argv):
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
     is_distributed = world_size > 1
 
+    _prebuilt_vllm_engine = None
+    _prebuilt_vllm_params = None
+    _use_fsdp_opkd = (
+        is_distributed
+        and getattr(FLAGS, 'do_gmp', False)
+        and getattr(FLAGS, 'gmp_use_fsdp', False)
+        and getattr(FLAGS, 'gmp_onpolicy_kd_lambda', 0.0) > 0
+    )
+
+    # For FSDP + OPKD: TRL-style isolation — vLLM runs in a separate subprocess
+    # (multiprocessing spawn) so it has its own CUDA context and torch.distributed
+    # state. No NCCL groups are shared with the training process group.
+    # init_process_group first, then rank 0 launches vLLM and signals via dist.barrier().
+    _vllm_eager = getattr(FLAGS, 'gmp_opkd_vllm_enforce_eager', False)
+
     if is_distributed:
         dist.init_process_group(backend='nccl')
+
+    if _use_fsdp_opkd:
+        _vllm_gpu_mem = getattr(FLAGS, 'gmp_opkd_vllm_gpu_mem', 0.25)
+        _vllm_max_prompt = getattr(FLAGS, 'gmp_max_prompt_len', 512)
+        _vllm_max_new = getattr(FLAGS, 'gmp_onpolicy_max_new_tokens', 256)
+        _vllm_temp = getattr(FLAGS, 'gmp_onpolicy_temp', 0.6)
+
+        if local_rank == 0:
+            from lib.vllm_proc import launch_vllm_subprocess as _launch_vllm
+            # cuda_device_str: rank 0's device within CUDA_VISIBLE_DEVICES
+            _cvd = os.environ.get('CUDA_VISIBLE_DEVICES', '0').split(',')
+            _vllm_cuda_dev = _cvd[0]  # subprocess sees only rank 0's GPU
+            logging.info(
+                f"[rank 0] Launching vLLM subprocess (TRL-style, gpu={_vllm_cuda_dev}, "
+                f"enforce_eager={_vllm_eager}, gpu_mem={_vllm_gpu_mem})")
+            _prebuilt_vllm_engine = _launch_vllm(
+                FLAGS.model,
+                cuda_device_str=_vllm_cuda_dev,
+                gpu_mem=_vllm_gpu_mem,
+                max_len=_vllm_max_new + _vllm_max_prompt,
+                enforce_eager=_vllm_eager,
+                default_max_new=_vllm_max_new,
+                default_temp=_vllm_temp,
+                startup_timeout=300,
+            )
+            _prebuilt_vllm_params = None  # encoded in adapter defaults
+            logging.info("[rank 0] vLLM subprocess ready — signaling via dist.barrier")
+        else:
+            logging.info(f"[rank {local_rank}] waiting for rank 0 vLLM via dist.barrier")
+        # barrier: rank 1 waits here until rank 0 finishes vLLM launch
+        dist.barrier()
+        if local_rank != 0:
+            logging.info(f"[rank {local_rank}] vLLM barrier passed — proceeding")
 
     if FLAGS.wandb and local_rank == 0:
         if getattr(FLAGS, 'do_grpo_opkd', False):
@@ -267,6 +315,7 @@ def main(argv):
                     device_id=torch.cuda.current_device(),
                 )
                 logging.info(f"[rank {local_rank}] Model wrapped with FSDP (use_orig_params=True)")
+            print(f"[DBG main] rank={local_rank} post-FSDP, loading dataset", flush=True)
 
             if getattr(FLAGS, 'gmp_random_cot_ntp', False):
                 from lib.data import get_dataset
@@ -288,10 +337,14 @@ def main(argv):
                     max_len=getattr(FLAGS, 'gmp_max_seq_len', 2048),
                     append_eos=getattr(FLAGS, 'cot_append_eos', False),
                 )
+            print(f"[DBG main] rank={local_rank} dataset loaded, loading teacher", flush=True)
             gmp_teacher = None
             if getattr(FLAGS, 'gmp_kd_lambda', 0.0) > 0 or getattr(FLAGS, 'gmp_hidden_lambda', 0.0) > 0 or getattr(FLAGS, 'gmp_onpolicy_kd_lambda', 0.0) > 0 or getattr(FLAGS, 'gmp_anchor_kd_lambda', 0.0) > 0 or getattr(FLAGS, 'gmp_teacher_seqkd', False):
+                print(f"[DBG main] rank={local_rank} get_llm teacher start", flush=True)
                 gmp_teacher = get_llm(FLAGS.model, FLAGS.seqlen)
+                print(f"[DBG main] rank={local_rank} get_llm teacher done, .to(device)", flush=True)
                 gmp_teacher.to(device)
+                print(f"[DBG main] rank={local_rank} teacher to(device) done", flush=True)
                 gmp_teacher.eval()
                 for p in gmp_teacher.parameters():
                     p.requires_grad_(False)
@@ -299,6 +352,7 @@ def main(argv):
                     gmp_teacher = gmp_teacher.to(torch.bfloat16)
                     logging.info(f"[rank {local_rank}] Teacher kept as plain model (no FSDP) — no NCCL needed for eval-only teacher")
             # DPO dense model: reuse teacher if loaded, else load separately
+            print(f"[DBG main] rank={local_rank} before gmp_train call", flush=True)
             gmp_dpo_dense = None
             if getattr(FLAGS, 'gmp_dpo_lambda', 0.0) > 0:
                 if gmp_teacher is not None:
@@ -311,9 +365,14 @@ def main(argv):
                         p.requires_grad_(False)
             saved_pruned_model_path = globalprune_gmp(
                 model, tokenizer, train_dataset, FLAGS,
-                teacher_model=gmp_teacher, dpo_dense_model=gmp_dpo_dense)
+                teacher_model=gmp_teacher, dpo_dense_model=gmp_dpo_dense,
+                prebuilt_vllm_engine=_prebuilt_vllm_engine,
+                prebuilt_vllm_params=_prebuilt_vllm_params)
             gmp_teacher = None
             gmp_dpo_dense = None
+            if _prebuilt_vllm_engine is not None and hasattr(_prebuilt_vllm_engine, 'shutdown'):
+                _prebuilt_vllm_engine.shutdown()
+                _prebuilt_vllm_engine = None
             torch.cuda.empty_cache()
         elif FLAGS.do_kd_admm:
             teacher_model = get_llm(FLAGS.model, FLAGS.seqlen)
@@ -683,6 +742,7 @@ if __name__ == '__main__':
     flags.DEFINE_bool('gmp_fixed_mask', False, 'Fix mask from pre-pruned model weights (for sparse SFT). Skips Fisher-based mask updates.')
     flags.DEFINE_bool('gmp_random_cot_ntp', False, 'Use random seqlen-token windows from CoT (no prompt masking) instead of MathCotKDDataset.')
     flags.DEFINE_bool('gmp_use_fsdp', False, 'Wrap GMP model with FSDP for multi-GPU training (requires torchrun / accelerate launch).')
+    flags.DEFINE_bool('gmp_pgd', False, 'Enable PGD projection after each optimizer step: re-project mask using Fisher saliency (v_t*w^2), logging pgd/revivals and pgd/prunings.')
     flags.DEFINE_float('gmp_dpo_lambda', 0.0, 'Weight for DPO loss (0 = disabled).')
     flags.DEFINE_float('gmp_dpo_beta', 0.1, 'DPO beta (temperature).')
     flags.DEFINE_integer('gmp_dpo_n_pairs', 1024, 'Number of chosen pairs to pre-generate.')
