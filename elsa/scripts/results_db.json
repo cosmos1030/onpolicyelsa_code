@@ -3541,7 +3541,22 @@
           "badge": "sparsellm",
           "name": "SparseLLM 60%",
           "sub": "one-shot · no fine-tuning",
-          "pending": true
+          "wbid": "g0bzhk00",
+          "math": 79.8,
+          "lcb": 10.1,
+          "gpqa": 33.8,
+          "ifeval": 43.6,
+          "wino": 61.7,
+          "rte": 74.4,
+          "race": 35.9,
+          "piqa": 70.6,
+          "ob": 33.4,
+          "hella": 54.9,
+          "boolq": 81.7,
+          "arce": 67.1,
+          "arcc": 41.8,
+          "c4": 28.64,
+          "wt2": 18.89
         }
       ],
       "S70": [
@@ -3635,7 +3650,22 @@
           "badge": "sparsellm",
           "name": "SparseLLM 70%",
           "sub": "one-shot · no fine-tuning",
-          "pending": true
+          "wbid": "a6u6ay4y",
+          "math": 47.0,
+          "lcb": 0.0,
+          "gpqa": 30.8,
+          "ifeval": 15.3,
+          "wino": 56.7,
+          "rte": 58.8,
+          "race": 29.9,
+          "piqa": 61.0,
+          "ob": 27.4,
+          "hella": 37.2,
+          "boolq": 74.9,
+          "arce": 47.3,
+          "arcc": 30.5,
+          "c4": 73.05,
+          "wt2": 47.96
         }
       ]
     }
