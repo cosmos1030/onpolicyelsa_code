@@ -70,8 +70,35 @@ def _build_run_name(FLAGS):
         return name
 
     elif getattr(F, 'do_kd_admm', False):
-        return (f"onpolicy_kd_admm_s{F.sparsity_ratio}_lr{F.admm_lr}"
-                f"_lmda{F.admm_lmda}_kdlam{F.kd_lambda}_steps{F.admm_steps}")
+        sp   = int(getattr(F, 'sparsity_ratio', 0) * 100)
+        lr   = F.admm_lr
+        lmda = F.admm_lmda
+        steps = F.admm_steps
+        trz   = getattr(F, 'admm_tr_z_proj', False)
+        kl_th = getattr(F, 'admm_tr_kl_threshold', 0.5) if trz else None
+        lasso = getattr(F, 'admm_lasso_lmda', 0.0) or 0.0
+
+        if getattr(F, 'kd_triple_loss', False):
+            ntp_w  = getattr(F, 'kd_ntp_lambda', 0.33)
+            kd_w   = getattr(F, 'kd_lambda', 0.33)
+            opkd_w = getattr(F, 'kd_opkd_lambda', 0.33)
+            method = f"triple_ntp{ntp_w}_dskd{kd_w}_opkd{opkd_w}"
+        elif getattr(F, 'kd_offpolicy_ntp', False):
+            ntp_w = getattr(F, 'kd_ntp_lambda', 0.5)
+            kd_w  = getattr(F, 'kd_lambda', 0.5)
+            method = f"ntp{ntp_w}_dskd{kd_w}"
+        elif getattr(F, 'kd_use_cot_dataset', False):
+            method = f"ntp_opkd_kdlam{F.kd_lambda}"
+        else:
+            method = f"opkd_kdlam{F.kd_lambda}"
+
+        name = f"admm_{method}_s{sp}pct_lr{lr}_lmda{lmda}"
+        if trz:
+            name += f"_trz{kl_th}"
+        if lasso > 0:
+            name += f"_lasso{lasso}"
+        name += f"_{steps}steps"
+        return name
     elif getattr(F, 'do_offpolicy_kd_admm', False):
         return (f"offpolicy_kd_admm_s{F.sparsity_ratio}_lr{F.admm_lr}"
                 f"_lmda{F.admm_lmda}_steps{F.admm_steps}")
@@ -89,11 +116,19 @@ def main(argv):
 
     _prebuilt_vllm_engine = None
     _prebuilt_vllm_params = None
+    _prebuilt_opd_vllm_engine = None
+    _prebuilt_opd_vllm_params = None
     _use_fsdp_opkd = (
         is_distributed
         and getattr(FLAGS, 'do_gmp', False)
         and getattr(FLAGS, 'gmp_use_fsdp', False)
         and getattr(FLAGS, 'gmp_onpolicy_kd_lambda', 0.0) > 0
+    )
+    _use_admm_opd_fsdp = (
+        is_distributed
+        and getattr(FLAGS, 'do_kd_admm', False)
+        and getattr(FLAGS, 'admm_use_fsdp', False)
+        and getattr(FLAGS, 'opd_enabled', False)
     )
 
     # For FSDP + OPKD: TRL-style isolation — vLLM runs in a separate subprocess
@@ -113,30 +148,68 @@ def main(argv):
 
         if local_rank == 0:
             from lib.vllm_proc import launch_vllm_subprocess as _launch_vllm
-            # cuda_device_str: rank 0's device within CUDA_VISIBLE_DEVICES
-            _cvd = os.environ.get('CUDA_VISIBLE_DEVICES', '0').split(',')
-            _vllm_cuda_dev = _cvd[0]  # subprocess sees only rank 0's GPU
+            # vLLM runs in a subprocess with CUDA_VISIBLE_DEVICES set to the
+            # dedicated GPU (index = world_size).  This gives it a completely
+            # separate CUDA context so it cannot conflict with the training NCCL
+            # process group.
+            # enforce_eager=True is mandatory: without it vLLM pre-allocates CUDA
+            # graphs using (gpu_memory_utilization × GPU_MEM) of address space on the
+            # vLLM GPU.  That allocation gets P2P-mapped into the training GPU's
+            # virtual address space via NCCL peer access, consuming ~18 GB and
+            # causing OOM in the training process even though both are on separate
+            # physical GPUs.  Eager mode allocates only model weights + actual KV
+            # cache, keeping the vLLM GPU footprint small.
+            _vllm_cuda_dev = str(world_size)
             logging.info(
-                f"[rank 0] Launching vLLM subprocess (TRL-style, gpu={_vllm_cuda_dev}, "
-                f"enforce_eager={_vllm_eager}, gpu_mem={_vllm_gpu_mem})")
+                f"[rank 0] Launching vLLM subprocess on GPU {_vllm_cuda_dev} "
+                f"(training ranks on GPUs 0-{world_size-1}), gpu_mem={_vllm_gpu_mem}")
             _prebuilt_vllm_engine = _launch_vllm(
                 FLAGS.model,
                 cuda_device_str=_vllm_cuda_dev,
                 gpu_mem=_vllm_gpu_mem,
                 max_len=_vllm_max_new + _vllm_max_prompt,
-                enforce_eager=_vllm_eager,
+                enforce_eager=True,
                 default_max_new=_vllm_max_new,
                 default_temp=_vllm_temp,
                 startup_timeout=300,
             )
-            _prebuilt_vllm_params = None  # encoded in adapter defaults
-            logging.info("[rank 0] vLLM subprocess ready — signaling via dist.barrier")
+            _prebuilt_vllm_params = None
+            logging.info(f"[rank 0] vLLM subprocess ready — signaling via dist.barrier")
         else:
             logging.info(f"[rank {local_rank}] waiting for rank 0 vLLM via dist.barrier")
         # barrier: rank 1 waits here until rank 0 finishes vLLM launch
         dist.barrier()
         if local_rank != 0:
             logging.info(f"[rank {local_rank}] vLLM barrier passed — proceeding")
+
+    # ADMM + OPD + FSDP: vLLM subprocess on dedicated GPU (index = world_size)
+    # Requires requesting world_size+1 GPUs in the SLURM script.
+    if _use_admm_opd_fsdp:
+        _opd_gpu_mem = getattr(FLAGS, 'opd_vllm_gpu_mem', 0.25)
+        _opd_max_prompt = getattr(FLAGS, 'kd_max_prompt_len', 512)
+        _opd_max_new = getattr(FLAGS, 'opd_vllm_max_tokens', 256)
+        _vllm_cuda_dev = str(world_size)
+        if local_rank == 0:
+            from lib.vllm_proc import launch_vllm_subprocess as _launch_vllm_opd
+            logging.info(
+                f"[rank 0] OPD: launching vLLM subprocess on GPU {_vllm_cuda_dev} "
+                f"(training ranks 0-{world_size-1}), gpu_mem={_opd_gpu_mem}")
+            _prebuilt_opd_vllm_engine = _launch_vllm_opd(
+                FLAGS.model,
+                cuda_device_str=_vllm_cuda_dev,
+                gpu_mem=_opd_gpu_mem,
+                max_len=_opd_max_new + _opd_max_prompt,
+                enforce_eager=True,
+                default_max_new=_opd_max_new,
+                default_temp=0.6,
+                startup_timeout=300,
+            )
+            logging.info("[rank 0] OPD vLLM subprocess ready — signaling via dist.barrier")
+        else:
+            logging.info(f"[rank {local_rank}] OPD: waiting for rank 0 vLLM via dist.barrier")
+        dist.barrier()
+        if local_rank != 0:
+            logging.info(f"[rank {local_rank}] OPD vLLM barrier passed — proceeding")
 
     if FLAGS.wandb and local_rank == 0:
         if getattr(FLAGS, 'do_grpo_opkd', False):
@@ -377,7 +450,11 @@ def main(argv):
         elif FLAGS.do_kd_admm:
             teacher_model = get_llm(FLAGS.model, FLAGS.seqlen)
             teacher_model.to(device)
-            saved_pruned_model_path = globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device)
+            saved_pruned_model_path = globalprune_admm_kd(
+                FLAGS, model, teacher_model, tokenizer, device,
+                prebuilt_opd_vllm_engine=_prebuilt_opd_vllm_engine,
+                prebuilt_opd_vllm_params=_prebuilt_opd_vllm_params,
+            )
             del teacher_model
             torch.cuda.empty_cache()
         elif getattr(FLAGS, 'do_offpolicy_kd_admm', False):
@@ -415,13 +492,21 @@ def main(argv):
         dist.barrier()
         # FLAGS are identical on all ranks; saved_pruned_model_path is only set on rank 0.
         # Use FLAGS-based condition so both ranks take the same branch.
-        _fsdp_trainer_saved = getattr(FLAGS, 'do_gmp', False) and getattr(FLAGS, 'save_model', False)
+        _uses_fsdp = getattr(FLAGS, 'do_gmp', False) or getattr(FLAGS, 'admm_use_fsdp', False) or getattr(FLAGS, 'gmp_use_fsdp', False)
+        _fsdp_trainer_saved = _uses_fsdp and getattr(FLAGS, 'save_model', False)
         if _fsdp_trainer_saved:
-            # GMP trainer already saved via FSDP.summon_full_params; both ranks destroy PG together.
+            # Trainer already saved via FSDP-aware save_model; both ranks destroy PG together.
             dist.destroy_process_group()
             import gc as _gc; _gc.collect(); torch.cuda.empty_cache()
             if local_rank == 0 and saved_pruned_model_path:
                 model = get_llm(saved_pruned_model_path, FLAGS.seqlen)
+        elif _uses_fsdp:
+            # FSDP used but model not saved — just tear down process group.
+            # model must be set to None: the FSDP object is unusable after PG teardown
+            # (all-gather would crash). Downstream eval block is guarded by `model is not None`.
+            dist.destroy_process_group()
+            import gc as _gc; _gc.collect(); torch.cuda.empty_cache()
+            model = None
         else:
             state_dict_options = StateDictOptions(full_state_dict=True, cpu_offload=True)
             full_state = get_model_state_dict(model, options=state_dict_options)
@@ -450,7 +535,7 @@ def main(argv):
         del teacher_model
         torch.cuda.empty_cache()
 
-    if local_rank == 0:
+    if local_rank == 0 and model is not None:
 
         if "gemma-2-27b" in FLAGS.model:
             logging.info("gemma-2-27b model detected. Casting to torch.bfloat16 for stability.")
@@ -732,8 +817,16 @@ if __name__ == '__main__':
     flags.DEFINE_bool('admm_init_lambda_from_inv_resid', False, 'Initialize lambda from inverse of initial residual.')
     flags.DEFINE_enum('admm_lmda_schedule_mode', 'constant', ['constant', 'linear', 'exponential', 'cosine'], 'Mode for lambda schedule (e.g., linear, cosine).')
     flags.DEFINE_integer('admm_interval', 2, 'Interval for ADMM projection and dual updates.')
+    flags.DEFINE_bool('admm_tr_z_proj', False, 'Use global trust-region z-projection (Stage 1).')
+    flags.DEFINE_float('admm_tr_kl_threshold', 0.1, 'KL(Q_x||Q_z) threshold (delta) for TR z-projection.')
+    flags.DEFINE_integer('admm_tr_max_iters', 8, 'Max halving iterations per admm_interval for TR z-projection.')
+    flags.DEFINE_float('admm_tr_init_delta', 0.05, 'Initial sparsity step size for TR z-projection.')
+    flags.DEFINE_float('admm_tr_delta_min', 1e-3, 'Minimum sparsity delta before giving up in TR z-projection.')
+    flags.DEFINE_enum('admm_tr_kl_reduce', 'mean', ['mean', 'quantile'], 'KL reduce mode for TR z-projection.')
     flags.DEFINE_enum('admm_base_optimizer', 'adam', ['adam','adamw','adam8bit','adam4bit','sgd'], 'Base optimizer for ADMM primal update.')
     flags.DEFINE_enum('admm_dual_dtype', 'fp32', ['fp32','bf16', 'float8_e4m3fn', 'float8_e5m2'], 'Dtype for ADMM dual variable (fp32 or bf16).')
+    flags.DEFINE_float('admm_lasso_lmda', 0.0, 'L1 penalty on pruned-position weights; 0 = disabled.')
+    flags.DEFINE_bool('admm_use_fsdp', False, 'Wrap ADMM model with FSDP for multi-GPU training (requires torchrun).')
     flags.DEFINE_enum('admm_split_dtype', 'fp32', ['fp32','bf16', 'float8_e4m3fn', 'float8_e5m2'], 'Dtype for ADMM split variable (fp32 or bf16).')
     flags.DEFINE_bool('admm_nonuniform_sparsity', False, 'Whether to use non-uniform sparsity based on sensitivity scores in ADMM.')
     flags.DEFINE_string('admm_nonuniform_sparsity_config_file', None, 'Path to non-uniform sparsity configuration file (JSON format).')
@@ -868,12 +961,22 @@ if __name__ == '__main__':
     flags.DEFINE_float('kd_vllm_gpu_memory_utilization', 0.3, 'vLLM gpu_memory_utilization for rollout engine.')
     flags.DEFINE_integer('kd_vllm_max_model_len', 0, 'vLLM max_model_len (0 = auto: kd_max_new_tokens + 1024).')
     flags.DEFINE_bool('kd_use_cot_dataset', False, 'Use MathCotKDDataset (provides CoT NTP labels + prompt for KD).')
+    flags.DEFINE_bool('kd_offpolicy_ntp', False, 'Hybrid NTP + dataset-based KD: KL(student||teacher) on CoT answer tokens, no generation.')
+    flags.DEFINE_bool('kd_triple_loss', False, 'Triple loss: NTP + dataset KD + on-policy KD (each weighted by ntp/kd/opkd lambda).')
+    flags.DEFINE_float('kd_opkd_lambda', 0.0, 'Weight for on-policy KD loss in triple loss mode.')
+    flags.DEFINE_bool('admm_tr_use_opkd_rollout', False, 'Use OPKD student rollout as TR-z calibration batch instead of CoT text.')
     flags.DEFINE_bool('cot_append_eos', False, 'Append EOS token to each sample in MathCotKDDataset.')
     flags.DEFINE_bool('kd_use_random_cot_ntp', False, 'Use random 2048-token CoT windows for NTP; use separate MathPromptDataset for KD prompts.')
     flags.DEFINE_integer('kd_step_interval', 1, 'Apply KD loss every N optimizer steps (1=every step). Reduces teacher forward cost.')
     flags.DEFINE_string('kd_ntp_dataset', 'math_cot', 'Dataset for NTP in random CoT mode: math_cot or c4.')
     flags.DEFINE_integer('kd_buffer_size', 0, 'Rollout buffer size: generate this many prompts in one vLLM batch (0 = disabled).')
     flags.DEFINE_integer('kd_buffer_refresh_interval', 32, 'Refresh rollout buffer every N steps (default: align with admm_interval).')
+
+    # OPD (On-Policy Distillation inside ADMM with z-masked rollouts)
+    flags.DEFINE_bool('opd_enabled', False, 'Enable OPD: generate z-masked rollouts for backward KL inside ADMM training.')
+    flags.DEFINE_float('opd_lambda', 0.0, 'OPD loss weight. If >0: NTP/KD/OPD each get opd_lambda/3.')
+    flags.DEFINE_integer('opd_vllm_max_tokens', 256, 'Max tokens per OPD rollout generation.')
+    flags.DEFINE_float('opd_vllm_gpu_mem', 0.25, 'GPU memory fraction for OPD vLLM engine (single-GPU mode).')
 
     # On-policy distillation (legacy post-ADMM phase)
     flags.DEFINE_bool('do_distill', False, 'Whether to perform on-policy distillation after retraining.')

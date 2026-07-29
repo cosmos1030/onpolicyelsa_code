@@ -29,7 +29,9 @@ except ImportError:
     has_wandb = False
 
 
-def globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device, offpolicy_kd=False):
+def globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device,
+                        offpolicy_kd=False, prebuilt_opd_vllm_engine=None,
+                        prebuilt_opd_vllm_params=None):
     """
     ADMM pruning with on-policy KD loss.
     Uses GKDADMMTrainer instead of ADMMTrainer.
@@ -90,8 +92,16 @@ def globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device, offpolic
         admm_projection_bias_correction=FLAGS.admm_projection_bias_correction,
         admm_dual_dtype=FLAGS.admm_dual_dtype,
         admm_split_dtype=FLAGS.admm_split_dtype,
+        admm_lasso_lmda=getattr(FLAGS, 'admm_lasso_lmda', 0.0),
         admm_beta1=FLAGS.admm_beta1,
         admm_beta2=FLAGS.admm_beta2,
+        fsdp="full_shard auto_wrap" if getattr(FLAGS, 'admm_use_fsdp', False) else "",
+        fsdp_config={"fsdp_transformer_layer_cls_to_wrap": "Qwen3DecoderLayer"} if getattr(FLAGS, 'admm_use_fsdp', False) else {},
+        admm_tr_z_proj=getattr(FLAGS, 'admm_tr_z_proj', False),
+        admm_tr_kl_threshold=getattr(FLAGS, 'admm_tr_kl_threshold', 0.1),
+        admm_tr_max_iters=getattr(FLAGS, 'admm_tr_max_iters', 8),
+        admm_tr_init_delta=getattr(FLAGS, 'admm_tr_init_delta', 0.05),
+        admm_tr_delta_min=getattr(FLAGS, 'admm_tr_delta_min', 1e-3),
     )
 
     if tokenizer.pad_token is None:
@@ -107,7 +117,14 @@ def globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device, offpolic
     use_random_cot_ntp = getattr(FLAGS, "kd_use_random_cot_ntp", False)
     use_hybrid = teacher_model is None or getattr(FLAGS, "kd_interval", 1) > 1 or getattr(FLAGS, "kd_use_cot_dataset", False) or offpolicy_kd
 
+    opd_enabled = getattr(FLAGS, 'opd_enabled', False)
+    opd_lambda = getattr(FLAGS, 'opd_lambda', 0.0)
+    opd_vllm_max_tokens = getattr(FLAGS, 'opd_vllm_max_tokens', 256)
+    opd_vllm_gpu_mem = getattr(FLAGS, 'opd_vllm_gpu_mem', 0.25)
+    opd_max_prompt_len = getattr(FLAGS, 'kd_max_prompt_len', 512)
+
     prompt_dataset = None
+    opd_prompt_dataset = None
 
     if use_random_cot_ntp:
         # NTP: random 2048-token windows (no prompt masking, all tokens contribute)
@@ -190,6 +207,44 @@ def globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device, offpolic
     if local_rank == 0:
         logging.info(f"KD-ADMM eval dataset: {len(valid_inputs)} samples")
 
+    # OPD prompt dataset and vLLM engine setup
+    _opd_vllm_engine = prebuilt_opd_vllm_engine
+    _opd_vllm_params = prebuilt_opd_vllm_params
+    if opd_enabled:
+        opd_prompt_dataset = MathPromptDataset(
+            jsonl_path=FLAGS.kd_data_path,
+            tokenizer=tokenizer,
+            max_prompt_len=opd_max_prompt_len,
+            nsamples=None,
+            seed=FLAGS.seed,
+        )
+        if local_rank == 0:
+            logging.info(f"OPD: prompt dataset {len(opd_prompt_dataset)} samples, "
+                         f"lambda={opd_lambda}, max_tokens={opd_vllm_max_tokens}")
+
+        # Single-GPU (no FSDP): init vLLM here if no pre-built engine provided
+        if _opd_vllm_engine is None and not getattr(FLAGS, 'admm_use_fsdp', False):
+            import os as _os
+            _os.environ['VLLM_USE_V1'] = '0'
+            from vllm import LLM, SamplingParams as _SP
+            _opd_max_len = opd_vllm_max_tokens + opd_max_prompt_len
+            logging.info(f"OPD: initializing vLLM engine (single-GPU, gpu_mem={opd_vllm_gpu_mem}, "
+                         f"max_len={_opd_max_len})")
+            _opd_vllm_engine = LLM(
+                FLAGS.model,
+                dtype="bfloat16",
+                gpu_memory_utilization=opd_vllm_gpu_mem,
+                trust_remote_code=True,
+                max_model_len=_opd_max_len,
+                enforce_eager=True,
+            )
+            _opd_vllm_params = _SP(
+                max_tokens=opd_vllm_max_tokens,
+                temperature=0.6,
+                top_p=0.95,
+            )
+            logging.info("OPD: vLLM engine ready")
+
     model.train()
     if teacher_model is not None:
         teacher_model.eval()
@@ -212,9 +267,19 @@ def globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device, offpolic
         kd_buffer_refresh_interval=getattr(FLAGS, "kd_buffer_refresh_interval", 32),
         kd_step_interval=getattr(FLAGS, "kd_step_interval", 1),
         offpolicy_kd=offpolicy_kd,
+        kd_offpolicy_ntp=getattr(FLAGS, "kd_offpolicy_ntp", False),
+        kd_triple_loss=getattr(FLAGS, "kd_triple_loss", False),
+        kd_opkd_lambda=getattr(FLAGS, "kd_opkd_lambda", 0.0),
+        admm_tr_use_opkd_rollout=getattr(FLAGS, "admm_tr_use_opkd_rollout", False),
         generate_with_teacher=getattr(FLAGS, "kd_generate_with_teacher", False),
         forward_kl=getattr(FLAGS, "kd_forward_kl", False),
         prompt_dataset=prompt_dataset,
+        opd_enabled=opd_enabled,
+        opd_lambda=opd_lambda,
+        opd_vllm_max_tokens=opd_vllm_max_tokens,
+        opd_vllm_engine=_opd_vllm_engine,
+        opd_vllm_params=_opd_vllm_params,
+        opd_prompt_dataset=opd_prompt_dataset,
         model=model,
         args=training_args,
         train_dataset=train_dataset,
@@ -227,10 +292,18 @@ def globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device, offpolic
     trainer.train()
 
     # Free vLLM engine from GPU before saving/eval (lighteval needs the memory)
+    import gc as _gc
     if getattr(trainer, "vllm_engine", None) is not None:
         del trainer.vllm_engine
         trainer.vllm_engine = None
-        import gc as _gc
+        _gc.collect()
+        torch.cuda.empty_cache()
+    if getattr(trainer, "_opd_vllm_engine", None) is not None:
+        try:
+            trainer._opd_vllm_engine.shutdown()
+        except Exception:
+            pass
+        trainer._opd_vllm_engine = None
         _gc.collect()
         torch.cuda.empty_cache()
 

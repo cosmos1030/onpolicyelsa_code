@@ -10,6 +10,7 @@ import random
 
 import wandb
 import torch
+import torch.distributed as dist
 import torch.nn.functional as F
 from torch.utils.data import Dataset
 from transformers import GenerationConfig
@@ -50,21 +51,29 @@ class MathPromptWithAnswerDataset(Dataset):
             cls="MathPromptWithAnswerLocal", max_prompt_len=max_prompt_len,
             nsamples=nsamples, seed=seed,
         )
-        if os.path.exists(cache_path):
-            try:
-                with open(cache_path, "rb") as f:
-                    self.samples = pickle.load(f)
-                logging.info(
-                    f"MathPromptWithAnswerDataset: loaded {len(self.samples)} samples from cache"
-                )
-                return
-            except (EOFError, pickle.UnpicklingError):
-                logging.warning("MathPromptWithAnswerDataset: corrupted cache, rebuilding")
-                os.remove(cache_path)
+        is_rank0 = (not dist.is_initialized()) or dist.get_rank() == 0
+
+        if is_rank0:
+            if os.path.exists(cache_path):
+                try:
+                    with open(cache_path, "rb") as f:
+                        self.samples = pickle.load(f)
+                    logging.info(
+                        f"MathPromptWithAnswerDataset: loaded {len(self.samples)} samples from cache"
+                    )
+                    if dist.is_initialized():
+                        dist.barrier()
+                    return
+                except (EOFError, pickle.UnpicklingError):
+                    logging.warning("MathPromptWithAnswerDataset: corrupted cache, rebuilding")
+                    os.remove(cache_path)
 
         random.seed(seed)
-        with open(jsonl_path) as f:
-            records = [json.loads(l) for l in f]
+        if is_rank0:
+            with open(jsonl_path) as f:
+                records = [json.loads(l) for l in f]
+        else:
+            records = []
 
         if nsamples and nsamples < len(records):
             records = random.sample(records, nsamples)
@@ -107,8 +116,16 @@ class MathPromptWithAnswerDataset(Dataset):
             f"MathPromptWithAnswerDataset: {len(self.samples)} samples "
             f"({skipped} skipped)"
         )
-        with open(cache_path, "wb") as f:
-            pickle.dump(self.samples, f)
+        if is_rank0:
+            with open(cache_path, "wb") as f:
+                pickle.dump(self.samples, f)
+
+        if dist.is_initialized():
+            dist.barrier()
+
+        if not is_rank0:
+            with open(cache_path, "rb") as f:
+                self.samples = pickle.load(f)
 
     @staticmethod
     def _extract_boxed(text: str):
@@ -171,23 +188,31 @@ class MathPromptDataset(Dataset):
         cache_path = _dataset_cache_path(cache_dir, jsonl_path, tokenizer.name_or_path,
                                          cls="MathPrompt", max_prompt_len=max_prompt_len,
                                          nsamples=nsamples, seed=seed)
-        if os.path.exists(cache_path):
-            try:
-                with open(cache_path, "rb") as f:
-                    self.samples = pickle.load(f)
-                if len(self.samples) == 0:
-                    logging.warning(f"MathPromptDataset: empty cache {cache_path}, rebuilding")
+        is_rank0 = (not dist.is_initialized()) or dist.get_rank() == 0
+
+        if is_rank0:
+            if os.path.exists(cache_path):
+                try:
+                    with open(cache_path, "rb") as f:
+                        self.samples = pickle.load(f)
+                    if len(self.samples) == 0:
+                        logging.warning(f"MathPromptDataset: empty cache {cache_path}, rebuilding")
+                        os.remove(cache_path)
+                    else:
+                        logging.info(f"MathPromptDataset: loaded {len(self.samples)} samples from cache {cache_path}")
+                        if dist.is_initialized():
+                            dist.barrier()
+                        return
+                except (EOFError, pickle.UnpicklingError):
+                    logging.warning(f"MathPromptDataset: corrupted cache {cache_path}, rebuilding")
                     os.remove(cache_path)
-                else:
-                    logging.info(f"MathPromptDataset: loaded {len(self.samples)} samples from cache {cache_path}")
-                    return
-            except (EOFError, pickle.UnpicklingError):
-                logging.warning(f"MathPromptDataset: corrupted cache {cache_path}, rebuilding")
-                os.remove(cache_path)
 
         random.seed(seed)
-        with open(jsonl_path) as f:
-            records = [json.loads(line) for line in f if line.strip()]
+        if is_rank0:
+            with open(jsonl_path) as f:
+                records = [json.loads(line) for line in f if line.strip()]
+        else:
+            records = []
 
         random.shuffle(records)
         if nsamples and nsamples < len(records):
@@ -214,9 +239,18 @@ class MathPromptDataset(Dataset):
                 "attention_mask": enc["attention_mask"].squeeze(0),
             })
 
-        with open(cache_path, "wb") as f:
-            pickle.dump(self.samples, f)
-        logging.info(f"MathPromptDataset: {len(self.samples)} prompts loaded and cached to {cache_path}")
+        if is_rank0:
+            with open(cache_path, "wb") as f:
+                pickle.dump(self.samples, f)
+            logging.info(f"MathPromptDataset: {len(self.samples)} prompts loaded and cached to {cache_path}")
+
+        if dist.is_initialized():
+            dist.barrier()
+
+        if not is_rank0:
+            with open(cache_path, "rb") as f:
+                self.samples = pickle.load(f)
+            logging.info(f"MathPromptDataset: loaded {len(self.samples)} samples from cache {cache_path}")
 
     def __len__(self):
         return len(self.samples)
@@ -273,19 +307,28 @@ class MathCotKDDataset(Dataset):
                                          max_len=max_len,
                                          max_prompt_len=max_prompt_len,
                                          nsamples=nsamples, seed=seed)
-        if os.path.exists(cache_path):
-            try:
-                with open(cache_path, "rb") as f:
-                    self.samples = pickle.load(f)
-                logging.info(f"MathCotKDDataset: loaded {len(self.samples)} samples from cache {cache_path}")
-                return
-            except (EOFError, pickle.UnpicklingError):
-                logging.warning(f"MathCotKDDataset: corrupted cache {cache_path}, rebuilding")
-                os.remove(cache_path)
+        is_rank0 = (not dist.is_initialized()) or dist.get_rank() == 0
+
+        # Only rank 0 builds/writes/removes cache; others wait at barrier then load.
+        if is_rank0:
+            if os.path.exists(cache_path):
+                try:
+                    with open(cache_path, "rb") as f:
+                        self.samples = pickle.load(f)
+                    logging.info(f"MathCotKDDataset: loaded {len(self.samples)} samples from cache {cache_path}")
+                    if dist.is_initialized():
+                        dist.barrier()
+                    return
+                except (EOFError, pickle.UnpicklingError):
+                    logging.warning(f"MathCotKDDataset: corrupted cache {cache_path}, rebuilding")
+                    os.remove(cache_path)
 
         random.seed(seed)
-        with open(jsonl_path) as f:
-            records = [json.loads(line) for line in f if line.strip()]
+        if is_rank0:
+            with open(jsonl_path) as f:
+                records = [json.loads(line) for line in f if line.strip()]
+        else:
+            records = []
 
         random.shuffle(records)
         if nsamples and nsamples < len(records):
@@ -369,9 +412,18 @@ class MathCotKDDataset(Dataset):
                 "prompt_mask": prompt_mask_t,
             })
 
-        with open(cache_path, "wb") as f:
-            pickle.dump(self.samples, f)
-        logging.info(f"MathCotKDDataset: {len(self.samples)} samples loaded and cached to {cache_path}")
+        if is_rank0:
+            with open(cache_path, "wb") as f:
+                pickle.dump(self.samples, f)
+            logging.info(f"MathCotKDDataset: {len(self.samples)} samples loaded and cached to {cache_path}")
+
+        if dist.is_initialized():
+            dist.barrier()
+
+        if not is_rank0:
+            with open(cache_path, "rb") as f:
+                self.samples = pickle.load(f)
+            logging.info(f"MathCotKDDataset: loaded {len(self.samples)} samples from cache {cache_path}")
 
     def __len__(self):
         return len(self.samples)
@@ -478,9 +530,19 @@ class GKDADMMTrainer(ADMMTrainer):
         kd_buffer_refresh_interval: int = 32,
         kd_step_interval: int = 1,
         offpolicy_kd: bool = False,
+        kd_offpolicy_ntp: bool = False,
+        kd_triple_loss: bool = False,
+        kd_opkd_lambda: float = 0.0,
+        admm_tr_use_opkd_rollout: bool = False,
         generate_with_teacher: bool = False,
         forward_kl: bool = False,
         prompt_dataset=None,
+        opd_enabled: bool = False,
+        opd_lambda: float = 0.0,
+        opd_vllm_max_tokens: int = 256,
+        opd_vllm_engine=None,
+        opd_vllm_params=None,
+        opd_prompt_dataset=None,
         *args,
         **kwargs,
     ):
@@ -500,6 +562,11 @@ class GKDADMMTrainer(ADMMTrainer):
         self.kd_buffer_refresh_interval = kd_buffer_refresh_interval
         self.kd_step_interval = kd_step_interval                    # apply KD every N steps (1 = every step)
         self.offpolicy_kd = offpolicy_kd
+        self.kd_offpolicy_ntp = kd_offpolicy_ntp      # NTP + dataset-based KD (no generation)
+        self.kd_triple_loss = kd_triple_loss          # NTP + dataset KD + OPKD
+        self.kd_opkd_lambda = kd_opkd_lambda          # weight for on-policy KD in triple mode
+        self.admm_tr_use_opkd_rollout = admm_tr_use_opkd_rollout
+        self._opkd_inputs = None
         self.forward_kl = forward_kl
         self.generate_with_teacher = generate_with_teacher
         self.prompt_dataset = prompt_dataset  # separate prompt source for vLLM buffer (optional)
@@ -524,6 +591,21 @@ class GKDADMMTrainer(ADMMTrainer):
 
         # Per-step state for conditional KD
         self._kd_inputs = None  # set in training_step, read in compute_loss
+        # TR global z-projection: flag to run setup_global_tr_z once after optimizer is ready
+        self._tr_z_initialized = False
+
+        # OPD (On-Policy Distillation with z-masked model) state
+        self.opd_enabled = opd_enabled
+        self.opd_lambda = opd_lambda
+        self.opd_vllm_max_tokens = opd_vllm_max_tokens
+        self._opd_vllm_engine = opd_vllm_engine    # pre-built engine (FSDP+subprocess) or None
+        self._opd_vllm_params = opd_vllm_params
+        self._opd_prompt_dataset = opd_prompt_dataset
+        self._opd_pool: list = []
+        self._opd_pool_ptr: int = 0
+        self._opd_last_refill_step: int = -1
+        self._opd_prompt_iter = None
+        self._opd_inputs = None                     # rollout popped per training step
 
         # vLLM rollout engine (optional)
         self.use_vllm = use_vllm
@@ -535,6 +617,141 @@ class GKDADMMTrainer(ADMMTrainer):
             # max_model_len = prompt + generation (no need for model's full context)
             _vllm_max_model_len = vllm_max_model_len or (max_new_tokens + 1024)
             self._init_vllm_engine(vllm_model_name, vllm_gpu_memory_utilization, _vllm_max_model_len)
+
+    def _get_opd_prompt_iter(self):
+        """Lazily build infinite prompt iterator for OPD pool generation."""
+        if self._opd_prompt_iter is not None:
+            return self._opd_prompt_iter
+        ds = self._opd_prompt_dataset
+        if ds is None:
+            return None
+        from torch.utils.data import DataLoader
+        _loader = DataLoader(ds, batch_size=1, shuffle=True,
+                             collate_fn=collate_prompts(self.tokenizer.pad_token_id or 0))
+        def _inf():
+            while True:
+                for x in _loader:
+                    yield x
+        self._opd_prompt_iter = _inf()
+        return self._opd_prompt_iter
+
+    @torch.no_grad()
+    def _generate_opd_pool(self, model):
+        """Generate OPD pool using z-masked model via vLLM.
+
+        Syncs z-masked weights to vLLM, generates admm_interval×grad_accum rollouts,
+        broadcasts to all ranks. Updates self._opd_pool and resets self._opd_pool_ptr.
+        Also sets self._tr_current_batch to first 8 rollouts for TR-z KL check.
+        """
+        from lib.gmp_trainer import _opkd_broadcast_pool, _opkd_pool_to_batch
+        from contextlib import nullcontext
+
+        admm_interval = self.args.admm_interval
+        grad_accum = self.args.gradient_accumulation_steps
+        pool_size = admm_interval * grad_accum
+
+        is_distributed = dist.is_initialized()
+        is_main = (not is_distributed) or dist.get_rank() == 0
+        device = next(model.parameters()).device
+
+        prompt_iter = self._get_opd_prompt_iter()
+        if prompt_iter is None:
+            logging.warning("OPD: no prompt dataset configured, skipping pool generation")
+            return
+
+        # --- Apply z mask to model weights temporarily ---
+        # Collect ADMM state (w, z via split) and zero newly-pruned positions
+        saved = {}
+        if getattr(self.args, 'admm_tr_z_proj', False) and self._tr_z_sp > 0:
+            admm_state = self._collect_admm_projection_centers()
+            if admm_state:
+                thr = self._find_global_threshold(admm_state, self._tr_z_sp)
+                z_override = self._make_z_from_threshold(admm_state, thr)
+                for param_id, z_new in z_override.items():
+                    w = admm_state[param_id]['w']
+                    pruned = (z_new.to(w.device) == 0) & (w.data != 0)
+                    if pruned.any():
+                        saved[param_id] = (w, pruned, w.data[pruned].clone())
+                        w.data[pruned] = 0.0
+
+        # --- Sync (z-masked) weights to vLLM and generate rollouts ---
+        try:
+            try:
+                from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, StateDictType
+                _FSDP_AVAILABLE = True
+            except ImportError:
+                _FSDP_AVAILABLE = False
+
+            _in_fsdp = _FSDP_AVAILABLE and isinstance(model, FSDP)
+            _fsdp_ctx = (FSDP.summon_full_params(model, writeback=False, offload_to_cpu=True, rank0_only=True)
+                         if _in_fsdp else nullcontext())
+
+            with _fsdp_ctx:
+                if is_main and self._opd_vllm_engine is not None:
+                    if _in_fsdp and hasattr(self._opd_vllm_engine, 'sync_weights'):
+                        _sd = {n: p.data.cpu() for n, p in model.named_parameters()}
+                        self._opd_vllm_engine.sync_weights(_sd)
+                        del _sd
+                    elif not _in_fsdp:
+                        # Non-FSDP: sync directly via vLLM internal API
+                        try:
+                            _eng = self._opd_vllm_engine.llm_engine
+                            _exec = (_eng.engine_core.model_executor if hasattr(_eng, 'engine_core')
+                                     else _eng.model_executor)
+                            _vm = _exec.driver_worker.model_runner.model
+                            _vs = {k: v for k, v in _vm.named_parameters()}
+                            for _n, _p in model.named_parameters():
+                                if _n in _vs:
+                                    _vs[_n].data.copy_(_p.data.to(_vs[_n].dtype))
+                        except Exception as _e:
+                            logging.warning(f"OPD vLLM weight sync failed: {_e}")
+
+            # Generate rollouts (rank 0 only)
+            pool = []
+            if is_main and self._opd_vllm_engine is not None:
+                from vllm.inputs import TokensPrompt as _TokensPrompt
+                pool_batches = [next(prompt_iter) for _ in range(pool_size)]
+                vllm_inputs = [
+                    _TokensPrompt(prompt_token_ids=b['input_ids'][0][:int(b['prompt_len'].item())].tolist())
+                    for b in pool_batches
+                ]
+                vllm_outs = self._opd_vllm_engine.generate(vllm_inputs, self._opd_vllm_params)
+                for pb, vo in zip(pool_batches, vllm_outs):
+                    plen = int(pb['prompt_len'].item())
+                    p_ids = pb['input_ids'][:, :plen].cpu()
+                    gen_ids = torch.tensor([vo.outputs[0].token_ids], dtype=torch.long)
+                    full_seq = torch.cat([p_ids, gen_ids], dim=1)
+                    pool.append({"full_seq": full_seq, "prompt_len": plen})
+                logging.info(f"  OPD pool generated: {len(pool)} rollouts (z_sp={self._tr_z_sp:.3f})")
+
+            pool = _opkd_broadcast_pool(pool, is_distributed, device)
+            self._opd_pool = pool
+            self._opd_pool_ptr = 0
+
+            # Use first 8 pool rollouts as TR-z calibration batch
+            if pool and getattr(self.args, 'admm_tr_z_proj', False):
+                _cal = _opkd_pool_to_batch(pool[:min(8, len(pool))], str(device))
+                self._tr_current_batch = _cal
+
+        finally:
+            # Restore original weights
+            for param_id, (w, pruned, vals) in saved.items():
+                w.data[pruned] = vals
+
+    def _pop_opd_inputs(self, device):
+        """Pop one rollout from OPD pool, return as kd_inputs dict or None if empty."""
+        if not self._opd_pool or self._opd_pool_ptr >= len(self._opd_pool):
+            return None
+        item = self._opd_pool[self._opd_pool_ptr]
+        self._opd_pool_ptr += 1
+        full_seq = item['full_seq'].to(device)
+        plen = item['prompt_len']
+        attn = (full_seq != self.tokenizer.pad_token_id).long()
+        return {
+            "input_ids": full_seq,
+            "attention_mask": attn,
+            "prompt_len": torch.tensor(plen, device=device),
+        }
 
     def _init_vllm_engine(self, model_name: str, gpu_memory_utilization: float, max_model_len: int):
         """Initialize vLLM LLM engine for fast student rollout generation."""
@@ -682,6 +899,15 @@ class GKDADMMTrainer(ADMMTrainer):
 
     def training_step(self, model, inputs, num_items_in_batch=None):
         """Generate on-policy completions, then run standard ADMM step."""
+        # Lazy setup: install TR z_override_fn once the optimizer exists
+        if getattr(self.args, 'admm_tr_z_proj', False) and not self._tr_z_initialized:
+            self.setup_global_tr_z(model)
+            self._tr_z_initialized = True
+        # Update cal_batch for TR KL computation (used by z_override_fn callback)
+        if getattr(self.args, 'admm_tr_z_proj', False):
+            self._tr_current_batch = {k: v.detach() if isinstance(v, torch.Tensor) else v
+                                      for k, v in inputs.items()}
+
         if self.offpolicy_kd and self._is_hybrid_batch(inputs):
             return self._training_step_offpolicy_kd(model, inputs, num_items_in_batch)
         elif self._is_hybrid_batch(inputs):
@@ -755,6 +981,55 @@ class GKDADMMTrainer(ADMMTrainer):
         """
         if self.teacher_model is None:
             self._kd_inputs = None
+            self._opkd_inputs = None
+        elif self.kd_triple_loss:
+            # Triple loss: NTP + dataset KD + on-policy KD
+            # Dataset KD: CoT batch directly (no generation)
+            self._kd_inputs = {
+                "input_ids": inputs["input_ids"],
+                "attention_mask": inputs["attention_mask"],
+                "prompt_len": inputs["prompt_len"],
+            }
+            # OPKD: student rollout via vLLM every kd_interval steps
+            if self.state.global_step % self.kd_interval == 0:
+                prompt_ids = inputs["prompt_ids"]
+                prompt_mask = inputs["prompt_mask"]
+                generated = self._generate_with_vllm(prompt_ids, prompt_mask, model)
+                full_mask = (generated != self.tokenizer.pad_token_id).long()
+                self._opkd_inputs = {
+                    "input_ids": generated,
+                    "attention_mask": full_mask,
+                    "prompt_len": inputs["prompt_len"],
+                }
+                # Reuse rollout as TR-z calibration batch (richer than CoT prefix)
+                if self.admm_tr_use_opkd_rollout and hasattr(self, '_tr_current_batch'):
+                    self._tr_current_batch = {
+                        "input_ids": generated.detach(),
+                        "attention_mask": full_mask.detach(),
+                    }
+            else:
+                self._opkd_inputs = None
+        elif self.kd_offpolicy_ntp:
+            # Dataset-based KD: no generation — use CoT batch directly.
+            # KL(student || teacher) is computed on answer tokens (after prompt_len).
+            self._kd_inputs = {
+                "input_ids": inputs["input_ids"],
+                "attention_mask": inputs["attention_mask"],
+                "prompt_len": inputs["prompt_len"],
+            }
+            self._opkd_inputs = None
+
+            # OPD: generate z-masked rollout pool at the start of each admm_interval block.
+            # Pop one rollout per micro-step as _opd_inputs for backward KL loss.
+            if self.opd_enabled and self._opd_vllm_engine is not None:
+                _admm_interval = self.args.admm_interval
+                _opt_step = getattr(self._get_admm_optimizer(), 'current_step', self.state.global_step)
+                # Refill once per interval block (not once per micro-batch within that block).
+                if _opt_step % _admm_interval == 0 and _opt_step != self._opd_last_refill_step:
+                    self._generate_opd_pool(model)
+                    self._opd_last_refill_step = _opt_step
+                _device = next(model.parameters()).device
+                self._opd_inputs = self._pop_opd_inputs(_device)
         elif self.use_vllm and self.kd_buffer_size > 0:
             # --- Buffered rollout mode ---
             # Pop once per optimizer step (global_step increments after accumulation),
@@ -882,11 +1157,38 @@ class GKDADMMTrainer(ADMMTrainer):
             ignore_index=-100,
         )
 
-        if self._kd_inputs is not None:
+        if self.kd_triple_loss:
+            # NTP(ntp_lambda) + dataset KD(kd_lambda) + OPKD(kd_opkd_lambda)
+            loss = self.ntp_lambda * ntp_loss
+            log_dict = {"train/ntp_loss": ntp_loss.item()}
+            if self._kd_inputs is not None:
+                kd_loss, _ = self._compute_kd_forward(model)
+                loss = loss + self.kd_lambda * kd_loss
+                log_dict["train/kd_loss"] = kd_loss.item()
+            if self._opkd_inputs is not None:
+                opkd_loss, opd_metrics = self._compute_kd_forward(model, kd_inputs=self._opkd_inputs)
+                loss = loss + self.kd_opkd_lambda * opkd_loss
+                log_dict["train/opkd_loss"] = opkd_loss.item()
+                log_dict.update({k: v.item() for k, v in opd_metrics.items()})
+            self.log(log_dict)
+            if wandb.run is not None:
+                wandb.log({k: v for k, v in log_dict.items()}, commit=False)
+        elif self._kd_inputs is not None:
             kd_loss, opd_metrics = self._compute_kd_forward(model)
-            loss = ntp_loss + self.kd_lambda * kd_loss
             log_dict = {"train/ntp_loss": ntp_loss.item(), "train/kd_loss": kd_loss.item()}
             log_dict.update({k: v.item() for k, v in opd_metrics.items()})
+
+            # OPD: backward KL D(student||teacher) on z-masked rollout tokens
+            if self.opd_enabled and self._opd_inputs is not None and self.opd_lambda > 0:
+                opd_loss, opd_bkwd_metrics = self._compute_opd_backward_kl(model)
+                ntp_w = kd_w = opd_w = self.opd_lambda / 3.0
+                loss = ntp_w * ntp_loss + kd_w * kd_loss + opd_w * opd_loss
+                log_dict["train/opd_loss"] = opd_loss.item()
+                log_dict.update({f"opd/{k.split('/')[-1]}": v.item()
+                                 for k, v in opd_bkwd_metrics.items()})
+            else:
+                loss = ntp_loss + self.kd_lambda * kd_loss
+
             self.log(log_dict)
             if wandb.run is not None:
                 wandb.log({"train/kd_loss": kd_loss.item()}, commit=False)
@@ -941,9 +1243,34 @@ class GKDADMMTrainer(ADMMTrainer):
 
         return (loss, student_out) if return_outputs else loss
 
-    def _compute_kd_forward(self, model):
-        """Run student+teacher on self._kd_inputs, return KD loss and OPD metrics."""
-        kd = self._kd_inputs
+    def _compute_opd_backward_kl(self, model):
+        """Backward KL D(student||teacher) on OPD rollout tokens (always reverse KL, ignores forward_kl flag)."""
+        kd = self._opd_inputs
+        input_ids = kd["input_ids"]
+        attention_mask = kd["attention_mask"]
+        prompt_len = int(kd["prompt_len"].item() if kd["prompt_len"].dim() == 0 else kd["prompt_len"][0])
+        gen_len = input_ids.shape[1] - prompt_len
+        if gen_len <= 0:
+            logging.warning("OPD: no generated tokens in rollout, skipping.")
+            return torch.tensor(0.0, device=input_ids.device, requires_grad=True), {}
+
+        student_out = model(input_ids=input_ids, attention_mask=attention_mask)
+        with torch.no_grad():
+            teacher_out = self.teacher_model(input_ids=input_ids, attention_mask=attention_mask)
+
+        # Force reverse KL D(student||teacher) for OPD regardless of self.forward_kl
+        _saved_fkl = self.forward_kl
+        self.forward_kl = False
+        loss, metrics = self._kl_loss(
+            student_out.logits, teacher_out.logits,
+            attention_mask, prompt_len, gen_len,
+        )
+        self.forward_kl = _saved_fkl
+        return loss, metrics
+
+    def _compute_kd_forward(self, model, kd_inputs=None):
+        """Run student+teacher on kd_inputs (defaults to self._kd_inputs), return KD loss and OPD metrics."""
+        kd = kd_inputs if kd_inputs is not None else self._kd_inputs
         input_ids = kd["input_ids"]
         attention_mask = kd["attention_mask"]
         prompt_len = int(kd["prompt_len"].item() if kd["prompt_len"].dim() == 0 else kd["prompt_len"][0])
@@ -991,6 +1318,9 @@ class GKDADMMTrainer(ADMMTrainer):
             with torch.no_grad():
                 t_topk = t_logits_gen.topk(self.kd_topk, dim=-1)
                 t_topk_idx = t_topk.indices
+                # For forward KL, s_topk_idx was not computed above — compute it here for metrics
+                if self.forward_kl:
+                    s_topk_idx = s_logits_gen.topk(self.kd_topk, dim=-1).indices
 
                 # Overlap Ratio: |S_t ∩ T_t| / K
                 overlap_mask = (s_topk_idx.unsqueeze(-1) == t_topk_idx.unsqueeze(-2)).any(dim=-1)
