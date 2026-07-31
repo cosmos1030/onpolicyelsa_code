@@ -31,7 +31,7 @@ from rundb.schema import DB, DB_PATH, TIERS, MODELS, METRIC_FIELDS
 from rundb.builder import build_artifact_html
 
 ARTIFACT_OUTPUT = os.path.join(SCRIPTS_DIR, "artifact_built.html")
-ARTIFACT_URL = "https://claude.ai/code/artifact/b81a7023-3366-4d46-b5eb-02efbb37da8d"
+ARTIFACT_URL = "https://claude.ai/code/artifact/4549db30-d9d5-418d-98a4-832b1faa8f46"
 
 
 # ─── helpers ──────────────────────────────────────────────────────────────────

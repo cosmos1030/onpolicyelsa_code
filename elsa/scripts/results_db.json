@@ -2127,6 +2127,18 @@
           "arcc": 25.4,
           "c4": 19207274,
           "wt2": 20594924
+        },
+        {
+          "badge": "tropkd_ef",
+          "name": "TR-GMP KD + OPKD (Dense, Empirical Fisher)",
+          "sub": "lam1_tok256_lr1e-4_4096steps",
+          "wbid": "xqlspgas",
+          "math": 0.2,
+          "lcb": 0.0,
+          "gpqa": 5.1,
+          "ifeval": 7.6,
+          "pending": true,
+          "wandb_project": "reasoning_qwen3_1.7b"
         }
       ]
     },
@@ -2523,13 +2535,13 @@
           "wbid": "3l9rg0aj",
           "steps": 288,
           "math": 82.8,
+          "lcb": 19.4,
           "gpqa": 41.9,
           "ifeval": 66.9,
-          "lcb": 19.4,
-          "wt2": 18.55,
           "c4": 24.12,
-          "train_wbid": "a3sk60oz",
-          "wandb_project": "reasoning_qwen3_4b"
+          "wt2": 18.55,
+          "wandb_project": "reasoning_qwen3_4b",
+          "train_wbid": "a3sk60oz"
         },
         {
           "badge": "tropkd",
@@ -2538,13 +2550,13 @@
           "wbid": "4rxum7lx",
           "steps": 480,
           "math": 85.6,
+          "lcb": 22.8,
           "gpqa": 41.9,
           "ifeval": 70.1,
-          "lcb": 22.8,
-          "wt2": 15.74,
           "c4": 20.91,
-          "train_wbid": "yzum7q9y",
-          "wandb_project": "reasoning_qwen3_4b"
+          "wt2": 15.74,
+          "wandb_project": "reasoning_qwen3_4b",
+          "train_wbid": "yzum7q9y"
         },
         {
           "badge": "sgpt_sft",
@@ -2553,11 +2565,9 @@
           "wbid": "8ksg2sey",
           "steps": 2048,
           "math": 82.8,
+          "lcb": 14.2,
           "gpqa": 34.3,
           "ifeval": 35.3,
-          "lcb": 14.2,
-          "wt2": 15.63,
-          "wandb_project": "reasoning_qwen3_4b",
           "wino": 61.2,
           "rte": 69.0,
           "race": 39.6,
@@ -2566,7 +2576,9 @@
           "hella": 61.1,
           "boolq": 83.1,
           "arce": 62.8,
-          "arcc": 42.3
+          "arcc": 42.3,
+          "wt2": 15.63,
+          "wandb_project": "reasoning_qwen3_4b"
         }
       ],
       "S60": [
@@ -2949,13 +2961,13 @@
           "wbid": "tasf6y3n",
           "steps": 480,
           "math": 74.4,
+          "lcb": 11.9,
           "gpqa": 32.8,
           "ifeval": 45.1,
-          "lcb": 11.9,
-          "wt2": 22.73,
           "c4": 30.14,
-          "train_wbid": "a3sk60oz",
-          "wandb_project": "reasoning_qwen3_4b"
+          "wt2": 22.73,
+          "wandb_project": "reasoning_qwen3_4b",
+          "train_wbid": "a3sk60oz"
         },
         {
           "badge": "sgpt_sft",
@@ -2964,11 +2976,9 @@
           "wbid": "lz2u0cyq",
           "steps": 2048,
           "math": 76.8,
+          "lcb": 2.2,
           "gpqa": 29.3,
           "ifeval": 26.1,
-          "lcb": 2.2,
-          "wt2": 22.22,
-          "wandb_project": "reasoning_qwen3_4b",
           "wino": 59.7,
           "rte": 62.8,
           "race": 37.1,
@@ -2977,7 +2987,9 @@
           "hella": 53.2,
           "boolq": 74.9,
           "arce": 53.8,
-          "arcc": 36.6
+          "arcc": 36.6,
+          "wt2": 22.22,
+          "wandb_project": "reasoning_qwen3_4b"
         }
       ],
       "S70": [
@@ -3165,6 +3177,7 @@
           "badge": "tr",
           "name": "TR-GMP dwup-only",
           "sub": "dwup · S70 · 32768 steps",
+          "hf": "cosmos1030/qwen3-4b-gmp-tr-dwup-s70pct",
           "steps": 32768,
           "math": 67.0,
           "lcb": 9.7,
@@ -3300,9 +3313,9 @@
           "wbid": "a3sk60oz",
           "steps": 703,
           "math": 54.4,
+          "lcb": 1.1,
           "gpqa": 27.8,
           "ifeval": 29.8,
-          "lcb": 1.1,
           "wino": 58.2,
           "rte": 58.1,
           "race": 36.6,
@@ -3312,8 +3325,8 @@
           "boolq": 77.7,
           "arce": 60.3,
           "arcc": 36.1,
-          "train_wbid": "a3sk60oz",
-          "wandb_project": "reasoning_qwen3_4b"
+          "wandb_project": "reasoning_qwen3_4b",
+          "train_wbid": "a3sk60oz"
         },
         {
           "badge": "tropkd",
@@ -3322,9 +3335,9 @@
           "wbid": "yzum7q9y",
           "steps": 1343,
           "math": 55.8,
+          "lcb": 5.6,
           "gpqa": 26.3,
           "ifeval": 33.8,
-          "lcb": 5.6,
           "wino": 60.0,
           "rte": 53.8,
           "race": 36.8,
@@ -3334,8 +3347,8 @@
           "boolq": 80.3,
           "arce": 66.4,
           "arcc": 40.9,
-          "train_wbid": "yzum7q9y",
-          "wandb_project": "reasoning_qwen3_4b"
+          "wandb_project": "reasoning_qwen3_4b",
+          "train_wbid": "yzum7q9y"
         }
       ]
     },
@@ -3608,13 +3621,9 @@
           "sub": "lr=1e-4 · pure NTP+KD",
           "wbid": "hitphk5l",
           "math": 72.8,
+          "lcb": 11.6,
           "gpqa": 29.3,
           "ifeval": 39.4,
-          "lcb": 11.6,
-          "wt2": 16.57,
-          "c4": 24.93,
-          "train_wbid": "j0q5b1rb",
-          "wandb_project": "reasoning_qwen3_8b",
           "wino": 65.8,
           "rte": 73.3,
           "race": 40.1,
@@ -3623,7 +3632,11 @@
           "hella": 73.4,
           "boolq": 84.0,
           "arce": 77.5,
-          "arcc": 55.0
+          "arcc": 55.0,
+          "c4": 24.93,
+          "wt2": 16.57,
+          "wandb_project": "reasoning_qwen3_8b",
+          "train_wbid": "j0q5b1rb"
         },
         {
           "badge": "alps",
@@ -3631,11 +3644,9 @@
           "sub": "rho=300 · nsamples=128",
           "wbid": "3ohz3w9b",
           "math": 50.8,
+          "lcb": 0.0,
           "gpqa": 25.8,
           "ifeval": 20.5,
-          "lcb": 0.0,
-          "c4": 68.17,
-          "wt2": 47.92,
           "wino": 54.1,
           "rte": 64.6,
           "race": 32.0,
@@ -3644,7 +3655,9 @@
           "hella": 37.5,
           "boolq": 67.2,
           "arce": 45.1,
-          "arcc": 30.6
+          "arcc": 30.6,
+          "c4": 68.17,
+          "wt2": 47.92
         },
         {
           "badge": "sparsellm",
