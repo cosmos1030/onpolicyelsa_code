@@ -133,6 +133,301 @@ class ADMMTrainer(Trainer):
         self.is_deepspeed_enabled = getattr(self.accelerator.state, "deepspeed_plugin", None) is not None
         self.is_fsdp_enabled = getattr(self.accelerator.state, "fsdp_plugin", None) is not None
         self.is_tp_enabled = getattr(self.accelerator.state, "torch_tp_plugin", None) is not None
+        # TR global z-projection state
+        self._tr_z_sp = 0.0
+        self._tr_delta = float(getattr(self.args, 'admm_tr_init_delta', 0.05))
+        self._tr_current_batch = None  # updated each training_step
+        self._tr_z_metrics_pending = None  # flushed in dual update logging block
+
+    # -------------------------------------------------------------------------
+    # TR global z-projection helpers
+    # -------------------------------------------------------------------------
+
+    def _get_admm_optimizer(self):
+        """Unwrap HF accelerate scheduler to get the raw ADMM optimizer."""
+        opt = self.optimizer
+        if hasattr(opt, 'optimizer'):
+            opt = opt.optimizer
+        return opt
+
+    def setup_global_tr_z(self, model):
+        """Install z_override callback on the ADMM optimizer (call after optimizer is created)."""
+        if not getattr(self.args, 'admm_tr_z_proj', False):
+            return
+        trainer_ref = self
+
+        def _z_override_fn():
+            cal_batch = trainer_ref._tr_current_batch
+            if cal_batch is None:
+                return {}
+            return trainer_ref._compute_global_tr_z(model, cal_batch)
+
+        opt = self._get_admm_optimizer()
+        opt._z_override_fn = _z_override_fn
+        logging.info(f"TR global z-projection enabled: "
+                     f"kl_threshold={self.args.admm_tr_kl_threshold}, "
+                     f"init_delta={self._tr_delta}")
+
+    def _collect_admm_projection_centers(self):
+        """Collect ADMM state for all params: w, a=w+u, saliency, z_prev. FSDP-aware."""
+        opt = self._get_admm_optimizer()
+        result = {}
+        for g in opt.param_groups:
+            if not g.get('admm', False):
+                continue
+            for w in g['params']:
+                if w.numel() == 0:
+                    continue
+                st = opt.state.get(w, {})
+                if 'dual' not in st:
+                    continue
+                dual = st['dual'].dequant() if hasattr(st['dual'], 'dequant') else st['dual']
+                z_prev = st['split'].dequant() if hasattr(st['split'], 'dequant') else st['split']
+                a = w.detach().float() + dual.detach().float()
+                # saliency: momentum-weighted if available, else magnitude^2
+                if opt.projection_mode == 'momentum':
+                    v_t = st.get('exp_avg_sq', None)
+                    if v_t is not None:
+                        saliency = v_t.float() * (a ** 2)
+                    else:
+                        saliency = a ** 2
+                else:
+                    saliency = a ** 2
+                result[id(w)] = {'w': w, 'a': a, 'saliency': saliency, 'z_prev': z_prev.detach()}
+        return result
+
+    def _find_global_threshold(self, admm_state, sparsity):
+        """Find saliency threshold for given global sparsity. FSDP distributed-safe."""
+        local_sals = [v['saliency'].flatten() for v in admm_state.values() if v['saliency'].numel() > 0]
+        if not local_sals:
+            return float('inf')
+        _dev = local_sals[0].device
+
+        if dist.is_initialized():
+            n_local_t = torch.tensor([sum(s.numel() for s in local_sals)], dtype=torch.long, device=_dev)
+            dist.all_reduce(n_local_t, op=dist.ReduceOp.SUM)
+            n_total = n_local_t.item()
+            k = int(n_total * sparsity)
+            if k == 0:
+                return -float('inf')
+
+            lo_t = torch.tensor(min(s.min().item() for s in local_sals), dtype=torch.float32, device=_dev)
+            hi_t = torch.tensor(max(s.max().item() for s in local_sals), dtype=torch.float32, device=_dev)
+            dist.all_reduce(lo_t, op=dist.ReduceOp.MIN)
+            dist.all_reduce(hi_t, op=dist.ReduceOp.MAX)
+            lo, hi = lo_t.item(), hi_t.item()
+
+            _CHUNK = 50_000_000
+            for _ in range(64):
+                mid = (lo + hi) / 2.0
+                cnt = torch.zeros(1, dtype=torch.long, device=_dev)
+                for s in local_sals:
+                    for ci in range(0, s.numel(), _CHUNK):
+                        cnt += (s[ci:ci + _CHUNK] <= mid).sum(dtype=torch.long)
+                dist.all_reduce(cnt, op=dist.ReduceOp.SUM)
+                if cnt.item() < k:
+                    lo = mid
+                else:
+                    hi = mid
+            return hi
+        else:
+            all_scores = torch.cat(local_sals)
+            k = int(all_scores.numel() * sparsity)
+            if k == 0:
+                return -float('inf')
+            lo, hi = all_scores.min().item(), all_scores.max().item()
+            for _ in range(64):
+                mid = (lo + hi) / 2.0
+                if (all_scores <= mid).sum().item() < k:
+                    lo = mid
+                else:
+                    hi = mid
+            return hi
+
+    def _make_z_from_threshold(self, admm_state, threshold):
+        """Build z_override dict: keep weights with saliency >= threshold, zero the rest."""
+        z_override = {}
+        for param_id, info in admm_state.items():
+            mask = (info['saliency'] >= threshold)
+            z_new = info['a'] * mask.float()
+            z_override[param_id] = z_new.to(info['w'].dtype)
+        return z_override
+
+    @torch.no_grad()
+    def _forward_with_z(self, model, input_ids, attn_mask, z_dict, admm_state):
+        """Temporarily hard-project model onto z_dict (zero positions where z==0),
+        run a forward pass, then restore the original (live) weights."""
+        saved = {}
+        for param_id, z_val in z_dict.items():
+            w = admm_state[param_id]['w']
+            pruned = (z_val.to(w.device) == 0) & (w.data != 0)
+            if pruned.any():
+                saved[param_id] = (w, pruned, w.data[pruned].clone())
+                w.data[pruned] = 0.0
+        with torch.no_grad(), torch.amp.autocast('cuda', dtype=torch.bfloat16):
+            logits = model(input_ids=input_ids, attention_mask=attn_mask).logits.float()
+        for param_id, (w, pruned, vals) in saved.items():
+            w.data[pruned] = vals
+        return logits
+
+    @torch.no_grad()
+    def _compute_kl_with_z(self, model, cal_batch, z_override, admm_state):
+        """KL(Q_zprev || Q_zcand): compare the previously-accepted z against the
+        candidate z (matching gmp_trainer.py's z-vs-z TR-GMP comparison), instead of
+        comparing against the raw live weight w. w is never hard-projected onto z by
+        _dual_update (only pulled toward it via the proximal gradient term), so a
+        w-vs-z comparison conflates "how much does growing the mask hurt" with
+        "how far has w drifted from z since the last projection" — this is noisier
+        and was the likely cause of TR-Z's unstable KL/mask-selection behavior.
+        """
+        device = next(model.parameters()).device
+        input_ids = cal_batch['input_ids'].to(device)
+        attn_mask  = cal_batch['attention_mask'].to(device)
+        if 'labels' in cal_batch:
+            valid = (cal_batch['labels'].to(device)[:, 1:] != -100)
+        else:
+            valid = (attn_mask[:, 1:] == 1)
+        if not valid.any():
+            return 0.0
+
+        torch.cuda.empty_cache()
+        # Do NOT call model.eval(): in FSDP, eval() changes reshard_after_forward behavior
+        # so the FlatParam stays unsharded after the forward, and the next training step's
+        # all_gather hangs waiting for the other rank → NCCL timeout deadlock.
+        # torch.no_grad() is sufficient to prevent gradient computation.
+        z_prev = {param_id: info['z_prev'] for param_id, info in admm_state.items()}
+        old_logits  = self._forward_with_z(model, input_ids, attn_mask, z_prev, admm_state)
+        cand_logits = self._forward_with_z(model, input_ids, attn_mask, z_override, admm_state)
+
+        old_lp  = F.log_softmax(old_logits[:, :-1, :], dim=-1)
+        cand_lp = F.log_softmax(cand_logits[:, :-1, :], dim=-1)
+        kl_tok = (old_lp.exp() * (old_lp - cand_lp)).sum(dim=-1)
+        kl_vals = kl_tok[valid].float()
+
+        kl_reduce = getattr(self.args, 'admm_tr_kl_reduce', 'mean')
+        if kl_reduce == 'quantile':
+            return max(torch.quantile(kl_vals, 0.95).item(), 0.0)
+        return max(kl_vals.mean().item(), 0.0)
+
+    def _compute_global_tr_z(self, model, cal_batch):
+        """GMP-TR-style search: try prev_delta, double on accept, halve on reject."""
+        torch.cuda.empty_cache()
+        args = self.args
+        final_sp    = args.sparsity_ratio
+        kl_thr      = args.admm_tr_kl_threshold
+        max_iters   = getattr(args, 'admm_tr_max_iters', 8)
+        min_delta   = getattr(args, 'admm_tr_delta_min', 1e-3)
+
+        admm_state = self._collect_admm_projection_centers()
+        if not admm_state:
+            return {}
+
+        current_sp = self._tr_z_sp
+        delta      = self._tr_delta
+
+        # Already at target — just project to final sparsity
+        if current_sp >= final_sp - 1e-4:
+            thr = self._find_global_threshold(admm_state, final_sp)
+            return self._make_z_from_threshold(admm_state, thr)
+
+        accepted_z = None
+        accepted_kl = float('nan')
+        accepted_iters = 0
+        for i in range(max_iters):
+            try_sp = min(current_sp + delta, final_sp)
+            thr      = self._find_global_threshold(admm_state, try_sp)
+            z_cand   = self._make_z_from_threshold(admm_state, thr)
+            kl       = self._compute_kl_with_z(model, cal_batch, z_cand, admm_state)
+            # Sync KL across ranks: each rank processes a different mini-batch in FSDP
+            # data-parallel mode, so KL values diverge → ranks break at different
+            # iterations → NCCL ALLGATHER asymmetry → 10-min timeout deadlock.
+            if dist.is_initialized():
+                _kl_t = torch.tensor(kl, dtype=torch.float64,
+                                     device=next(model.parameters()).device)
+                dist.all_reduce(_kl_t, op=dist.ReduceOp.AVG)
+                kl = _kl_t.item()
+            ok       = kl <= kl_thr
+            logging.info(f"  TR-z iter {i}: try_sp={try_sp:.4f} delta={delta:.5f} "
+                         f"KL={kl:.5f} {'✓' if ok else '✗'}")
+            accepted_iters = i + 1
+            if ok:
+                accepted_z     = z_cand
+                accepted_kl    = kl
+                self._tr_z_sp  = try_sp
+                self._tr_delta = min(delta * 2.0, final_sp)
+                break
+            else:
+                delta /= 2.0
+                if delta < min_delta:
+                    break
+
+        if accepted_z is not None:
+            mask_nnz = sum(v.sum().item() for v in accepted_z.values())
+            mask_total = sum(v.numel() for v in accepted_z.values())
+            self._tr_z_metrics_pending = {
+                'tr_z/sparsity': self._tr_z_sp,
+                'tr_z/kl': accepted_kl,
+                'tr_z/delta': self._tr_delta,
+                'tr_z/iters': accepted_iters,
+                'tr_z/outcome': 1.0,  # grew
+                'tr_z/mask_nnz': int(mask_nnz),
+                'tr_z/mask_total': int(mask_total),
+                'tr_z/mask_zeros': int(mask_total - mask_nnz),
+            }
+            return accepted_z
+
+        # Growth failed at every delta down to min_delta. Before freezing, try a
+        # lateral swap at the SAME sparsity using the latest saliency (revive some
+        # weights, prune others) — but gate it through the same KL trust region as
+        # growth, instead of applying it unchecked (previous behavior compared no
+        # candidate against z_prev at all here). If the swap also fails, freeze
+        # exactly on the last accepted z (z_prev, already available per-param in
+        # admm_state) rather than returning {} — an empty override dict makes
+        # _dual_update fall through to the optimizer's default projection, which
+        # projects to admm_lmda's full target sparsity unconditionally (the same
+        # class of bug fixed in final_projection). z_prev at t=0 is already the
+        # unpruned initial split (see optimizers.py z0-init fix), so this also
+        # correctly handles the very first call with no growth accepted yet.
+        thr = self._find_global_threshold(admm_state, current_sp)
+        z_swap = self._make_z_from_threshold(admm_state, thr)
+        swap_kl = self._compute_kl_with_z(model, cal_batch, z_swap, admm_state)
+        if dist.is_initialized():
+            _kl_t = torch.tensor(swap_kl, dtype=torch.float64,
+                                 device=next(model.parameters()).device)
+            dist.all_reduce(_kl_t, op=dist.ReduceOp.AVG)
+            swap_kl = _kl_t.item()
+        swap_ok = swap_kl <= kl_thr
+        logging.info(f"  TR-z swap@{current_sp:.4f}: KL={swap_kl:.5f} "
+                     f"{'✓ swapped' if swap_ok else '✗ frozen'}")
+
+        if swap_ok:
+            z_final = z_swap
+        else:
+            z_final = {pid: info['z_prev'].to(info['w'].dtype) for pid, info in admm_state.items()}
+
+        mask_nnz = sum(v.sum().item() for v in z_final.values())
+        mask_total = sum(v.numel() for v in z_final.values())
+        self._tr_z_metrics_pending = {
+            'tr_z/sparsity': current_sp,
+            'tr_z/kl': swap_kl,
+            'tr_z/delta': delta,
+            'tr_z/iters': accepted_iters,
+            'tr_z/outcome': 0.5 if swap_ok else 0.0,  # swapped vs frozen
+            'tr_z/mask_nnz': int(mask_nnz),
+            'tr_z/mask_total': int(mask_total),
+            'tr_z/mask_zeros': int(mask_total - mask_nnz),
+        }
+        return z_final
+
+    def training_step(self, model, inputs, num_items_in_batch=None):
+        """Store current batch for TR z_override_fn, then run normal training step."""
+        if getattr(self.args, 'admm_tr_z_proj', False):
+            if not getattr(self, '_tr_z_initialized', False):
+                self.setup_global_tr_z(model)
+                self._tr_z_initialized = True
+            self._tr_current_batch = {k: v.detach() if isinstance(v, torch.Tensor) else v
+                                      for k, v in inputs.items()}
+        return super().training_step(model, inputs, num_items_in_batch)
 
     def allocate_nonuniform_sparsity(self):
         """
@@ -402,6 +697,7 @@ class ADMMTrainer(Trainer):
                 projection_bias_correction=self.args.admm_projection_bias_correction,
                 dual_dtype=self.args.admm_dual_dtype,
                 split_dtype=self.args.admm_split_dtype,
+                lasso_lmda=getattr(self.args, 'admm_lasso_lmda', 0.0),
                 accelerator=self.accelerator,
                 **base_optimizer_kwargs,
             )
@@ -1338,6 +1634,9 @@ class ADMMTrainer(Trainer):
                     self.control = self.callback_handler.on_pre_optimizer_step(args, self.state, self.control)
 
                     self.optimizer.step()
+                    if getattr(self, '_tr_z_metrics_pending', None) and self.is_world_process_zero():
+                        self.log(self._tr_z_metrics_pending)
+                        self._tr_z_metrics_pending = None
                     self.control = self.callback_handler.on_optimizer_step(args, self.state, self.control)
 
                     optimizer_was_run = not self.accelerator.optimizer_step_was_skipped
@@ -1979,6 +2278,9 @@ class Retrainer(Trainer):
                     self.control = self.callback_handler.on_pre_optimizer_step(args, self.state, self.control)
 
                     self.optimizer.step()
+                    if getattr(self, '_tr_z_metrics_pending', None) and self.is_world_process_zero():
+                        self.log(self._tr_z_metrics_pending)
+                        self._tr_z_metrics_pending = None
 
                     self.control = self.callback_handler.on_optimizer_step(args, self.state, self.control)
 
