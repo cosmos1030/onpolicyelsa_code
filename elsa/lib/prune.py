@@ -49,8 +49,16 @@ class AdmmTrainingArguments(TrainingArguments):
     base_optimizer_type: str = field(default='adam', metadata={"help": "Base optimizer for ADMM primal update."})
     admm_dual_dtype: str = field(default='fp32', metadata={"help": "Dtype for ADMM dual variable (fp32 or bf16)."})
     admm_split_dtype: str = field(default='fp32', metadata={"help": "Dtype for ADMM split variable (fp32 or bf16)."})
+    admm_lasso_lmda: float = field(default=0.0, metadata={"help": "L1 penalty on pruned-position weights; 0 = disabled."})
     admm_beta1: float = field(default=0.9, metadata={"help": "Beta1 for ADMM Adam optimizer."})
     admm_beta2: float = field(default=0.95, metadata={"help": "Beta2 for ADMM Adam optimizer."})
+    admm_tr_z_proj: bool = field(default=False, metadata={"help": "Use global trust-region z-projection."})
+    admm_tr_kl_threshold: float = field(default=0.1, metadata={"help": "KL threshold for TR z-projection."})
+    admm_tr_max_iters: int = field(default=8, metadata={"help": "Max halving iterations per ADMM interval for TR z-projection."})
+    admm_tr_init_delta: float = field(default=0.05, metadata={"help": "Initial sparsity step size for TR z-projection."})
+    admm_tr_delta_min: float = field(default=1e-3, metadata={"help": "Minimum sparsity delta for TR z-projection."})
+    admm_z_schedule_mode: str = field(default='trust_region', metadata={"help": "z-projection schedule: 'trust_region' (KL-gated, adaptive) or 'cubic' (fixed schedule from admm-pruning/Boza et al., no KL check)."})
+    admm_cubic_steps: int = field(default=2048, metadata={"help": "ks: training step at which the cubic schedule reaches final sparsity (independent of admm_interval, which controls z-projection call cadence)."})
 
 # --- globalprune_admm function ---
 def globalprune_admm(FLAGS, model, tokenizer, device, prune_n=0, prune_m=0):
@@ -113,8 +121,18 @@ def globalprune_admm(FLAGS, model, tokenizer, device, prune_n=0, prune_m=0):
         prune_m=prune_m,
         admm_dual_dtype=FLAGS.admm_dual_dtype,
         admm_split_dtype=FLAGS.admm_split_dtype,
+        admm_lasso_lmda=getattr(FLAGS, 'admm_lasso_lmda', 0.0),
         admm_beta1=FLAGS.admm_beta1,
         admm_beta2=FLAGS.admm_beta2,
+        admm_tr_z_proj=getattr(FLAGS, 'admm_tr_z_proj', False),
+        admm_tr_kl_threshold=getattr(FLAGS, 'admm_tr_kl_threshold', 0.1),
+        admm_tr_max_iters=getattr(FLAGS, 'admm_tr_max_iters', 8),
+        admm_tr_init_delta=getattr(FLAGS, 'admm_tr_init_delta', 0.05),
+        admm_tr_delta_min=getattr(FLAGS, 'admm_tr_delta_min', 1e-3),
+        admm_z_schedule_mode=getattr(FLAGS, 'admm_z_schedule_mode', 'trust_region'),
+        admm_cubic_steps=getattr(FLAGS, 'admm_cubic_steps', 15),
+        fsdp="full_shard auto_wrap" if getattr(FLAGS, 'admm_use_fsdp', False) else "",
+        fsdp_config={"fsdp_transformer_layer_cls_to_wrap": "Qwen3DecoderLayer"} if getattr(FLAGS, 'admm_use_fsdp', False) else {},
     )
 
     # --- Log on main process only ---

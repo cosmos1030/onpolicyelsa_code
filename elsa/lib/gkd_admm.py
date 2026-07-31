@@ -102,6 +102,8 @@ def globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device,
         admm_tr_max_iters=getattr(FLAGS, 'admm_tr_max_iters', 8),
         admm_tr_init_delta=getattr(FLAGS, 'admm_tr_init_delta', 0.05),
         admm_tr_delta_min=getattr(FLAGS, 'admm_tr_delta_min', 1e-3),
+        admm_z_schedule_mode=getattr(FLAGS, 'admm_z_schedule_mode', 'trust_region'),
+        admm_cubic_steps=getattr(FLAGS, 'admm_cubic_steps', 15),
     )
 
     if tokenizer.pad_token is None:

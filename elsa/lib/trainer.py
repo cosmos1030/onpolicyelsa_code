@@ -138,6 +138,7 @@ class ADMMTrainer(Trainer):
         self._tr_delta = float(getattr(self.args, 'admm_tr_init_delta', 0.05))
         self._tr_current_batch = None  # updated each training_step
         self._tr_z_metrics_pending = None  # flushed in dual update logging block
+        self._cubic_iter = 0  # z-projection call counter for the cubic schedule
 
     # -------------------------------------------------------------------------
     # TR global z-projection helpers
@@ -155,18 +156,66 @@ class ADMMTrainer(Trainer):
         if not getattr(self.args, 'admm_tr_z_proj', False):
             return
         trainer_ref = self
+        schedule_mode = getattr(self.args, 'admm_z_schedule_mode', 'trust_region')
 
         def _z_override_fn():
             cal_batch = trainer_ref._tr_current_batch
             if cal_batch is None:
                 return {}
+            if schedule_mode == 'cubic':
+                return trainer_ref._compute_cubic_z(model, cal_batch)
             return trainer_ref._compute_global_tr_z(model, cal_batch)
 
         opt = self._get_admm_optimizer()
         opt._z_override_fn = _z_override_fn
-        logging.info(f"TR global z-projection enabled: "
-                     f"kl_threshold={self.args.admm_tr_kl_threshold}, "
-                     f"init_delta={self._tr_delta}")
+        if schedule_mode == 'cubic':
+            logging.info(f"Cubic global z-projection enabled: "
+                         f"ks={getattr(self.args, 'admm_cubic_steps', 2048)} steps, "
+                         f"final_sparsity={self.args.sparsity_ratio}")
+        else:
+            logging.info(f"TR global z-projection enabled: "
+                         f"kl_threshold={self.args.admm_tr_kl_threshold}, "
+                         f"init_delta={self._tr_delta}")
+
+    def _compute_cubic_z(self, model, cal_batch):
+        """Fixed cubic sparsity schedule, matching admm-pruning (Boza et al.)
+        lib/admm.py fasterprune(): cur_sparsity = sf - sf*(1 - (itt+1)/ks)**3, ramped
+        over ks *training steps* (not z-projection calls — admm_interval already
+        controls call cadence independently) then held at sf afterward. Unlike
+        _compute_global_tr_z, there is no KL check — the schedule and saliency-based
+        top-k selection alone determine the mask, exactly as in the reference repo.
+        """
+        admm_state = self._collect_admm_projection_centers()
+        if not admm_state:
+            return {}
+        final_sp = self.args.sparsity_ratio
+        opt = self._get_admm_optimizer()
+        ks = max(1, getattr(self.args, 'admm_cubic_steps', 2048))  # training step at which sf is reached
+        t = opt.current_step
+        if t < ks:
+            cur_sp = final_sp - final_sp * (1 - t / ks) ** 3
+        else:
+            cur_sp = final_sp
+        self._cubic_iter += 1
+
+        thr = self._find_global_threshold(admm_state, cur_sp)
+        z_new = self._make_z_from_threshold(admm_state, thr)
+        self._tr_z_sp = cur_sp
+
+        mask_nnz = sum(v.sum().item() for v in z_new.values())
+        mask_total = sum(v.numel() for v in z_new.values())
+        self._tr_z_metrics_pending = {
+            'tr_z/sparsity': cur_sp,
+            'tr_z/kl': float('nan'),
+            'tr_z/delta': 0.0,
+            'tr_z/outcome': 1.0,  # cubic always applies the scheduled sparsity (no KL gate)
+            'tr_z/iters': self._cubic_iter,
+            'tr_z/mask_nnz': int(mask_nnz),
+            'tr_z/mask_total': int(mask_total),
+            'tr_z/mask_zeros': int(mask_total - mask_nnz),
+        }
+        logging.info(f"  cubic-z step {t}: sparsity={cur_sp:.4f} (ks={ks})")
+        return z_new
 
     def _collect_admm_projection_centers(self):
         """Collect ADMM state for all params: w, a=w+u, saliency, z_prev. FSDP-aware."""

@@ -159,7 +159,8 @@ def main(argv):
             # causing OOM in the training process even though both are on separate
             # physical GPUs.  Eager mode allocates only model weights + actual KV
             # cache, keeping the vLLM GPU footprint small.
-            _vllm_cuda_dev = str(world_size)
+            _vllm_gpu_index = getattr(FLAGS, 'gmp_opkd_vllm_gpu_index', -1)
+            _vllm_cuda_dev = str(world_size) if _vllm_gpu_index < 0 else str(_vllm_gpu_index)
             logging.info(
                 f"[rank 0] Launching vLLM subprocess on GPU {_vllm_cuda_dev} "
                 f"(training ranks on GPUs 0-{world_size-1}), gpu_mem={_vllm_gpu_mem}")
@@ -409,6 +410,7 @@ def main(argv):
                     max_prompt_len=getattr(FLAGS, 'gmp_max_prompt_len', 512),
                     max_len=getattr(FLAGS, 'gmp_max_seq_len', 2048),
                     append_eos=getattr(FLAGS, 'cot_append_eos', False),
+                    nsamples=getattr(FLAGS, 'kd_nsamples', 0) or None,
                 )
             print(f"[DBG main] rank={local_rank} dataset loaded, loading teacher", flush=True)
             gmp_teacher = None
@@ -754,6 +756,11 @@ def main(argv):
                 import os as _os
                 for _env in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "HF_DATASETS_OFFLINE"):
                     _os.environ.pop(_env, None)
+                try:
+                    import huggingface_hub.constants as _hf_const
+                    _hf_const.HF_HUB_OFFLINE = False
+                except Exception:
+                    pass
                 api = HfApi()
                 api.create_repo(repo_id=_hub_repo, exist_ok=True)
                 api.upload_folder(
@@ -823,6 +830,8 @@ if __name__ == '__main__':
     flags.DEFINE_float('admm_tr_init_delta', 0.05, 'Initial sparsity step size for TR z-projection.')
     flags.DEFINE_float('admm_tr_delta_min', 1e-3, 'Minimum sparsity delta before giving up in TR z-projection.')
     flags.DEFINE_enum('admm_tr_kl_reduce', 'mean', ['mean', 'quantile'], 'KL reduce mode for TR z-projection.')
+    flags.DEFINE_enum('admm_z_schedule_mode', 'trust_region', ['trust_region', 'cubic'], "z-projection schedule: 'trust_region' (KL-gated, adaptive) or 'cubic' (fixed schedule from admm-pruning/Boza et al. Algorithm 1, no KL check).")
+    flags.DEFINE_integer('admm_cubic_steps', 2048, 'ks: training step at which the cubic schedule reaches final sparsity (independent of admm_interval, which controls z-projection call cadence).')
     flags.DEFINE_enum('admm_base_optimizer', 'adam', ['adam','adamw','adam8bit','adam4bit','sgd'], 'Base optimizer for ADMM primal update.')
     flags.DEFINE_enum('admm_dual_dtype', 'fp32', ['fp32','bf16', 'float8_e4m3fn', 'float8_e5m2'], 'Dtype for ADMM dual variable (fp32 or bf16).')
     flags.DEFINE_float('admm_lasso_lmda', 0.0, 'L1 penalty on pruned-position weights; 0 = disabled.')
@@ -861,6 +870,8 @@ if __name__ == '__main__':
     flags.DEFINE_float('gmp_fisher_beta', 0.999, 'EMA beta for Fisher diagonal accumulation.')
     flags.DEFINE_enum('gmp_saliency', 'fisher', ['fisher', 'magnitude'],
                       'Importance score for GMP pruning: fisher=F_hat*w^2 (Adam 2nd moment), magnitude=w^2.')
+    flags.DEFINE_enum('gmp_fisher_source', 'adam', ['adam', 'opd_empirical'],
+                      'Fisher source for TR saliency: adam=exp_avg_sq (default), opd_empirical=grad^2 on OPD cal_batch.')
     flags.DEFINE_enum('gmp_pruning_scope', 'global', ['global', 'layer'],
                       'Pruning scope: global=single threshold across all layers, layer=per-layer threshold (each layer hits target sparsity exactly).')
     flags.DEFINE_string('gmp_save_path', '/home1/doyoonkim/projects/elsa/models', 'Directory to save GMP pruned model.')
@@ -888,6 +899,7 @@ if __name__ == '__main__':
     flags.DEFINE_boolean('gmp_opkd_prev_mask_teacher', False, 'Use pre-mask-update model snapshot as OPKD teacher instead of the dense teacher.')
     flags.DEFINE_float('gmp_prevmask_opkd_lambda', 0.0, 'Weight for prev-mask-teacher OPKD loss added on top of dense teacher OPKD (0=disabled).')
     flags.DEFINE_float('gmp_opkd_vllm_gpu_mem', 0.35, 'GPU memory utilization for the OPKD vLLM engine.')
+    flags.DEFINE_integer('gmp_opkd_vllm_gpu_index', -1, 'CUDA device index for the OPKD vLLM subprocess. -1 (default) = dedicated GPU at index=world_size. >=0 shares that training rank\'s physical GPU instead (no extra GPU needed).')
     flags.DEFINE_boolean('gmp_opkd_vllm_enforce_eager', False, 'If True, disable vLLM CUDA graph capture (enforce_eager=True) to save peak memory.')
     flags.DEFINE_boolean('gmp_gradient_checkpointing', False, 'If True, enable gradient checkpointing to reduce activation memory (trades compute for memory).')
     # TR-GMP: trust-region gradual mask selection
