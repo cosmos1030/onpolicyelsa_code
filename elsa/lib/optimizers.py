@@ -53,6 +53,7 @@ def get_admm_optimizer(base_optimizer_cls):
             final_lmda: float = 0.01, # For scheduling
             lmda_schedule_mode: str = 'constant', # 'constant', 'linear', 'cosine', 'exponential'
             total_steps: int = 1, # Total steps for fixed lmda schedules
+            lasso_lmda: float = 0.0, # L1 penalty on prunable weights; 0 = disabled
             prune_n: int = 0,
             prune_m: int = 0,
             projection_mode: str = "identity",   # 'identity' | 'momentum'
@@ -78,6 +79,7 @@ def get_admm_optimizer(base_optimizer_cls):
                 self.lmda_default = float(lmda)
             else:
                 self.lmda_default = float(init_lmda)
+            self.lasso_lmda = float(lasso_lmda)
 
             self.total_steps     = int(total_steps)
             self.prune_n         = int(prune_n)
@@ -120,6 +122,8 @@ def get_admm_optimizer(base_optimizer_cls):
             self.process_group = getattr(accelerator, "process_group", None) if accelerator is not None else None
             self.current_step = 0
             self.mask_metrics = {'step_hamming': 0.0, 'initial_hamming': 0.0, 'step_iou': 0.0, 'initial_iou': 0.0}
+            # TR global z-projection: callable() -> {id(w): z_tensor}, set by ADMMTrainer
+            self._z_override_fn = None
 
         def _lazy_init_admm_state(self, p: torch.nn.Parameter, group: Dict):
             """
@@ -181,8 +185,15 @@ def get_admm_optimizer(base_optimizer_cls):
 
 
             init_importance = None
-            # Initial split z and initial_split (as bool)
-            z0 = self.projection([p.detach()], st["sparsity"], self.prune_n, self.prune_m,
+            # Initial split z: under TR z-projection, sparsity grows gradually from 0
+            # (trainer._tr_z_sp starts at 0.0), so z0 must start unpruned too — otherwise
+            # the first TR-z comparison pits "already pruned to final sparsity" against
+            # "candidate at ~5%", producing a huge KL that can never pass the threshold
+            # and permanently stalls mask growth at 0%. st["sparsity"] itself is left at
+            # the final target since the non-TR fallback projection path (_dual_update,
+            # final_projection) still needs it.
+            _z0_sparsity = 0.0 if getattr(self, '_z_override_fn', None) is not None else st["sparsity"]
+            z0 = self.projection([p.detach()], _z0_sparsity, self.prune_n, self.prune_m,
                                  [init_importance], comparison_group="layer")[0]
             if self.init_lambda_from_inv_resid:
                 initial_residual = torch.norm(p.detach() - z0.detach())
@@ -235,6 +246,9 @@ def get_admm_optimizer(base_optimizer_cls):
                     # Proximal term: λ (w - z + u), add to gradient before optimizer step
                     penalty = w.detach() - split.detach() + dual.detach()
                     prox = lmda * penalty
+                    # Lasso term: lasso_lmda * sign(w), applied to all weights
+                    if self.lasso_lmda > 0.0:
+                        prox = prox + self.lasso_lmda * w.detach().sign()
                     prox_local = _loc(prox)
                     prox_local = prox_local.to(w.grad.dtype)
                     if avg_div > 1:
@@ -257,6 +271,15 @@ def get_admm_optimizer(base_optimizer_cls):
             if (self.current_step % self.interval) != 0:
                 return
 
+            # TR global z-projection: if callback set, use it instead of layerwise projection
+            _z_override = {}
+            if self._z_override_fn is not None:
+                try:
+                    _z_override = self._z_override_fn() or {}
+                except Exception as _e:
+                    import logging as _logging
+                    _logging.warning(f"TR z_override_fn failed: {_e}")
+
             self.mask_metrics = {'step_hamming': 0.0, 'initial_hamming': 0.0, 'step_iou': 0.0, 'initial_iou': 0.0}
             admm_groups = 0
 
@@ -278,7 +301,11 @@ def get_admm_optimizer(base_optimizer_cls):
                 numel_sum = torch.tensor(0, device=device, dtype=torch.int64)
 
                 for w in weights:
+                    if w.numel() == 0:
+                        continue
                     st = self.state[w]
+                    if "initial_split" not in st:
+                        self._lazy_init_admm_state(w, g)
                     initial_split = st["initial_split"]
                     spars = st["sparsity"]
                     current_lmda = st["lmda"]
@@ -305,10 +332,13 @@ def get_admm_optimizer(base_optimizer_cls):
                             importance_i = v_t
                         
 
-                    z_in  = (w.detach() + dual.detach())
-                    z_new = self.projection([z_in], spars, self.prune_n, self.prune_m,
-                                            [importance_i], comparison_group="layer")[0]
-                    z_new = z_new.detach().clone().to(w.device)
+                    if id(w) in _z_override:
+                        z_new = _z_override[id(w)].to(w.device).detach().clone()
+                    else:
+                        z_in  = (w.detach() + dual.detach())
+                        z_new = self.projection([z_in], spars, self.prune_n, self.prune_m,
+                                                [importance_i], comparison_group="layer")[0]
+                        z_new = z_new.detach().clone().to(w.device)
 
                     u_new = dual.detach() + (w.detach() - z_new)
 
@@ -409,12 +439,27 @@ def get_admm_optimizer(base_optimizer_cls):
             """
             Apply the final projection to ADMM-tagged parameter groups (in-place).
             This should be called after training is complete to ensure weights have the desired sparsity structure.
+
+            Under TR z-projection, sparsity is grown gradually and validated via a KL
+            trust region (trainer._tr_z_sp tracks the actually-achieved level, which may
+            be well below st["sparsity"] — the fixed final target — if the KL budget
+            didn't allow full growth). Re-projecting to st["sparsity"] here would silently
+            jump straight to the final target in one unvalidated shot, discarding all of
+            TR-z's gradual validation and wrecking the model. Instead, just apply the last
+            accepted z (already the correct, KL-validated sparse solution).
             """
+            _tr_z_active = getattr(self, '_z_override_fn', None) is not None
             for g in self.param_groups:
                 if not g.get("admm", False):
                     continue
                 for w in g["params"]:
+                    if w.numel() == 0:
+                        continue
                     st = self.state[w]
+                    if _tr_z_active:
+                        z_final = st["split"].dequant() if hasattr(st["split"], 'dequant') else st["split"]
+                        w.data.copy_(z_final.to(w.dtype))
+                        continue
                     importance = None
                     if self.projection_mode == "momentum":
                         v_t = st.get("exp_avg_sq")
@@ -425,8 +470,8 @@ def get_admm_optimizer(base_optimizer_cls):
                             importance = v_t
                         if isinstance(importance, DTensor):
                             importance = importance.redistribute(placements=[Replicate()]).to_local()
-        
-        
+
+
                     wnew = self.projection([w.detach()], st["sparsity"], self.prune_n, self.prune_m,
                                            [importance], comparison_group="layer")[0]
                     w.data.copy_(wnew)
