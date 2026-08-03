@@ -313,6 +313,7 @@ class MixedTextDataset(Dataset):
     Split point: '<think>' tag — prompt = text[:idx+len('<think>')], cot = text[idx:]
     """
     THINK_TAG = "<think>"
+    MIN_SAMPLE_LEN = 128  # drop shorter samples (see skip check in __init__)
 
     def __init__(self, jsonl_path, tokenizer, max_len=2048, max_prompt_len=512,
                  nsamples=None, seed=42, cache_dir="/home1/doyoonkim/projects/elsa/.cache/datasets",
@@ -321,7 +322,8 @@ class MixedTextDataset(Dataset):
                                          cls="MathCotKD" if not append_eos else "MathCotKD_eos",
                                          max_len=max_len,
                                          max_prompt_len=max_prompt_len,
-                                         nsamples=nsamples, seed=seed)
+                                         nsamples=nsamples, seed=seed,
+                                         min_len=self.MIN_SAMPLE_LEN)
         is_distributed = dist.is_initialized()
         is_rank0 = (not is_distributed) or dist.get_rank() == 0
 
@@ -398,6 +400,17 @@ class MixedTextDataset(Dataset):
                 else:
                     full_ids = full_enc["input_ids"].squeeze(0)
                     full_mask = full_enc["attention_mask"].squeeze(0)
+
+                # Skip very short samples: a long run of ~max_len batches
+                # followed by an abrupt drop to a short one (e.g. an
+                # 82-token FineWeb-Edu snippet) reproducibly triggered a
+                # CUBLAS_STATUS_INTERNAL_ERROR on every one of 3 independent
+                # runs at the identical training step — a cuBLAS shape-
+                # transition issue, not corrupted data (confirmed by
+                # decoding the exact crashing batch). No sequence packing
+                # implemented here, so just drop the outliers instead.
+                if full_ids.shape[0] < self.MIN_SAMPLE_LEN:
+                    continue
 
                 # Prompt for KD generation
                 if is_pretrain:

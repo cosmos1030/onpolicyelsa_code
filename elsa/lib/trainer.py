@@ -669,24 +669,6 @@ class ADMMTrainer(Trainer):
                 self._tr_z_initialized = True
             self._tr_current_batch = {k: v.detach() if isinstance(v, torch.Tensor) else v
                                       for k, v in inputs.items()}
-        # TEMP DEBUG: dump the current batch to disk every step (overwriting
-        # the previous one) so that if the process crashes mid-step, the last
-        # dumped file on disk is exactly the batch that caused it — used to
-        # chase the step-134 CUBLAS_STATUS_INTERNAL_ERROR that hit 3
-        # independent runs (different nodes, same seed) at the identical
-        # step. Remove once root-caused.
-        if os.environ.get("ELSA_DEBUG_DUMP_BATCH"):
-            try:
-                rank = dist.get_rank() if dist.is_initialized() else 0
-                dump_path = os.environ["ELSA_DEBUG_DUMP_BATCH"] + f".rank{rank}"
-                torch.save({
-                    "global_step": self.state.global_step,
-                    "input_ids": inputs.get("input_ids"),
-                    "attention_mask": inputs.get("attention_mask"),
-                    "labels": inputs.get("labels"),
-                }, dump_path)
-            except Exception as _dump_e:
-                logging.warning(f"debug batch dump failed: {_dump_e}")
         return super().training_step(model, inputs, num_items_in_batch)
 
     def allocate_nonuniform_sparsity(self):
