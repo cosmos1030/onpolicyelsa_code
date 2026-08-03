@@ -47,6 +47,8 @@ export WANDB_DIR="$LOCAL_JOB_BASE/wandb"
 export WANDB_SERVICE_WAIT=300
 export WANDB_START_METHOD=fork
 export WANDB_INIT_TIMEOUT=120
+export WANDB_RUN_ID_OUTPUT="/home1/doyoonkim/projects/elsa/logs/handoff_${SLURM_JOB_ID}_wandb_run_id.txt"
+export MODEL_PATH_OUTPUT="/home1/doyoonkim/projects/elsa/logs/handoff_${SLURM_JOB_ID}_model_path.txt"
 export HF_TOKEN=$(cat ~/.hf_token 2>/dev/null || echo "")
 export WANDB_API_KEY=$(grep WANDB_API_KEY ~/.bashrc | cut -d'=' -f2 | tail -1)
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True

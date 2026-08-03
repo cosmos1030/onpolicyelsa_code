@@ -888,6 +888,15 @@ def main(argv):
             _f.write(wandb.run.id + "\n")
         logging.info(f"Wrote wandb run ID '{wandb.run.id}' to {_run_id_file}")
 
+    # Write the actual saved-model path (timestamp assigned at runtime, not
+    # knowable at job-submission time) so a SLURM-dependency-chained eval job
+    # can pick it up without guessing/globbing for the right checkpoint dir.
+    _model_path_file = os.environ.get("MODEL_PATH_OUTPUT")
+    if _model_path_file and saved_pruned_model_path:
+        with open(_model_path_file, "w") as _f:
+            _f.write(saved_pruned_model_path + "\n")
+        logging.info(f"Wrote saved model path '{saved_pruned_model_path}' to {_model_path_file}")
+
 
 if __name__ == '__main__':
     flags.DEFINE_string('model', 'facebook/opt-125m', 'model to prune. model name (hf repo) or local path to model snapshot')
