@@ -7,6 +7,7 @@ import hashlib
 import os
 import pickle
 import random
+import time
 
 import wandb
 import torch
@@ -14,9 +15,23 @@ import torch.distributed as dist
 import torch.nn.functional as F
 from torch.utils.data import Dataset
 from transformers import GenerationConfig
-from .trainer import ADMMTrainer
+from .trainer import ADMMTrainer, compute_self_distillation_loss
 from absl import logging
 import json
+
+
+def _tokenizer_identity(tokenizer):
+    """Content-based tokenizer fingerprint instead of the checkpoint path —
+    Qwen3-1.7B/4B/8B ship byte-identical tokenizers under different snapshot
+    directories, so keying the dataset cache on `tokenizer.name_or_path`
+    forced a redundant multi-hour re-tokenization per model size even though
+    the cached samples would have been identical. Falls back to the path for
+    slow (non-Rust-backed) tokenizers that don't expose backend_tokenizer.
+    """
+    try:
+        return hashlib.md5(tokenizer.backend_tokenizer.to_str().encode()).hexdigest()
+    except AttributeError:
+        return tokenizer.name_or_path
 
 
 def _dataset_cache_path(cache_dir, jsonl_path, tokenizer_name, **kwargs):
@@ -47,7 +62,7 @@ class MathPromptWithAnswerDataset(Dataset):
                  hf_dataset_name=None):  # hf_dataset_name kept for API compat, ignored
 
         cache_path = _dataset_cache_path(
-            cache_dir, jsonl_path, tokenizer.name_or_path,
+            cache_dir, jsonl_path, _tokenizer_identity(tokenizer),
             cls="MathPromptWithAnswerLocal", max_prompt_len=max_prompt_len,
             nsamples=nsamples, seed=seed,
         )
@@ -178,14 +193,14 @@ def collate_prompts_with_answers(pad_token_id):
 # ---------------------------------------------------------------------------
 # Dataset: prompt-only from math 220k JSONL
 # ---------------------------------------------------------------------------
-class MathPromptDataset(Dataset):
+class MixedPromptDataset(Dataset):
     """
     Loads math prompts from a JSONL file (uses 'prompt' field, chat-template applied).
     Returns tokenized prompt tensors for on-policy generation.
     """
     def __init__(self, jsonl_path, tokenizer, max_prompt_len=512, nsamples=None, seed=42,
                  cache_dir="/home1/doyoonkim/projects/elsa/.cache/datasets"):
-        cache_path = _dataset_cache_path(cache_dir, jsonl_path, tokenizer.name_or_path,
+        cache_path = _dataset_cache_path(cache_dir, jsonl_path, _tokenizer_identity(tokenizer),
                                          cls="MathPrompt", max_prompt_len=max_prompt_len,
                                          nsamples=nsamples, seed=seed)
         is_rank0 = (not dist.is_initialized()) or dist.get_rank() == 0
@@ -196,15 +211,15 @@ class MathPromptDataset(Dataset):
                     with open(cache_path, "rb") as f:
                         self.samples = pickle.load(f)
                     if len(self.samples) == 0:
-                        logging.warning(f"MathPromptDataset: empty cache {cache_path}, rebuilding")
+                        logging.warning(f"MixedPromptDataset: empty cache {cache_path}, rebuilding")
                         os.remove(cache_path)
                     else:
-                        logging.info(f"MathPromptDataset: loaded {len(self.samples)} samples from cache {cache_path}")
+                        logging.info(f"MixedPromptDataset: loaded {len(self.samples)} samples from cache {cache_path}")
                         if dist.is_initialized():
                             dist.barrier()
                         return
                 except (EOFError, pickle.UnpicklingError):
-                    logging.warning(f"MathPromptDataset: corrupted cache {cache_path}, rebuilding")
+                    logging.warning(f"MixedPromptDataset: corrupted cache {cache_path}, rebuilding")
                     os.remove(cache_path)
 
         random.seed(seed)
@@ -242,7 +257,7 @@ class MathPromptDataset(Dataset):
         if is_rank0:
             with open(cache_path, "wb") as f:
                 pickle.dump(self.samples, f)
-            logging.info(f"MathPromptDataset: {len(self.samples)} prompts loaded and cached to {cache_path}")
+            logging.info(f"MixedPromptDataset: {len(self.samples)} prompts loaded and cached to {cache_path}")
 
         if dist.is_initialized():
             dist.barrier()
@@ -250,7 +265,7 @@ class MathPromptDataset(Dataset):
         if not is_rank0:
             with open(cache_path, "rb") as f:
                 self.samples = pickle.load(f)
-            logging.info(f"MathPromptDataset: loaded {len(self.samples)} samples from cache {cache_path}")
+            logging.info(f"MixedPromptDataset: loaded {len(self.samples)} samples from cache {cache_path}")
 
     def __len__(self):
         return len(self.samples)
@@ -285,7 +300,7 @@ def collate_prompts(pad_token_id):
 # ---------------------------------------------------------------------------
 # Dataset: CoT text for NTP + prompt for KD generation
 # ---------------------------------------------------------------------------
-class MathCotKDDataset(Dataset):
+class MixedTextDataset(Dataset):
     """
     Loads math CoT traces from math_220k_cot.jsonl for hybrid NTP + KD training.
 
@@ -302,128 +317,149 @@ class MathCotKDDataset(Dataset):
     def __init__(self, jsonl_path, tokenizer, max_len=2048, max_prompt_len=512,
                  nsamples=None, seed=42, cache_dir="/home1/doyoonkim/projects/elsa/.cache/datasets",
                  append_eos=False):
-        cache_path = _dataset_cache_path(cache_dir, jsonl_path, tokenizer.name_or_path,
+        cache_path = _dataset_cache_path(cache_dir, jsonl_path, _tokenizer_identity(tokenizer),
                                          cls="MathCotKD" if not append_eos else "MathCotKD_eos",
                                          max_len=max_len,
                                          max_prompt_len=max_prompt_len,
                                          nsamples=nsamples, seed=seed)
-        is_rank0 = (not dist.is_initialized()) or dist.get_rank() == 0
+        is_distributed = dist.is_initialized()
+        is_rank0 = (not is_distributed) or dist.get_rank() == 0
 
-        # Only rank 0 builds/writes/removes cache; others wait at barrier then load.
+        # Only rank 0 touches the filesystem (check/build/write cache); other ranks
+        # get the result via an NCCL broadcast instead of re-reading the same path
+        # off disk. Relying on all ranks to independently read cache_path right
+        # after a barrier is a real race on network filesystems — rank 0's write
+        # is not guaranteed to be visible to other processes the instant its
+        # barrier call returns, which can (and did) throw FileNotFoundError.
+        self.samples = None
         if is_rank0:
             if os.path.exists(cache_path):
                 try:
                     with open(cache_path, "rb") as f:
                         self.samples = pickle.load(f)
-                    logging.info(f"MathCotKDDataset: loaded {len(self.samples)} samples from cache {cache_path}")
-                    if dist.is_initialized():
-                        dist.barrier()
-                    return
+                    logging.info(f"MixedTextDataset: loaded {len(self.samples)} samples from cache {cache_path}")
                 except (EOFError, pickle.UnpicklingError):
-                    logging.warning(f"MathCotKDDataset: corrupted cache {cache_path}, rebuilding")
+                    logging.warning(f"MixedTextDataset: corrupted cache {cache_path}, rebuilding")
                     os.remove(cache_path)
 
-        random.seed(seed)
-        if is_rank0:
+        if is_rank0 and self.samples is None:
+            random.seed(seed)
             with open(jsonl_path) as f:
                 records = [json.loads(line) for line in f if line.strip()]
-        else:
-            records = []
+            random.shuffle(records)
+            if nsamples and nsamples < len(records):
+                records = records[:nsamples]
 
-        random.shuffle(records)
-        if nsamples and nsamples < len(records):
-            records = records[:nsamples]
-
-        self.samples = []
-        for rec in records:
-            text = rec.get("text", "")
-            if not text:
-                continue
-
-            is_pretrain = rec.get("pretrain", False)
-
-            if is_pretrain:
-                # Pretrain data (e.g. FineWeb-Edu): no prompt masking, gradient flows everywhere.
-                prompt_text = ""
-                prompt_len = 0
-            else:
-                # Split at <think>
-                idx = text.find(self.THINK_TAG)
-                if idx == -1:
-                    # fallback: split at first double-newline
-                    idx = text.find("\n\n")
-                    if idx == -1:
-                        continue
-                    prompt_text = text[:idx]
-                else:
-                    prompt_text = text[:idx + len(self.THINK_TAG)]
-
-                cot_text = text[len(prompt_text):]
-                if not cot_text.strip():
+            self.samples = []
+            for rec in records:
+                text = rec.get("text", "")
+                if not text:
                     continue
 
-            # Full sequence for NTP
-            full_enc = tokenizer(
-                text,
-                truncation=True,
-                max_length=max_len - 1 if append_eos else max_len,
-                return_tensors="pt",
-                padding=False,
-            )
-            if append_eos:
-                full_ids = torch.cat([
-                    full_enc["input_ids"].squeeze(0),
-                    torch.tensor([tokenizer.eos_token_id], dtype=torch.long),
-                ])
-                full_mask = torch.cat([
-                    full_enc["attention_mask"].squeeze(0),
-                    torch.tensor([1], dtype=torch.long),
-                ])
-            else:
-                full_ids = full_enc["input_ids"].squeeze(0)
-                full_mask = full_enc["attention_mask"].squeeze(0)
+                is_pretrain = rec.get("pretrain", False)
 
-            # Prompt for KD generation
-            if is_pretrain:
-                prompt_ids = torch.zeros(0, dtype=torch.long)
-                prompt_mask_t = torch.zeros(0, dtype=torch.long)
-            else:
-                prompt_enc = tokenizer(
-                    prompt_text,
+                if is_pretrain:
+                    # Pretrain data (e.g. FineWeb-Edu): no prompt masking, gradient flows everywhere.
+                    prompt_text = ""
+                    prompt_len = 0
+                else:
+                    # Split at <think>
+                    idx = text.find(self.THINK_TAG)
+                    if idx == -1:
+                        # fallback: split at first double-newline
+                        idx = text.find("\n\n")
+                        if idx == -1:
+                            continue
+                        prompt_text = text[:idx]
+                    else:
+                        prompt_text = text[:idx + len(self.THINK_TAG)]
+
+                    cot_text = text[len(prompt_text):]
+                    if not cot_text.strip():
+                        continue
+
+                # Full sequence for NTP
+                full_enc = tokenizer(
+                    text,
                     truncation=True,
-                    max_length=max_prompt_len,
+                    max_length=max_len - 1 if append_eos else max_len,
                     return_tensors="pt",
                     padding=False,
                 )
-                prompt_ids = prompt_enc["input_ids"].squeeze(0)
-                prompt_mask_t = prompt_enc["attention_mask"].squeeze(0)
-                prompt_len = prompt_ids.shape[0]
+                if append_eos:
+                    full_ids = torch.cat([
+                        full_enc["input_ids"].squeeze(0),
+                        torch.tensor([tokenizer.eos_token_id], dtype=torch.long),
+                    ])
+                    full_mask = torch.cat([
+                        full_enc["attention_mask"].squeeze(0),
+                        torch.tensor([1], dtype=torch.long),
+                    ])
+                else:
+                    full_ids = full_enc["input_ids"].squeeze(0)
+                    full_mask = full_enc["attention_mask"].squeeze(0)
 
-            # Labels: mask problem tokens with -100 (pretrain: no masking)
-            labels = full_ids.clone()
-            if not is_pretrain:
-                labels[:prompt_len] = -100
+                # Prompt for KD generation
+                if is_pretrain:
+                    prompt_ids = torch.zeros(0, dtype=torch.long)
+                    prompt_mask_t = torch.zeros(0, dtype=torch.long)
+                else:
+                    prompt_enc = tokenizer(
+                        prompt_text,
+                        truncation=True,
+                        max_length=max_prompt_len,
+                        return_tensors="pt",
+                        padding=False,
+                    )
+                    prompt_ids = prompt_enc["input_ids"].squeeze(0)
+                    prompt_mask_t = prompt_enc["attention_mask"].squeeze(0)
+                    prompt_len = prompt_ids.shape[0]
 
-            self.samples.append({
-                "input_ids": full_ids,
-                "attention_mask": full_mask,
-                "labels": labels,
-                "prompt_ids": prompt_ids,
-                "prompt_mask": prompt_mask_t,
-            })
+                # Labels: mask problem tokens with -100 (pretrain: no masking)
+                labels = full_ids.clone()
+                if not is_pretrain:
+                    labels[:prompt_len] = -100
 
-        if is_rank0:
-            with open(cache_path, "wb") as f:
+                self.samples.append({
+                    "input_ids": full_ids,
+                    "attention_mask": full_mask,
+                    "labels": labels,
+                    "prompt_ids": prompt_ids,
+                    "prompt_mask": prompt_mask_t,
+                })
+
+            # Atomic write (temp + rename) so a concurrent reader never sees a
+            # partially-written or momentarily-missing file.
+            tmp_path = f"{cache_path}.tmp{os.getpid()}"
+            with open(tmp_path, "wb") as f:
                 pickle.dump(self.samples, f)
-            logging.info(f"MathCotKDDataset: {len(self.samples)} samples loaded and cached to {cache_path}")
+            os.replace(tmp_path, cache_path)
+            logging.info(f"MixedTextDataset: {len(self.samples)} samples built and cached to {cache_path}")
 
-        if dist.is_initialized():
-            dist.barrier()
-
-        if not is_rank0:
-            with open(cache_path, "rb") as f:
-                self.samples = pickle.load(f)
-            logging.info(f"MathCotKDDataset: loaded {len(self.samples)} samples from cache {cache_path}")
+        # Other ranks load the cache from disk themselves rather than receiving
+        # it via dist.broadcast_object_list — broadcasting a ~200k-sample /
+        # tens-of-GB Python object through gloo/NCCL segfaults the whole job
+        # (observed repeatedly: crash immediately after rank 0 finishes the
+        # build, right at this broadcast call). No dist.barrier() here: a cold
+        # rank-0 tokenization build can take multiple hours, which exceeds
+        # NCCL's default ~2-hour collective-op watchdog timeout and kills
+        # every other rank while they wait at the barrier (observed on 8B).
+        # The poll-for-file loop below already provides safe cross-rank
+        # synchronization without a blocking collective.
+        if is_distributed:
+            if not is_rank0:
+                for _attempt in range(60):
+                    if os.path.exists(cache_path):
+                        try:
+                            with open(cache_path, "rb") as f:
+                                self.samples = pickle.load(f)
+                            break
+                        except (EOFError, pickle.UnpicklingError):
+                            pass
+                    time.sleep(2)
+                if self.samples is None:
+                    raise RuntimeError(f"MixedTextDataset: cache {cache_path} not visible after rank 0 build")
+                logging.info(f"MixedTextDataset: loaded {len(self.samples)} samples from cache {cache_path} (non-rank0)")
 
     def __len__(self):
         return len(self.samples)
@@ -434,7 +470,7 @@ class MathCotKDDataset(Dataset):
 
 class NTPPromptWrapper(Dataset):
     """
-    Thin wrapper over MathCotKDDataset that exposes prompt_ids/prompt_mask
+    Thin wrapper over MixedTextDataset that exposes prompt_ids/prompt_mask
     as input_ids/attention_mask so it can be used with collate_prompts /
     generate_chosen_cache while preserving the same sample order as the NTP
     DataLoader (shuffle=False on both sides).
@@ -452,7 +488,7 @@ class NTPPromptWrapper(Dataset):
 
 def collate_cot_kd(pad_token_id):
     """
-    Collate for MathCotKDDataset.
+    Collate for MixedTextDataset.
     - Right-pads full sequences (input_ids/attention_mask/labels)
     - Left-pads prompts (prompt_ids/prompt_mask) for generation
     """
@@ -894,7 +930,7 @@ class GKDADMMTrainer(ADMMTrainer):
         return padded
 
     def _is_hybrid_batch(self, inputs):
-        """True if batch contains NTP labels (MathCotKDDataset or random CoT windows)."""
+        """True if batch contains NTP labels (MixedTextDataset or random CoT windows)."""
         return "labels" in inputs
 
     def training_step(self, model, inputs, num_items_in_batch=None):
@@ -1244,7 +1280,8 @@ class GKDADMMTrainer(ADMMTrainer):
         return (loss, student_out) if return_outputs else loss
 
     def _compute_opd_backward_kl(self, model):
-        """Backward KL D(student||teacher) on OPD rollout tokens (always reverse KL, ignores forward_kl flag)."""
+        """Backward KL D(student||teacher) on OPD rollout tokens. Uses compute_self_distillation_loss (alpha=1.0)."""
+        from argparse import Namespace
         kd = self._opd_inputs
         input_ids = kd["input_ids"]
         attention_mask = kd["attention_mask"]
@@ -1258,15 +1295,26 @@ class GKDADMMTrainer(ADMMTrainer):
         with torch.no_grad():
             teacher_out = self.teacher_model(input_ids=input_ids, attention_mask=attention_mask)
 
-        # Force reverse KL D(student||teacher) for OPD regardless of self.forward_kl
-        _saved_fkl = self.forward_kl
-        self.forward_kl = False
-        loss, metrics = self._kl_loss(
-            student_out.logits, teacher_out.logits,
-            attention_mask, prompt_len, gen_len,
+        curr_gen_len = gen_len
+        student_all_logps = F.log_softmax(
+            student_out.logits[:, prompt_len - 1: prompt_len - 1 + curr_gen_len, :] / self.kd_temperature, dim=-1
         )
-        self.forward_kl = _saved_fkl
-        return loss, metrics
+        teacher_all_logps = F.log_softmax(
+            teacher_out.logits[:, prompt_len - 1: prompt_len - 1 + curr_gen_len, :] / self.kd_temperature, dim=-1
+        )
+        response_mask = attention_mask[:, prompt_len: prompt_len + curr_gen_len].float()
+
+        distill_cfg = Namespace(full_logit_distillation=True, distillation_topk=None,
+                                distillation_add_tail=False, alpha=1.0, is_clip=None)
+        loss, _ = compute_self_distillation_loss(
+            student_log_probs=None, teacher_log_probs=None,
+            response_mask=response_mask,
+            self_distillation_config=distill_cfg,
+            student_all_log_probs=student_all_logps,
+            teacher_all_log_probs=teacher_all_logps,
+            loss_agg_mode="token-mean",
+        )
+        return loss, {}
 
     def _compute_kd_forward(self, model, kd_inputs=None):
         """Run student+teacher on kd_inputs (defaults to self._kd_inputs), return KD loss and OPD metrics."""

@@ -5,7 +5,7 @@ from transformers import AutoTokenizer
 from lib.prune import globalprune_admm
 from lib.eval import eval_ppl, eval_zero_shot
 from lib.lighteval_math500 import run_lighteval_math500
-from lib.lighteval_5bench import run_lighteval_5bench
+from lib.lighteval_bench import run_lighteval_bench
 from lib.utils import check_sparsity, get_llm
 from lib.on_policy_distill import run_on_policy_distillation
 from lib.gkd_admm import globalprune_admm_kd
@@ -31,16 +31,16 @@ def _build_run_name(FLAGS):
     F = FLAGS
     if getattr(F, 'do_grpo_opkd', False):
         sp = int(getattr(F, 'sparsity_ratio', 0) * 100)
-        lr = getattr(F, 'gmp_lr', 0)
-        steps = getattr(F, 'gmp_steps', 0)
+        lr = getattr(F, 'lr', 0)
+        steps = getattr(F, 'steps', 0)
         G = getattr(F, 'gmp_grpo_num_rollouts', 4)
         lam = getattr(F, 'gmp_grpo_lambda', 1.0)
         eps = getattr(F, 'gmp_grpo_eps_clip', 0.2)
         return f"grpo_opkd_s{sp}pct_G{G}_lam{lam}_eps{eps}_lr{lr}_{steps}steps"
     elif getattr(F, 'do_gmp', False):
         sp = int(getattr(F, 'sparsity_ratio', 0) * 100)
-        lr = getattr(F, 'gmp_lr', 0)
-        steps = getattr(F, 'gmp_steps', 0)
+        lr = getattr(F, 'lr', 0)
+        steps = getattr(F, 'steps', 0)
         prune_end = getattr(F, 'gmp_pruning_end_ratio', 1.0)
 
         kd_only   = getattr(F, 'gmp_kd_only', False)
@@ -67,13 +67,38 @@ def _build_run_name(FLAGS):
         mi = getattr(F, 'gmp_mask_interval', 32)
         if mi != 32:
             name += f"_mi{mi}"
+
+        sparsity_type = getattr(F, 'sparsity_type', 'unstructured')
+        if sparsity_type != 'unstructured':
+            name += f"_{sparsity_type.replace(':', 'to')}"
+
+        if getattr(F, 'gmp_tr_enabled', False):
+            name += f"_kl{getattr(F, 'gmp_tr_kl_threshold', 0.01)}"
+            dmin = getattr(F, 'gmp_tr_delta_min', 0.005)
+            if dmin != 0.005:
+                name += f"_dmin{dmin}"
+
+        l1_lam = getattr(F, 'gmp_l1_lambda', 0.0) or 0.0
+        if l1_lam > 0:
+            l1_structured = getattr(F, 'gmp_l1_structured', True)
+            if l1_structured:
+                name += f"_l1struct{l1_lam}"
+            else:
+                name += f"_l1{getattr(F, 'gmp_l1_mode', 'plain')}{l1_lam}"
+                if getattr(F, 'gmp_l1_open_groups_only', False):
+                    name += "_openonly"
+
+        lr_sched = getattr(F, 'lr_scheduler', 'cosine')
+        if lr_sched in ('constant', 'constant_with_warmup'):
+            name += "_constlr"
+
         return name
 
     elif getattr(F, 'do_kd_admm', False):
         sp   = int(getattr(F, 'sparsity_ratio', 0) * 100)
-        lr   = F.admm_lr
+        lr   = F.lr
         lmda = F.admm_lmda
-        steps = F.admm_steps
+        steps = F.steps
         trz   = getattr(F, 'admm_tr_z_proj', False)
         kl_th = getattr(F, 'admm_tr_kl_threshold', 0.5) if trz else None
         lasso = getattr(F, 'admm_lasso_lmda', 0.0) or 0.0
@@ -100,11 +125,19 @@ def _build_run_name(FLAGS):
         name += f"_{steps}steps"
         return name
     elif getattr(F, 'do_offpolicy_kd_admm', False):
-        return (f"offpolicy_kd_admm_s{F.sparsity_ratio}_lr{F.admm_lr}"
-                f"_lmda{F.admm_lmda}_steps{F.admm_steps}")
+        return (f"offpolicy_kd_admm_s{F.sparsity_ratio}_lr{F.lr}"
+                f"_lmda{F.admm_lmda}_steps{F.steps}")
     else:
-        return (f"ntp_admm_s{F.sparsity_ratio}_lr{F.admm_lr}"
-                f"_lmda{F.admm_lmda}_steps{F.admm_steps}")
+        name = (f"ntp_admm_s{F.sparsity_ratio}_lr{F.lr}"
+                f"_lmda{F.admm_lmda}")
+        if getattr(F, 'admm_tr_z_proj', False):
+            mode = getattr(F, 'admm_z_schedule_mode', 'trust_region')
+            if mode == 'cubic':
+                name += f"_cubic{getattr(F, 'admm_cubic_steps', 2048)}"
+            else:
+                name += f"_trz{getattr(F, 'admm_tr_kl_threshold', 0.5)}"
+        name += f"_steps{F.steps}"
+        return name
 
 
 def main(argv):
@@ -137,8 +170,29 @@ def main(argv):
     # init_process_group first, then rank 0 launches vLLM and signals via dist.barrier().
     _vllm_eager = getattr(FLAGS, 'gmp_opkd_vllm_enforce_eager', False)
 
+    # Pin this process to its own GPU BEFORE any collective (including init_process_group).
+    # Without this, NCCL has to guess the intended device (see PyTorch's own warning:
+    # "No device id is provided via init_process_group or barrier... using the current
+    # device set by the user"), which is fragile and caused a real crash on n42
+    # (5-GPU FSDP+dedicated-vLLM job: ranks 1-3 hit "device=4, num_gpus=4" CUDA assert
+    # at the first real CUDA touch after the vLLM subprocess launch + barrier).
     if is_distributed:
-        dist.init_process_group(backend='nccl')
+        torch.cuda.set_device(local_rank)
+    if is_distributed:
+        # NCCL's default collective timeout is 10 minutes. The sharded post-training
+        # zero-shot eval (each rank evaluates a different, unevenly-sized subset of
+        # tasks) can easily exceed that on the all_gather_object that collects
+        # results — a slow rank (e.g. one running hellaswag) blows past 10 minutes
+        # while a fast rank sits idle at the same collective, and the watchdog
+        # aborts the whole process group. Use a generous timeout to cover training
+        # collectives (which are fast and frequent) as well as these occasional
+        # long, imbalanced eval-time collectives.
+        import datetime as _datetime
+        dist.init_process_group(
+            backend='nccl',
+            device_id=torch.device(f'cuda:{local_rank}') if torch.cuda.is_available() else None,
+            timeout=_datetime.timedelta(hours=2),
+        )
 
     if _use_fsdp_opkd:
         _vllm_gpu_mem = getattr(FLAGS, 'gmp_opkd_vllm_gpu_mem', 0.25)
@@ -296,17 +350,17 @@ def main(argv):
         _t_train_start = time.time()
         if getattr(FLAGS, 'do_chunk_grpo_opkd', False):
             model.to(device)
-            from lib.gkd_admm_trainer import MathCotKDDataset, MathPromptDataset, collate_prompts
+            from lib.gkd_admm_trainer import MixedTextDataset, MixedPromptDataset, collate_prompts
             from lib.grpo_opkd import run_chunk_grpo_opkd
-            train_dataset = MathCotKDDataset(
+            train_dataset = MixedTextDataset(
                 jsonl_path=FLAGS.data_path,
                 tokenizer=tokenizer,
                 max_prompt_len=getattr(FLAGS, 'gmp_max_prompt_len', 512),
-                max_len=getattr(FLAGS, 'gmp_max_seq_len', 2048),
+                max_len=getattr(FLAGS, 'seqlen', 2048),
                 append_eos=getattr(FLAGS, 'cot_append_eos', False),
             )
             prompt_path = getattr(FLAGS, 'gmp_prompt_path', None) or FLAGS.data_path
-            prompt_dataset = MathPromptDataset(
+            prompt_dataset = MixedPromptDataset(
                 jsonl_path=prompt_path,
                 tokenizer=tokenizer,
                 max_prompt_len=getattr(FLAGS, 'gmp_max_prompt_len', 512),
@@ -323,13 +377,13 @@ def main(argv):
         elif getattr(FLAGS, 'do_grpo_opkd', False):
             model.to(device)
             from lib.gkd_admm_trainer import (
-                MathCotKDDataset, MathPromptDataset, MathPromptWithAnswerDataset, collate_prompts,
+                MixedTextDataset, MixedPromptDataset, MathPromptWithAnswerDataset, collate_prompts,
             )
-            train_dataset = MathCotKDDataset(
+            train_dataset = MixedTextDataset(
                 jsonl_path=FLAGS.data_path,
                 tokenizer=tokenizer,
                 max_prompt_len=getattr(FLAGS, 'gmp_max_prompt_len', 512),
-                max_len=getattr(FLAGS, 'gmp_max_seq_len', 2048),
+                max_len=getattr(FLAGS, 'seqlen', 2048),
                 append_eos=getattr(FLAGS, 'cot_append_eos', False),
             )
             prompt_path = getattr(FLAGS, 'gmp_prompt_path', None) or FLAGS.data_path
@@ -342,7 +396,7 @@ def main(argv):
                 )
                 grpo_teacher = None  # teacher not needed for correctness reward
             else:
-                prompt_dataset = MathPromptDataset(
+                prompt_dataset = MixedPromptDataset(
                     jsonl_path=prompt_path,
                     tokenizer=tokenizer,
                     max_prompt_len=getattr(FLAGS, 'gmp_max_prompt_len', 512),
@@ -394,21 +448,21 @@ def main(argv):
             if getattr(FLAGS, 'gmp_random_cot_ntp', False):
                 from lib.data import get_dataset
                 train_dataset = get_dataset(
-                    dataset_name='math_cot',
+                    dataset_name='mixed_cot',
                     tokenizer=tokenizer,
                     nsamples=4096,
                     seed=FLAGS.seed,
-                    seqlen=getattr(FLAGS, 'gmp_max_seq_len', 2048),
+                    seqlen=getattr(FLAGS, 'seqlen', 2048),
                     data_type='train',
                     data_path=FLAGS.data_path,
                 )
             else:
-                from lib.gkd_admm_trainer import MathCotKDDataset
-                train_dataset = MathCotKDDataset(
+                from lib.gkd_admm_trainer import MixedTextDataset
+                train_dataset = MixedTextDataset(
                     jsonl_path=FLAGS.data_path,
                     tokenizer=tokenizer,
                     max_prompt_len=getattr(FLAGS, 'gmp_max_prompt_len', 512),
-                    max_len=getattr(FLAGS, 'gmp_max_seq_len', 2048),
+                    max_len=getattr(FLAGS, 'seqlen', 2048),
                     append_eos=getattr(FLAGS, 'cot_append_eos', False),
                     nsamples=getattr(FLAGS, 'kd_nsamples', 0) or None,
                 )
@@ -479,8 +533,8 @@ def main(argv):
                 tokenizer.save_pretrained(str(_sdir))
                 logging.info(f"Saved SAFE pruned model to {_sdir}")
                 saved_pruned_model_path = str(_sdir)
-        elif getattr(FLAGS, 'dataset', '') == 'math_cot':
-            # NTP with full problem context: no teacher, no KD, uses MathCotKDDataset
+        elif getattr(FLAGS, 'dataset', '') == 'mixed_cot':
+            # NTP with full problem context: no teacher, no KD, uses MixedTextDataset
             saved_pruned_model_path = globalprune_admm_kd(FLAGS, model, None, tokenizer, device)
         else:
             saved_pruned_model_path = globalprune_admm(FLAGS, model, tokenizer, device, prune_n=prune_n, prune_m=prune_m)
@@ -497,6 +551,49 @@ def main(argv):
         _uses_fsdp = getattr(FLAGS, 'do_gmp', False) or getattr(FLAGS, 'admm_use_fsdp', False) or getattr(FLAGS, 'gmp_use_fsdp', False)
         _fsdp_trainer_saved = _uses_fsdp and getattr(FLAGS, 'save_model', False)
         if _fsdp_trainer_saved:
+            # Shard zero-shot eval across all ranks WHILE the process group is still
+            # alive (need it for broadcast/gather) — otherwise only rank 0 would do
+            # this work and the other world_size-1 GPUs would sit idle. `model` here
+            # is still FSDP-wrapped (params flattened/sharded in-place), so each rank
+            # reloads its own fresh, non-sharded copy from the checkpoint we just saved
+            # rather than evaluating its local ~1/world_size parameter shard.
+            _path_list = [saved_pruned_model_path if local_rank == 0 else None]
+            dist.broadcast_object_list(_path_list, src=0)
+            _eval_path = _path_list[0]
+            if getattr(FLAGS, 'eval_zero_shot', False) and _eval_path:
+                del model
+                import gc as _gc; _gc.collect(); torch.cuda.empty_cache()
+                _eval_model = get_llm(_eval_path, FLAGS.seqlen)
+                _eval_model.to(device)
+                _eval_model.eval()
+                _all_tasks = ["boolq", "rte", "hellaswag", "winogrande", "arc_easy",
+                              "arc_challenge", "openbookqa", "piqa", "race"]
+                _my_tasks = [t for i, t in enumerate(_all_tasks) if i % world_size == local_rank]
+                logging.info(f"[rank {local_rank}] FSDP zero-shot shard: {_my_tasks or '(none)'}")
+                _my_results = eval_zero_shot(FLAGS, FLAGS.model, _eval_model, tokenizer, _my_tasks, 0, False) if _my_tasks else {}
+                _gathered = [None] * world_size
+                dist.all_gather_object(_gathered, _my_results)
+                if local_rank == 0:
+                    _zs_results = {}
+                    for _d in _gathered:
+                        _zs_results.update(_d)
+                    logging.info(f"[FSDP eval] zero-shot results (sharded across {world_size} GPUs): {_zs_results}")
+                    if FLAGS.wandb:
+                        for task_name, metrics in _zs_results.items():
+                            try:
+                                acc = metrics.get('acc_norm,none', metrics.get('acc,none', metrics.get('acc', None)))
+                                stderr = metrics.get('acc_norm_stderr,none', metrics.get('acc_stderr,none', metrics.get('acc_stderr', None)))
+                                if acc is not None:
+                                    wandb.log({f"global_admm/{task_name}_acc": acc})
+                                if stderr is not None:
+                                    wandb.log({f"global_admm/{task_name}_stderr": stderr})
+                            except Exception as log_e:
+                                logging.warning(f"Could not log zero-shot metric for {task_name}: {log_e}")
+                del _eval_model
+                _gc.collect(); torch.cuda.empty_cache()
+                model = None
+                FLAGS.eval_zero_shot = False  # already handled above; skip the single-GPU path below
+
             # Trainer already saved via FSDP-aware save_model; both ranks destroy PG together.
             dist.destroy_process_group()
             import gc as _gc; _gc.collect(); torch.cuda.empty_cache()
@@ -655,7 +752,7 @@ def main(argv):
             if FLAGS.wandb:
                 wandb.log({"math500_pass@1": pass_at_1})
 
-        ## Full 5-benchmark evaluation via lighteval+vLLM
+        ## Full benchmark suite evaluation via lighteval+vLLM
         if getattr(FLAGS, 'eval_full_bench', False):
             logging.info("--- Evaluating After Training (5-benchmark suite, lighteval+vLLM) ---")
             # Resolve saved model path (same logic as eval_math500)
@@ -699,11 +796,12 @@ def main(argv):
             _vllm_gpu_util = (_free_mem / _total_mem) * 0.95
             logging.info(f"vLLM gpu_memory_utilization: {_vllm_gpu_util:.3f}")
 
-            _out_base = os.path.join(_bench_model_path, "lighteval_5bench")
-            bench_metrics = run_lighteval_5bench(
+            _out_base = os.path.join(_bench_model_path, "lighteval_bench")
+            bench_metrics = run_lighteval_bench(
                 model_path=_bench_model_path,
                 out_base=_out_base,
                 gpu_util=_vllm_gpu_util,
+                tp_size=world_size,
                 log_to_wandb=FLAGS.wandb,
             )
             # Also log math500_pass@1 as top-level for sweep metric
@@ -740,39 +838,42 @@ def main(argv):
                     if getattr(FLAGS, 'do_gmp', False):
                         _kd_tag = f"-kd{_fmt_float(getattr(FLAGS, 'gmp_kd_lambda', 0))}" if getattr(FLAGS, 'gmp_kd_lambda', 0) > 0 else ""
                         _method_tag = f"gmp{_kd_tag}"
-                        _lr_tag = f"lr{_fmt_float(FLAGS.gmp_lr)}"
+                        _lr_tag = f"lr{_fmt_float(FLAGS.lr)}"
                         _hub_repo = f"cosmos1030/{_method_tag}-{_sparsity_tag}-{_lr_tag}_{_now}"
                     else:
                         _method_tag = "elsa-hybrid-kd" if getattr(FLAGS, 'do_kd_admm', False) and getattr(FLAGS, 'kd_use_cot_dataset', False) \
                             else "elsa-kd" if getattr(FLAGS, 'do_kd_admm', False) \
                             else "elsa-offpolicy-kd" if getattr(FLAGS, 'do_offpolicy_kd_admm', False) \
-                            else "elsa-ntp-cot" if getattr(FLAGS, 'dataset', '') == 'math_cot' \
+                            else "elsa-ntp-cot" if getattr(FLAGS, 'dataset', '') == 'mixed_cot' \
                             else "elsa-ntp"
-                        _lr_tag = f"lr{_fmt_float(FLAGS.admm_lr)}"
+                        _lr_tag = f"lr{_fmt_float(FLAGS.lr)}"
                         _lmda_tag = f"lmda{_fmt_float(FLAGS.admm_lmda)}"
                         _hub_repo = f"cosmos1030/{_method_tag}-{_sparsity_tag}-{_lr_tag}-{_lmda_tag}_{_now}"
                 logging.info(f"Uploading model to HuggingFace Hub: {_hub_repo}")
-                # TRANSFORMERS_OFFLINE blocks push_to_hub — unset for upload only
-                import os as _os
-                for _env in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "HF_DATASETS_OFFLINE"):
-                    _os.environ.pop(_env, None)
                 try:
-                    import huggingface_hub.constants as _hf_const
-                    _hf_const.HF_HUB_OFFLINE = False
-                except Exception:
-                    pass
-                api = HfApi()
-                api.create_repo(repo_id=_hub_repo, exist_ok=True)
-                api.upload_folder(
-                    folder_path=_hub_model_path,
-                    repo_id=_hub_repo,
-                    commit_message=f"ELSA pruned: sparsity={FLAGS.sparsity_ratio}, lr={FLAGS.admm_lr}, lmda={FLAGS.admm_lmda}",
-                )
-                _hub_url = f"https://huggingface.co/{_hub_repo}"
-                logging.info(f"Uploaded to {_hub_url}")
-                if FLAGS.wandb:
-                    wandb.run.summary["hub_model_id"] = _hub_repo
-                    wandb.run.summary["hub_model_url"] = _hub_url
+                    # TRANSFORMERS_OFFLINE blocks push_to_hub — unset for upload only
+                    import os as _os
+                    for _env in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "HF_DATASETS_OFFLINE"):
+                        _os.environ.pop(_env, None)
+                    try:
+                        import huggingface_hub.constants as _hf_const
+                        _hf_const.HF_HUB_OFFLINE = False
+                    except Exception:
+                        pass
+                    api = HfApi()
+                    api.create_repo(repo_id=_hub_repo, exist_ok=True)
+                    api.upload_folder(
+                        folder_path=_hub_model_path,
+                        repo_id=_hub_repo,
+                        commit_message=f"ELSA pruned: sparsity={FLAGS.sparsity_ratio}, lr={FLAGS.lr}, lmda={FLAGS.admm_lmda}",
+                    )
+                    _hub_url = f"https://huggingface.co/{_hub_repo}"
+                    logging.info(f"Uploaded to {_hub_url}")
+                    if FLAGS.wandb:
+                        wandb.run.summary["hub_model_id"] = _hub_repo
+                        wandb.run.summary["hub_model_url"] = _hub_url
+                except Exception as _e:
+                    logging.warning(f"push_to_hub upload failed ({_e}); continuing without upload.")
             else:
                 logging.warning("push_to_hub=True but no saved model path found. Skipping upload.")
 
@@ -786,12 +887,12 @@ def main(argv):
 
 if __name__ == '__main__':
     flags.DEFINE_string('model', 'facebook/opt-125m', 'model to prune. model name (hf repo) or local path to model snapshot')
-    flags.DEFINE_integer('seqlen', 2048, 'Sequence length for the model.')
+    flags.DEFINE_integer('seqlen', 2048, 'Sequence length for the model (shared by ADMM/ELSA and GMP NTP dataset construction).')
     flags.DEFINE_integer('seed', 0, 'Seed for sampling the calibration data.')
     flags.DEFINE_integer('nsamples', 128, 'Number of calibration samples.')
     flags.DEFINE_float('sparsity_ratio', 0.6, 'Sparsity level')
     flags.DEFINE_enum('sparsity_type', "unstructured", ["unstructured", "4:8", "2:4"], 'Type of sparsity.')
-    flags.DEFINE_enum('dataset', 'c4', ["c4", "wikitext2", "math_trace", "code_trace", "math_prompt", "math_cot"], 'Calibration dataset.')
+    flags.DEFINE_enum('dataset', 'c4', ["c4", "wikitext2", "math_trace", "code_trace", "math_prompt", "mixed_cot"], 'Calibration dataset.')
     flags.DEFINE_string('data_path', None , 'Path to local snapshot (e.g., huggingface/hub/allenai-c4/snapshot/hash..)')
 
     # Global ADMM hyperparams
@@ -805,16 +906,20 @@ if __name__ == '__main__':
 
     # Training Loop Config
     flags.DEFINE_integer('admm_epochs', 1, 'Number of epochs for ADMM training.')
-    flags.DEFINE_integer('admm_steps', 10, 'Max steps for ADMM training. Overrides admm_epochs if > 0.')
+    # lr / steps / lr_scheduler / lr_warmup_steps / seqlen are shared between
+    # ADMM (ELSA) and GMP — the two never run in the same job (do_gmp vs the
+    # ADMM sparsity_ratio!=0 branch are mutually exclusive), so one flag each
+    # is enough instead of admm_*/gmp_* duplicates.
+    flags.DEFINE_integer('steps', 4096, 'Max training steps (ADMM: overrides admm_epochs if > 0; GMP: total training steps).')
     flags.DEFINE_integer('admm_batch_size', 2, 'Batch size for ADMM training, per device.')
     flags.DEFINE_integer('admm_gradient_accumulation_steps', 1, 'Gradient accumulation steps for ADMM.')
     flags.DEFINE_bool('admm_gradient_checkpointing', False, 'Use gradient checkpointing for ADMM training. Set False when using FSDP')
-    flags.DEFINE_float('admm_lr', 2e-4, 'Learning rate for ADMM base optimizer.')
-    flags.DEFINE_string('admm_lr_scheduler', 'linear', 'Learning rate scheduler type for ADMM.')
-    flags.DEFINE_integer('admm_warmup_steps', 0, 'Warmup steps for ADMM learning rate scheduler.')
+    flags.DEFINE_float('lr', 1e-4, 'Learning rate (ADMM base optimizer / GMP peak LR).')
+    flags.DEFINE_string('lr_scheduler', 'constant_with_warmup', 'LR scheduler type. HF get_scheduler name for ADMM; GMP checks for "cosine" vs "constant"/"constant_with_warmup". "constant" alone ignores warmup_steps entirely (HF quirk) — use constant_with_warmup to keep the step-based warmup.')
+    flags.DEFINE_integer('lr_warmup_steps', 256, 'LR warmup steps (ADMM scheduler warmup; GMP overrides gmp_warmup_ratio when > 0).')
     flags.DEFINE_float('admm_weight_decay', 0.0, 'Weight decay for ADMM base optimizer.')
     flags.DEFINE_enum('admm_precision', 'bf16', ['fp32', 'fp16', 'bf16'], 'Precision for ADMM training (fp16/bf16 enables Trainer autocast).')
-    flags.DEFINE_enum('admm_projection_mode', 'identity', ['identity', 'momentum'], 'objective-aware projection for ADMM.')
+    flags.DEFINE_enum('admm_projection_mode', 'momentum', ['identity', 'momentum'], 'objective-aware projection for ADMM.')
     flags.DEFINE_bool('admm_projection_bias_correction', False, 'Whether to use bias correction in obejctive-aware ADMM projection.')
 
     # ADMM Specific Config
@@ -832,6 +937,8 @@ if __name__ == '__main__':
     flags.DEFINE_enum('admm_tr_kl_reduce', 'mean', ['mean', 'quantile'], 'KL reduce mode for TR z-projection.')
     flags.DEFINE_enum('admm_z_schedule_mode', 'trust_region', ['trust_region', 'cubic'], "z-projection schedule: 'trust_region' (KL-gated, adaptive) or 'cubic' (fixed schedule from admm-pruning/Boza et al. Algorithm 1, no KL check).")
     flags.DEFINE_integer('admm_cubic_steps', 2048, 'ks: training step at which the cubic schedule reaches final sparsity (independent of admm_interval, which controls z-projection call cadence).')
+    flags.DEFINE_bool('admm_z_layerwise', False, 'Compute the TR-z/cubic threshold per-parameter-tensor (like plain ELSA default projection) instead of one global threshold pooled across all params.')
+    flags.DEFINE_bool('admm_tr_gate_at_target', True, 'Once trust-region sparsity reaches the final target, still KL-gate further mask reselection (swap/freeze) instead of reselecting unconditionally every interval.')
     flags.DEFINE_enum('admm_base_optimizer', 'adam', ['adam','adamw','adam8bit','adam4bit','sgd'], 'Base optimizer for ADMM primal update.')
     flags.DEFINE_enum('admm_dual_dtype', 'fp32', ['fp32','bf16', 'float8_e4m3fn', 'float8_e5m2'], 'Dtype for ADMM dual variable (fp32 or bf16).')
     flags.DEFINE_float('admm_lasso_lmda', 0.0, 'L1 penalty on pruned-position weights; 0 = disabled.')
@@ -842,7 +949,7 @@ if __name__ == '__main__':
     # GMP (BEST-style)
     flags.DEFINE_bool('do_gmp', False, 'Use BEST-style gradual magnitude pruning with Fisher importance.')
     flags.DEFINE_bool('gmp_fixed_mask', False, 'Fix mask from pre-pruned model weights (for sparse SFT). Skips Fisher-based mask updates.')
-    flags.DEFINE_bool('gmp_random_cot_ntp', False, 'Use random seqlen-token windows from CoT (no prompt masking) instead of MathCotKDDataset.')
+    flags.DEFINE_bool('gmp_random_cot_ntp', False, 'Use random seqlen-token windows from CoT (no prompt masking) instead of MixedTextDataset.')
     flags.DEFINE_bool('gmp_use_fsdp', False, 'Wrap GMP model with FSDP for multi-GPU training (requires torchrun / accelerate launch).')
     flags.DEFINE_bool('gmp_pgd', False, 'Enable PGD projection after each optimizer step: re-project mask using Fisher saliency (v_t*w^2), logging pgd/revivals and pgd/prunings.')
     flags.DEFINE_float('gmp_dpo_lambda', 0.0, 'Weight for DPO loss (0 = disabled).')
@@ -859,13 +966,12 @@ if __name__ == '__main__':
     flags.DEFINE_bool('gmp_dpo_use_vllm_chosen', False, 'Use vLLM offline engine for fast chosen cache generation (offloads dense_model to CPU during generation).')
     flags.DEFINE_bool('gmp_dpo_use_vllm_rejected', False, 'Use vLLM engine for fast rejected generation each mask interval (weight-synced from student model).')
     flags.DEFINE_float('gmp_dpo_vllm_gpu_mem', 0.35, 'vLLM gpu_memory_utilization for rejected generation engine.')
-    flags.DEFINE_integer('gmp_steps', 4096, 'Total training steps for GMP.')
     flags.DEFINE_integer('gmp_batch_size', 1, 'Per-device batch size for GMP.')
     flags.DEFINE_integer('gmp_grad_accum', 8, 'Gradient accumulation steps for GMP.')
-    flags.DEFINE_float('gmp_lr', 1e-5, 'Peak learning rate for GMP.')
-    flags.DEFINE_float('gmp_warmup_ratio', 0.05, 'Fraction of steps for LR warmup in GMP.')
-    flags.DEFINE_integer('gmp_dense_warmup_steps', 0, 'Steps to train fully dense before GMP pruning schedule starts.')
-    flags.DEFINE_float('gmp_pruning_end_ratio', 1.0, 'Fraction of steps at which pruning completes; remaining steps do sparse training with fixed mask.')
+    flags.DEFINE_float('gmp_warmup_ratio', 0.05, 'Fraction of steps for LR warmup in GMP (used only when lr_warmup_steps=0).')
+    flags.DEFINE_integer('gmp_dense_warmup_steps', 0, 'Steps to train fully dense before GMP pruning schedule starts (gates mask application, TR-GMP growth, cubic sparsity ramp, PGD, and DPO-queue refill alike).')
+    flags.DEFINE_float('gmp_pruning_end_ratio', 1.0, 'Fraction of steps at which pruning completes; remaining steps do sparse training with fixed mask. Ignored when gmp_sparse_train_steps > 0.')
+    flags.DEFINE_integer('gmp_sparse_train_steps', 512, 'Steps of fixed-mask sparse training at the end of the run (mask frozen at final sparsity). Pruning completes at steps - gmp_sparse_train_steps, so the cubic ramp fills the time between gmp_dense_warmup_steps and that point. 0 = derive from gmp_pruning_end_ratio instead.')
     flags.DEFINE_integer('gmp_mask_interval', 32, 'Steps between mask updates in GMP.')
     flags.DEFINE_float('gmp_fisher_beta', 0.999, 'EMA beta for Fisher diagonal accumulation.')
     flags.DEFINE_enum('gmp_saliency', 'fisher', ['fisher', 'magnitude'],
@@ -876,7 +982,6 @@ if __name__ == '__main__':
                       'Pruning scope: global=single threshold across all layers, layer=per-layer threshold (each layer hits target sparsity exactly).')
     flags.DEFINE_string('gmp_save_path', '/home1/doyoonkim/projects/elsa/models', 'Directory to save GMP pruned model.')
     flags.DEFINE_integer('gmp_max_prompt_len', 512, 'Max prompt length for GMP NTP dataset.')
-    flags.DEFINE_integer('gmp_max_seq_len', 512, 'Max CoT sequence length for GMP NTP dataset.')
     flags.DEFINE_float('gmp_ntp_lambda', 1.0, 'NTP loss weight for GMP (default 1.0).')
     flags.DEFINE_float('gmp_kd_lambda', 0.0, 'KD loss weight for GMP (0 = NTP only).')
     flags.DEFINE_float('gmp_kd_temperature', 2.0, 'Temperature for GMP token-level KD.')
@@ -952,6 +1057,12 @@ if __name__ == '__main__':
     flags.DEFINE_bool('gmp_l1_structured', True, 'True=bottom-2 per group L1 (2:4 structured), False=use gmp_l1_mode.')
     flags.DEFINE_enum('gmp_l1_mode', 'plain', ['plain', 'inv_fisher_sqrt'],
                       'L1 mode when gmp_l1_structured=False. plain=mean|w|, inv_fisher_sqrt=|w|/sqrt(clamp(f/mean_f)).')
+    flags.DEFINE_bool('gmp_l1_open_groups_only', False,
+                      'When True (and sparsity_type is N:M), restrict gmp_l1_mode L1 to weights in '
+                      '2:4 groups that have not yet reached their prune_n cap, instead of all alive '
+                      'weights layer-wide. Concentrates L1 pressure on the shrinking pool of still-'
+                      'prunable weights as a layer approaches its target sparsity. No effect when '
+                      'gmp_l1_structured=True.')
     flags.DEFINE_float('gmp_l1_fisher_clip_min', 0.1, 'Min clamp for normalized Fisher in inv_fisher_sqrt L1.')
     flags.DEFINE_float('gmp_l1_fisher_clip_max', 10.0, 'Max clamp for normalized Fisher in inv_fisher_sqrt L1.')
 
@@ -972,15 +1083,15 @@ if __name__ == '__main__':
     flags.DEFINE_bool('kd_forward_kl', False, 'Use forward KL D(teacher||student) instead of reverse KL D(student||teacher).')
     flags.DEFINE_float('kd_vllm_gpu_memory_utilization', 0.3, 'vLLM gpu_memory_utilization for rollout engine.')
     flags.DEFINE_integer('kd_vllm_max_model_len', 0, 'vLLM max_model_len (0 = auto: kd_max_new_tokens + 1024).')
-    flags.DEFINE_bool('kd_use_cot_dataset', False, 'Use MathCotKDDataset (provides CoT NTP labels + prompt for KD).')
+    flags.DEFINE_bool('kd_use_cot_dataset', False, 'Use MixedTextDataset (provides CoT NTP labels + prompt for KD).')
     flags.DEFINE_bool('kd_offpolicy_ntp', False, 'Hybrid NTP + dataset-based KD: KL(student||teacher) on CoT answer tokens, no generation.')
     flags.DEFINE_bool('kd_triple_loss', False, 'Triple loss: NTP + dataset KD + on-policy KD (each weighted by ntp/kd/opkd lambda).')
     flags.DEFINE_float('kd_opkd_lambda', 0.0, 'Weight for on-policy KD loss in triple loss mode.')
     flags.DEFINE_bool('admm_tr_use_opkd_rollout', False, 'Use OPKD student rollout as TR-z calibration batch instead of CoT text.')
-    flags.DEFINE_bool('cot_append_eos', False, 'Append EOS token to each sample in MathCotKDDataset.')
-    flags.DEFINE_bool('kd_use_random_cot_ntp', False, 'Use random 2048-token CoT windows for NTP; use separate MathPromptDataset for KD prompts.')
+    flags.DEFINE_bool('cot_append_eos', False, 'Append EOS token to each sample in MixedTextDataset.')
+    flags.DEFINE_bool('kd_use_random_cot_ntp', False, 'Use random 2048-token CoT windows for NTP; use separate MixedPromptDataset for KD prompts.')
     flags.DEFINE_integer('kd_step_interval', 1, 'Apply KD loss every N optimizer steps (1=every step). Reduces teacher forward cost.')
-    flags.DEFINE_string('kd_ntp_dataset', 'math_cot', 'Dataset for NTP in random CoT mode: math_cot or c4.')
+    flags.DEFINE_string('kd_ntp_dataset', 'mixed_cot', 'Dataset for NTP in random CoT mode: mixed_cot or c4.')
     flags.DEFINE_integer('kd_buffer_size', 0, 'Rollout buffer size: generate this many prompts in one vLLM batch (0 = disabled).')
     flags.DEFINE_integer('kd_buffer_refresh_interval', 32, 'Refresh rollout buffer every N steps (default: align with admm_interval).')
 
@@ -1007,7 +1118,7 @@ if __name__ == '__main__':
     flags.DEFINE_bool('data_ablation', False, 'Whether to use data ablation, for section 5.5. If True, we fix the step size and control the number of train samples with --admm_num_train_samples.')
     flags.DEFINE_bool('eval_zero_shot', True, 'Whether to evaluate zero-shot performance.')
     flags.DEFINE_bool('eval_math500', False, 'Whether to run MATH-500 pass@1 eval after pruning (via lighteval+vLLM).')
-    flags.DEFINE_bool('eval_full_bench', True, 'Whether to run all 5 benchmarks (MATH-500, GPQA, IFEval, MMLU-Redux, LCB) after training.')
+    flags.DEFINE_bool('eval_full_bench', True, 'Whether to run all 5 benchmarks (MATH-500, GPQA, IFEval, LCB, GSM8K) after training.')
     flags.DEFINE_float('gmp_offline_ipo_lambda', 0.0, 'Weight for offline IPO loss (0 = disabled).')
     flags.DEFINE_float('gmp_offline_ipo_beta', 0.1, 'IPO beta for offline preference pairs.')
     flags.DEFINE_string('gmp_offline_ipo_datasets', 'HuggingFaceH4/ultrafeedback_binarized', 'Comma-separated HF preference dataset names.')

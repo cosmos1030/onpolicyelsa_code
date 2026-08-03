@@ -198,11 +198,10 @@ class ADMMTrainer(Trainer):
             cur_sp = final_sp
         self._cubic_iter += 1
 
-        thr = self._find_global_threshold(admm_state, cur_sp)
-        z_new = self._make_z_from_threshold(admm_state, thr)
+        z_new = self._select_z(admm_state, cur_sp)
         self._tr_z_sp = cur_sp
 
-        mask_nnz = sum(v.sum().item() for v in z_new.values())
+        mask_nnz = sum((v != 0).sum().item() for v in z_new.values())
         mask_total = sum(v.numel() for v in z_new.values())
         self._tr_z_metrics_pending = {
             'tr_z/sparsity': cur_sp,
@@ -284,6 +283,14 @@ class ADMMTrainer(Trainer):
             k = int(all_scores.numel() * sparsity)
             if k == 0:
                 return -float('inf')
+            # Single-process: torch.kthvalue gives the exact threshold in one O(n)
+            # pass instead of 64 repeated full-tensor scans (matches gmp_trainer.py's
+            # non-distributed path). torch.kthvalue uses int32 indexing internally and
+            # overflows above ~2B elements, so keep the chunked binary search as a
+            # fallback for very large models (same threshold, just slower to compute).
+            _MAX_KTHVALUE = 100_000_000
+            if all_scores.numel() <= _MAX_KTHVALUE:
+                return torch.kthvalue(all_scores, k).values.item()
             lo, hi = all_scores.min().item(), all_scores.max().item()
             for _ in range(64):
                 mid = (lo + hi) / 2.0
@@ -300,6 +307,34 @@ class ADMMTrainer(Trainer):
             mask = (info['saliency'] >= threshold)
             z_new = info['a'] * mask.float()
             z_override[param_id] = z_new.to(info['w'].dtype)
+        return z_override
+
+    def _select_z(self, admm_state, sparsity):
+        """Build a z_override dict at the given sparsity ratio, either via one global
+        threshold pooled across every parameter (default), or independently per
+        parameter tensor (admm_z_layerwise=True) — matching plain ELSA's default
+        `comparison_group="layer"` projection, which never compares saliency across
+        different weight matrices, so it can't reallocate sparsity between layers as
+        their saliency scales drift during training (unlike the global threshold,
+        which pools everything and is sensitive to exactly that drift).
+        """
+        if not getattr(self.args, 'admm_z_layerwise', False):
+            threshold = self._find_global_threshold(admm_state, sparsity)
+            return self._make_z_from_threshold(admm_state, threshold)
+
+        z_override = {}
+        for param_id, info in admm_state.items():
+            sal = info['saliency']
+            n = sal.numel()
+            k = int(n * sparsity)
+            if k <= 0:
+                mask = torch.ones_like(sal, dtype=torch.bool)
+            elif k >= n:
+                mask = torch.zeros_like(sal, dtype=torch.bool)
+            else:
+                threshold = torch.kthvalue(sal.flatten(), k).values
+                mask = sal > threshold
+            z_override[param_id] = (info['a'] * mask.float()).to(info['w'].dtype)
         return z_override
 
     @torch.no_grad()
@@ -352,11 +387,151 @@ class ADMMTrainer(Trainer):
         cand_lp = F.log_softmax(cand_logits[:, :-1, :], dim=-1)
         kl_tok = (old_lp.exp() * (old_lp - cand_lp)).sum(dim=-1)
         kl_vals = kl_tok[valid].float()
-
+        result = kl_vals
         kl_reduce = getattr(self.args, 'admm_tr_kl_reduce', 'mean')
-        if kl_reduce == 'quantile':
-            return max(torch.quantile(kl_vals, 0.95).item(), 0.0)
-        return max(kl_vals.mean().item(), 0.0)
+        out = max(torch.quantile(result, 0.95).item(), 0.0) if kl_reduce == 'quantile' \
+            else max(result.mean().item(), 0.0)
+        # These are full [batch, seq, vocab] float tensors — called up to ~10x per
+        # interval (growth search + swap fallback) under FSDP, where each forward
+        # pass also triggers a temporary full-parameter unshard. Left to Python's
+        # refcounting alone this was compounding across iterations and OOMing at
+        # 1.7B scale (confirmed via debug run).
+        del old_logits, cand_logits, old_lp, cand_lp, kl_tok, kl_vals, result
+        torch.cuda.empty_cache()
+        return out
+
+    def _topk_cutoff(self, scores_by_param, k):
+        """Distributed-safe threshold v such that count(score >= v) is
+        approximately k, over the given per-param score tensors (entries that
+        should never be selected must be pre-set to -inf). Same chunked
+        binary-search pattern as _find_global_threshold, just top-k instead
+        of a bottom sparsity fraction."""
+        local_scores = [s.flatten() for s in scores_by_param.values() if s.numel() > 0]
+        if not local_scores or k <= 0:
+            return float('inf')
+        _dev = local_scores[0].device
+        finite = [s[torch.isfinite(s)] for s in local_scores]
+        finite = [s for s in finite if s.numel() > 0]
+
+        if dist.is_initialized():
+            if finite:
+                lo_t = torch.tensor(min(s.min().item() for s in finite), dtype=torch.float32, device=_dev)
+                hi_t = torch.tensor(max(s.max().item() for s in finite), dtype=torch.float32, device=_dev)
+            else:
+                lo_t = torch.zeros(1, dtype=torch.float32, device=_dev)[0]
+                hi_t = torch.ones(1, dtype=torch.float32, device=_dev)[0]
+            dist.all_reduce(lo_t, op=dist.ReduceOp.MIN)
+            dist.all_reduce(hi_t, op=dist.ReduceOp.MAX)
+            lo, hi = lo_t.item(), hi_t.item()
+            _CHUNK = 50_000_000
+            for _ in range(64):
+                mid = (lo + hi) / 2.0
+                cnt = torch.zeros(1, dtype=torch.long, device=_dev)
+                for s in local_scores:
+                    for ci in range(0, s.numel(), _CHUNK):
+                        cnt += (s[ci:ci + _CHUNK] >= mid).sum(dtype=torch.long)
+                dist.all_reduce(cnt, op=dist.ReduceOp.SUM)
+                if cnt.item() > k:
+                    lo = mid
+                else:
+                    hi = mid
+            return hi
+        else:
+            if not finite:
+                return float('inf')
+            all_scores = torch.cat(finite)
+            k = min(k, all_scores.numel())
+            return torch.topk(all_scores, k).values.min().item()
+
+    def _select_z_partial(self, admm_state, sp, frac):
+        """Reselect the mask at target sparsity `sp`, but only actually apply
+        the `frac` fraction of positions whose keep/prune decision differs
+        from z_prev — ranked by saliency margin from the threshold (the
+        flips furthest from the boundary, i.e. most clearly justified by
+        current saliency, are applied first). frac=1.0 reproduces the full
+        reselected mask; frac=0.0 leaves z_prev completely unchanged. This
+        avoids discarding an entire candidate swap (and any safe changes
+        bundled inside it) just because a few risky flips push the whole
+        thing over the KL budget.
+        """
+        threshold = self._find_global_threshold(admm_state, sp)
+        if frac >= 1.0:
+            return self._make_z_from_threshold(admm_state, threshold)
+
+        margins = {}
+        new_masks = {}
+        prev_masks = {}
+        n_changed_local = 0
+        for pid, info in admm_state.items():
+            sal = info['saliency']
+            new_mask = (sal >= threshold)
+            prev_mask = (info['z_prev'] != 0)
+            changed = new_mask != prev_mask
+            margin = torch.where(changed, (sal - threshold).abs(),
+                                  torch.full_like(sal, -float('inf')))
+            margins[pid] = margin
+            new_masks[pid] = new_mask
+            prev_masks[pid] = prev_mask
+            n_changed_local += changed.sum().item()
+
+        n_changed_t = torch.tensor([n_changed_local], dtype=torch.long,
+                                    device=next(iter(margins.values())).device)
+        if dist.is_initialized():
+            dist.all_reduce(n_changed_t, op=dist.ReduceOp.SUM)
+        n_changed = n_changed_t.item()
+        if n_changed == 0 or frac <= 0.0:
+            return {pid: info['z_prev'].to(info['w'].dtype) for pid, info in admm_state.items()}
+
+        n_apply = int(round(n_changed * frac))
+        if n_apply >= n_changed:
+            return self._make_z_from_threshold(admm_state, threshold)
+
+        margin_cutoff = self._topk_cutoff(margins, n_apply)
+        z_override = {}
+        for pid, info in admm_state.items():
+            apply_flip = margins[pid] >= margin_cutoff
+            final_mask = torch.where(apply_flip, new_masks[pid], prev_masks[pid])
+            z_override[pid] = (info['a'] * final_mask.float()).to(info['w'].dtype)
+        return z_override
+
+    def _swap_or_freeze_z(self, model, cal_batch, admm_state, sp, kl_thr):
+        """Reselect the mask at a FIXED sparsity `sp` using the latest saliency
+        (revive some weights, prune others), gated by the same KL trust region
+        as growth. Instead of discarding the ENTIRE candidate the moment its
+        aggregate KL exceeds kl_thr, binary-search the fraction of the
+        candidate's changes to actually apply (saliency-ranked, safest first)
+        so a handful of risky flips doesn't force reverting changes that were
+        well within budget on their own.
+        Returns (z_final, kl, swap_ok) — swap_ok is True iff any fraction > 0
+        of the candidate was applied.
+        """
+        frac = 1.0
+        min_frac = 0.05
+        last_ok_z, last_ok_kl, last_ok_frac = None, None, 0.0
+        for _ in range(8):
+            z_cand = self._select_z_partial(admm_state, sp, frac)
+            kl = self._compute_kl_with_z(model, cal_batch, z_cand, admm_state)
+            if dist.is_initialized():
+                _kl_t = torch.tensor(kl, dtype=torch.float64,
+                                     device=next(model.parameters()).device)
+                dist.all_reduce(_kl_t, op=dist.ReduceOp.AVG)
+                kl = _kl_t.item()
+            ok = kl <= kl_thr
+            logging.info(f"  TR-z swap@{sp:.4f} frac={frac:.3f}: KL={kl:.5f} {'✓' if ok else '✗'}")
+            if ok:
+                last_ok_z, last_ok_kl, last_ok_frac = z_cand, kl, frac
+                break
+            del z_cand
+            torch.cuda.empty_cache()
+            frac /= 2.0
+            if frac < min_frac:
+                break
+
+        if last_ok_z is not None:
+            logging.info(f"  TR-z swap@{sp:.4f}: applied frac={last_ok_frac:.3f} of candidate changes")
+            return last_ok_z, last_ok_kl, True
+        z_final = {pid: info['z_prev'].to(info['w'].dtype) for pid, info in admm_state.items()}
+        return z_final, kl, False
 
     def _compute_global_tr_z(self, model, cal_batch):
         """GMP-TR-style search: try prev_delta, double on accept, halve on reject."""
@@ -366,6 +541,7 @@ class ADMMTrainer(Trainer):
         kl_thr      = args.admm_tr_kl_threshold
         max_iters   = getattr(args, 'admm_tr_max_iters', 8)
         min_delta   = getattr(args, 'admm_tr_delta_min', 1e-3)
+        gate_at_target = getattr(args, 'admm_tr_gate_at_target', True)
 
         admm_state = self._collect_admm_projection_centers()
         if not admm_state:
@@ -374,18 +550,35 @@ class ADMMTrainer(Trainer):
         current_sp = self._tr_z_sp
         delta      = self._tr_delta
 
-        # Already at target — just project to final sparsity
+        # Already at target sparsity. Either KL-gate further mask reselection (same
+        # swap/freeze logic as a failed growth attempt below), or — if gating is
+        # disabled — reselect unconditionally every interval (the old behavior,
+        # which can churn/oscillate the mask with no trust-region validation once
+        # the sparsity target is reached).
         if current_sp >= final_sp - 1e-4:
-            thr = self._find_global_threshold(admm_state, final_sp)
-            return self._make_z_from_threshold(admm_state, thr)
+            if not gate_at_target:
+                return self._select_z(admm_state, final_sp)
+            z_final, kl, ok = self._swap_or_freeze_z(model, cal_batch, admm_state, final_sp, kl_thr)
+            mask_nnz = sum((v != 0).sum().item() for v in z_final.values())
+            mask_total = sum(v.numel() for v in z_final.values())
+            self._tr_z_metrics_pending = {
+                'tr_z/sparsity': final_sp,
+                'tr_z/kl': kl,
+                'tr_z/delta': delta,
+                'tr_z/iters': 0,
+                'tr_z/outcome': 0.5 if ok else 0.0,  # swapped vs frozen
+                'tr_z/mask_nnz': int(mask_nnz),
+                'tr_z/mask_total': int(mask_total),
+                'tr_z/mask_zeros': int(mask_total - mask_nnz),
+            }
+            return z_final
 
         accepted_z = None
         accepted_kl = float('nan')
         accepted_iters = 0
         for i in range(max_iters):
             try_sp = min(current_sp + delta, final_sp)
-            thr      = self._find_global_threshold(admm_state, try_sp)
-            z_cand   = self._make_z_from_threshold(admm_state, thr)
+            z_cand   = self._select_z(admm_state, try_sp)
             kl       = self._compute_kl_with_z(model, cal_batch, z_cand, admm_state)
             # Sync KL across ranks: each rank processes a different mini-batch in FSDP
             # data-parallel mode, so KL values diverge → ranks break at different
@@ -403,15 +596,30 @@ class ADMMTrainer(Trainer):
                 accepted_z     = z_cand
                 accepted_kl    = kl
                 self._tr_z_sp  = try_sp
-                self._tr_delta = min(delta * 2.0, final_sp)
+                # Cap growth at 10 percentage points per interval, matching
+                # GMP-TR (gmp_trainer.py's _tr_mask_update caps at 0.10) —
+                # capping at final_sp instead let delta double unbounded
+                # after a couple of accepts (e.g. straight to 0.2 toward a
+                # 0.5 target), overshoot the model's actual tolerance, and
+                # then freeze for good once rejected (observed repeatedly:
+                # sparsity stuck far below target with sparse_loss diverging).
+                self._tr_delta = min(delta * 2.0, 0.10)
                 break
             else:
+                # Rejected candidate's z tensors (one full-size copy per ADMM
+                # param) would otherwise stay referenced by `z_cand` for the
+                # rest of the loop, compounding across up to 8 iterations on
+                # top of FSDP's per-forward-pass unshard overhead — this was
+                # OOMing at 1.7B scale (confirmed via debug run). Drop it and
+                # release cached allocator blocks before the next iteration.
+                del z_cand
+                torch.cuda.empty_cache()
                 delta /= 2.0
                 if delta < min_delta:
                     break
 
         if accepted_z is not None:
-            mask_nnz = sum(v.sum().item() for v in accepted_z.values())
+            mask_nnz = sum((v != 0).sum().item() for v in accepted_z.values())
             mask_total = sum(v.numel() for v in accepted_z.values())
             self._tr_z_metrics_pending = {
                 'tr_z/sparsity': self._tr_z_sp,
@@ -437,24 +645,9 @@ class ADMMTrainer(Trainer):
         # class of bug fixed in final_projection). z_prev at t=0 is already the
         # unpruned initial split (see optimizers.py z0-init fix), so this also
         # correctly handles the very first call with no growth accepted yet.
-        thr = self._find_global_threshold(admm_state, current_sp)
-        z_swap = self._make_z_from_threshold(admm_state, thr)
-        swap_kl = self._compute_kl_with_z(model, cal_batch, z_swap, admm_state)
-        if dist.is_initialized():
-            _kl_t = torch.tensor(swap_kl, dtype=torch.float64,
-                                 device=next(model.parameters()).device)
-            dist.all_reduce(_kl_t, op=dist.ReduceOp.AVG)
-            swap_kl = _kl_t.item()
-        swap_ok = swap_kl <= kl_thr
-        logging.info(f"  TR-z swap@{current_sp:.4f}: KL={swap_kl:.5f} "
-                     f"{'✓ swapped' if swap_ok else '✗ frozen'}")
+        z_final, swap_kl, swap_ok = self._swap_or_freeze_z(model, cal_batch, admm_state, current_sp, kl_thr)
 
-        if swap_ok:
-            z_final = z_swap
-        else:
-            z_final = {pid: info['z_prev'].to(info['w'].dtype) for pid, info in admm_state.items()}
-
-        mask_nnz = sum(v.sum().item() for v in z_final.values())
+        mask_nnz = sum((v != 0).sum().item() for v in z_final.values())
         mask_total = sum(v.numel() for v in z_final.values())
         self._tr_z_metrics_pending = {
             'tr_z/sparsity': current_sp,
@@ -752,6 +945,12 @@ class ADMMTrainer(Trainer):
             )
             if self.is_world_process_zero():
                 logger.info(f"Created {self.optimizer.__class__.__name__} optimizer targeting {len(admm_param_list)} Linear weight tensors.")
+            # id(param) -> module name, so the optimizer's per-interval churn
+            # diagnostics can report WHICH layer is oscillating, not just how much.
+            self.optimizer._param_id_to_name = {
+                id(param): name for name, param in opt_model.named_parameters()
+                if name in self.admm_param_names
+            }
         return self.optimizer
 
     def create_optimizer_and_scheduler(self, num_training_steps: int):
@@ -985,7 +1184,11 @@ class ADMMTrainer(Trainer):
         
         if sparse_output is not None:
             dense_output.metrics.update(sparse_output.metrics)
-        
+            dense_loss = dense_output.metrics.get(f"{metric_key_prefix}_loss")
+            sparse_loss = dense_output.metrics.get(f"{metric_key_prefix}_sparse_loss")
+            if dense_loss is not None and sparse_loss is not None and dense_loss != 0:
+                dense_output.metrics[f"{metric_key_prefix}_sparse_loss_ratio"] = sparse_loss / dense_loss
+
         return dense_output
 
     def _evaluation_loop_impl(
@@ -1674,6 +1877,12 @@ class ADMMTrainer(Trainer):
                                 'ADMM_mask_hamming_initial': mask_metrics["initial_hamming"],
                                 'ADMM_mask_iou_step': mask_metrics["step_iou"],
                                 'ADMM_mask_iou_initial': mask_metrics["initial_iou"],
+                                'ADMM_mask_revived_frac': mask_metrics["revived_frac"],
+                                'ADMM_mask_newly_pruned_frac': mask_metrics["newly_pruned_frac"],
+                                'ADMM_mask_revived_cycle2_frac': mask_metrics["revived_cycle2_frac"],
+                                'ADMM_mask_pruned_cycle2_frac': mask_metrics["pruned_cycle2_frac"],
+                                'ADMM_mask_revived_w2_ratio': mask_metrics["revived_w2_ratio"],
+                                'ADMM_mask_pruned_w2_ratio': mask_metrics["pruned_w2_ratio"],
                                 'ADMM_avg_lmda': lmda_stats["avg_lmda"],
                                 'ADMM_min_lmda': lmda_stats["min_lmda"],
                                 'ADMM_max_lmda': lmda_stats["max_lmda"]
@@ -1686,6 +1895,8 @@ class ADMMTrainer(Trainer):
                     if getattr(self, '_tr_z_metrics_pending', None) and self.is_world_process_zero():
                         self.log(self._tr_z_metrics_pending)
                         self._tr_z_metrics_pending = None
+                    if hasattr(unwrapped_optimizer, 'get_grad_norm_breakdown') and self.is_world_process_zero():
+                        self.log(unwrapped_optimizer.get_grad_norm_breakdown())
                     self.control = self.callback_handler.on_optimizer_step(args, self.state, self.control)
 
                     optimizer_was_run = not self.accelerator.optimizer_step_was_skipped
