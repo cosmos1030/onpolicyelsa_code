@@ -2,6 +2,7 @@
 Entry point for ADMM pruning with on-policy KD loss.
 Mirrors globalprune_admm in prune.py but uses GKDADMMTrainer.
 """
+import os
 import torch
 import torch.distributed as dist
 from pathlib import Path
@@ -15,8 +16,8 @@ from .trainer import ADMMTrainer
 
 from .gkd_admm_trainer import (
     GKDADMMTrainer,
-    MathPromptDataset, collate_prompts,
-    MathCotKDDataset, collate_cot_kd,
+    MixedPromptDataset, collate_prompts,
+    MixedTextDataset, collate_cot_kd,
 )
 from .data import get_dataset
 from .prune import AdmmTrainingArguments  # reuse same args dataclass
@@ -39,30 +40,36 @@ def globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device,
     model_name_part = FLAGS.model.split('/')[-1]
     kd_data_tag = Path(FLAGS.kd_data_path).stem if FLAGS.kd_data_path else "unknown"
     kd_lambda_tag = f"_kdlam{FLAGS.kd_lambda}" if getattr(FLAGS, 'kd_lambda', None) else ""
+    # second-resolution timestamp alone collided between two jobs that
+    # happened to start in the same wall-clock second (different nodes,
+    # near-simultaneous sbatch submission) — both wrote to the identical
+    # output_dir and silently overwrote each other's checkpoint. SLURM_JOB_ID
+    # is unique cluster-wide; PID is the fallback for non-SLURM runs.
+    _unique_tag = os.environ.get("SLURM_JOB_ID") or str(os.getpid())
     run_name = (
         f"{model_name_part}_pruned{FLAGS.sparsity_ratio}"
-        f"_kd_{kd_data_tag}_admm_lr{FLAGS.admm_lr}_lmda{FLAGS.admm_lmda}{kd_lambda_tag}"
-        f"_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        f"_kd_{kd_data_tag}_admm_lr{FLAGS.lr}_lmda{FLAGS.admm_lmda}{kd_lambda_tag}"
+        f"_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{_unique_tag}"
     )
     if FLAGS.admm_save_path:
         output_dir = Path(FLAGS.admm_save_path) / run_name
         output_dir.mkdir(parents=True, exist_ok=True)
         output_dir_str = str(output_dir)
     else:
-        output_dir_str = f"./kd_admm_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        output_dir_str = f"./kd_admm_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{_unique_tag}"
 
     training_args = AdmmTrainingArguments(
         wandb=FLAGS.wandb,
         run_name=run_name,
         output_dir=output_dir_str,
         num_train_epochs=FLAGS.admm_epochs,
-        max_steps=FLAGS.admm_steps if FLAGS.admm_steps > 0 else -1,
+        max_steps=FLAGS.steps if FLAGS.steps > 0 else -1,
         per_device_train_batch_size=FLAGS.admm_batch_size,
         per_device_eval_batch_size=1,
         gradient_accumulation_steps=FLAGS.admm_gradient_accumulation_steps,
-        learning_rate=FLAGS.admm_lr,
-        lr_scheduler_type=FLAGS.admm_lr_scheduler,
-        warmup_steps=FLAGS.admm_warmup_steps,
+        learning_rate=FLAGS.lr,
+        lr_scheduler_type=FLAGS.lr_scheduler,
+        warmup_steps=FLAGS.lr_warmup_steps,
         weight_decay=FLAGS.admm_weight_decay,
         gradient_checkpointing=FLAGS.admm_gradient_checkpointing,
         fp16=(FLAGS.admm_precision == 'fp16'),
@@ -103,7 +110,9 @@ def globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device,
         admm_tr_init_delta=getattr(FLAGS, 'admm_tr_init_delta', 0.05),
         admm_tr_delta_min=getattr(FLAGS, 'admm_tr_delta_min', 1e-3),
         admm_z_schedule_mode=getattr(FLAGS, 'admm_z_schedule_mode', 'trust_region'),
+        admm_z_layerwise=getattr(FLAGS, 'admm_z_layerwise', False),
         admm_cubic_steps=getattr(FLAGS, 'admm_cubic_steps', 15),
+        admm_tr_gate_at_target=getattr(FLAGS, 'admm_tr_gate_at_target', True),
     )
 
     if tokenizer.pad_token is None:
@@ -130,10 +139,10 @@ def globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device,
 
     if use_random_cot_ntp:
         # NTP: random 2048-token windows (no prompt masking, all tokens contribute)
-        # KD prompts: separate MathPromptDataset
+        # KD prompts: separate MixedPromptDataset
         seqlen = getattr(FLAGS, "seqlen", 2048)
         nsamples = FLAGS.kd_nsamples if FLAGS.kd_nsamples > 0 else 4096
-        ntp_dataset = getattr(FLAGS, "kd_ntp_dataset", "math_cot")
+        ntp_dataset = getattr(FLAGS, "kd_ntp_dataset", "mixed_cot")
         ntp_data_path = FLAGS.data_path if ntp_dataset == "c4" else FLAGS.kd_data_path
         if local_rank == 0:
             logging.info(f"Loading random {ntp_dataset} NTP dataset ({nsamples} samples, seqlen={seqlen})")
@@ -156,7 +165,7 @@ def globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device,
             data_path=ntp_data_path,
         )
         data_collator = default_data_collator
-        prompt_dataset = MathPromptDataset(
+        prompt_dataset = MixedPromptDataset(
             jsonl_path=FLAGS.kd_data_path,
             tokenizer=tokenizer,
             max_prompt_len=FLAGS.kd_max_prompt_len,
@@ -169,7 +178,7 @@ def globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device,
         if local_rank == 0:
             logging.info(f"Loading CoT KD dataset from {FLAGS.kd_data_path}")
         _append_eos = getattr(FLAGS, "cot_append_eos", True)
-        train_dataset = MathCotKDDataset(
+        train_dataset = MixedTextDataset(
             jsonl_path=FLAGS.kd_data_path,
             tokenizer=tokenizer,
             max_len=getattr(FLAGS, "seqlen", 2048),
@@ -179,7 +188,7 @@ def globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device,
             append_eos=_append_eos,
         )
         data_collator = collate_cot_kd(tokenizer.pad_token_id)
-        valid_inputs = MathCotKDDataset(
+        valid_inputs = MixedTextDataset(
             jsonl_path=FLAGS.kd_data_path,
             tokenizer=tokenizer,
             max_len=getattr(FLAGS, "seqlen", 2048),
@@ -191,7 +200,7 @@ def globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device,
     else:
         if local_rank == 0:
             logging.info(f"Loading math prompts from {FLAGS.kd_data_path}")
-        train_dataset = MathPromptDataset(
+        train_dataset = MixedPromptDataset(
             jsonl_path=FLAGS.kd_data_path,
             tokenizer=tokenizer,
             max_prompt_len=FLAGS.kd_max_prompt_len,
@@ -199,7 +208,7 @@ def globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device,
             seed=FLAGS.seed,
         )
         data_collator = collate_prompts(tokenizer.pad_token_id)
-        valid_inputs = MathPromptDataset(
+        valid_inputs = MixedPromptDataset(
             jsonl_path=FLAGS.kd_data_path,
             tokenizer=tokenizer,
             max_prompt_len=FLAGS.kd_max_prompt_len,
@@ -213,7 +222,7 @@ def globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device,
     _opd_vllm_engine = prebuilt_opd_vllm_engine
     _opd_vllm_params = prebuilt_opd_vllm_params
     if opd_enabled:
-        opd_prompt_dataset = MathPromptDataset(
+        opd_prompt_dataset = MixedPromptDataset(
             jsonl_path=FLAGS.kd_data_path,
             tokenizer=tokenizer,
             max_prompt_len=opd_max_prompt_len,
@@ -292,6 +301,18 @@ def globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device,
     )
 
     trainer.train()
+
+    if training_args.local_rank == 0:
+        # Gradient fine-tuning: ~6*N*tokens (forward+backward+update), vs ~2*N*tokens
+        # for forward-only one-shot calibration (ALPS/SparseGPT/Wanda/SparseLLM).
+        n_params = sum(p.numel() for p in model.parameters())
+        global_batch = (FLAGS.admm_batch_size * FLAGS.admm_gradient_accumulation_steps
+                        * max(training_args.world_size, 1))
+        n_tokens = trainer.state.global_step * global_batch * FLAGS.seqlen
+        flops = 6 * n_params * n_tokens
+        logging.info(f"Training FLOPs: {flops:.3e} ({n_params} params x {n_tokens} tokens)")
+        if FLAGS.wandb and has_wandb:
+            wandb.log({"flops": flops})
 
     # Free vLLM engine from GPU before saving/eval (lighteval needs the memory)
     import gc as _gc
