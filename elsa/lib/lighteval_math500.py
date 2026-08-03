@@ -72,6 +72,17 @@ def run_lighteval_math500(
     print(f"[lighteval_math500] Running: {' '.join(cmd)}", flush=True)
 
     env = os.environ.copy()
+    # Strip torchrun/torch-elastic distributed env vars so vLLM's own internal
+    # process group (init_method="env://") doesn't inherit a stale
+    # RANK/WORLD_SIZE/MASTER_ADDR/MASTER_PORT from the parent training
+    # process — see lighteval_bench.py for the full rationale.
+    for _var in (
+        "RANK", "LOCAL_RANK", "WORLD_SIZE", "LOCAL_WORLD_SIZE",
+        "GROUP_RANK", "GROUP_WORLD_SIZE", "ROLE_RANK", "ROLE_WORLD_SIZE",
+        "MASTER_ADDR", "MASTER_PORT", "TORCHELASTIC_RUN_ID",
+        "TORCHELASTIC_USE_AGENT_STORE", "PET_NPROC_PER_NODE",
+    ):
+        env.pop(_var, None)
     # torchrun restricts CUDA_VISIBLE_DEVICES to one GPU per rank; expose all for vLLM TP
     env["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in range(tensor_parallel_size))
     # Allow dataset download if not cached; model loading uses local cache only

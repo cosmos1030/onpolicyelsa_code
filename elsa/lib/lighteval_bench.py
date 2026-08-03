@@ -1,6 +1,11 @@
 """Run 5-benchmark eval suite via lighteval+vLLM subprocess.
 
-Benchmarks: MATH-500, GPQA-Diamond, IFEval, MMLU-Redux, LiveCodeBench.
+Benchmarks: MATH-500, GPQA-Diamond, IFEval, LiveCodeBench, GSM8K.
+(MMLU-Redux was dropped: Qwen3's default "thinking mode" makes the model emit
+a `<think>` opening token first, which the task's generation_size=1 cuts off
+before any answer letter appears, so every subset scored 0 — not worth the
+complexity of forcing enable_thinking=False through lighteval's chat template
+plumbing for a non-reasoning probe.)
 Results are logged to the active wandb run if present.
 """
 from __future__ import annotations
@@ -40,8 +45,23 @@ def _run_lighteval(model_path: str, task_str: str, out_dir: str,
         cmd += ["--max-samples", str(max_samples)]
     if extra_args:
         cmd += extra_args
-    print(f"[lighteval_5bench] Running: {' '.join(cmd)}", flush=True)
+    print(f"[lighteval_bench] Running: {' '.join(cmd)}", flush=True)
     env = os.environ.copy()
+    # Strip the torchrun/torch-elastic distributed env vars inherited from the
+    # parent training process. vLLM spins up its own internal process group
+    # (even at tensor_parallel_size=1) via init_method="env://"; if stale
+    # RANK/WORLD_SIZE/MASTER_ADDR/MASTER_PORT from the parent torchrun leak
+    # through, vLLM's rendezvous either expects peers that never show up or
+    # collides with the still-open parent port, hanging until the 600s x2
+    # TCPStore timeout. Confirmed reproducing identically across 4 different
+    # nodes (n31/n10/n52/n59) and both TP=1 and TP=4 configs.
+    for _var in (
+        "RANK", "LOCAL_RANK", "WORLD_SIZE", "LOCAL_WORLD_SIZE",
+        "GROUP_RANK", "GROUP_WORLD_SIZE", "ROLE_RANK", "ROLE_WORLD_SIZE",
+        "MASTER_ADDR", "MASTER_PORT", "TORCHELASTIC_RUN_ID",
+        "TORCHELASTIC_USE_AGENT_STORE", "PET_NPROC_PER_NODE",
+    ):
+        env.pop(_var, None)
     env.setdefault("VLLM_HOST_IP", "127.0.0.1")
     env["HF_DATASETS_OFFLINE"] = "0"
     env["TRANSFORMERS_OFFLINE"] = "0"
@@ -61,7 +81,7 @@ def _parse_results(out_dir: str) -> dict:
         if f.startswith("results_") and f.endswith(".json")
     )
     if not files:
-        logger.warning(f"[lighteval_5bench] no results JSON in {out_dir}")
+        logger.warning(f"[lighteval_bench] no results JSON in {out_dir}")
         return {}
     with open(files[-1]) as f:
         return json.load(f).get("results", {})
@@ -112,11 +132,11 @@ def _compute_token_stats(out_dir: str, bench_name: str, max_new_tokens: int,
         }
         return stats
     except Exception as e:
-        logger.warning(f"[lighteval_5bench] token stats failed for {bench_name}: {e}")
+        logger.warning(f"[lighteval_bench] token stats failed for {bench_name}: {e}")
         return {}
 
 
-def run_lighteval_5bench(
+def run_lighteval_bench(
     model_path: str,
     out_base: str,
     gpu_util: float = 0.9,
@@ -145,6 +165,8 @@ def run_lighteval_5bench(
          ["prompt_level_strict_acc"]),
         ("lcb",     "lighteval|lcb:codegeneration|0|0", 8192, 8192, max_samples,
          ["codegen_pass@1:16", "pass@1"]),
+        ("gsm8k",   "lighteval|gsm8k|0|0",              2048, 4096, max_samples,
+         ["extractive_match", "acc"]),
     ]
 
     metrics = {}
@@ -154,7 +176,7 @@ def run_lighteval_5bench(
         rc, elapsed = _run_lighteval(model_path, task_str, out_dir, max_tok, gpu_util, ms, ctx_len, tp_size=tp_size)
         metrics[f"eval_time_sec/{name}"] = elapsed
         if rc != 0:
-            logger.warning(f"[lighteval_5bench] {name} exited with code {rc}")
+            logger.warning(f"[lighteval_bench] {name} exited with code {rc}")
             continue
         r = _parse_results(out_dir)
 
@@ -173,11 +195,15 @@ def run_lighteval_5bench(
             t = r.get("lighteval|lcb:codegeneration|0", {})
             v = t.get("codegen_pass@1:16", t.get("pass@1"))
             metrics["lighteval/lcb"] = float(v) if v is not None else float("nan")
+        elif name == "gsm8k":
+            t = r.get("lighteval|gsm8k|0", {})
+            v = t.get("extractive_match", t.get("acc"))
+            metrics["lighteval/gsm8k"] = float(v) if v is not None else float("nan")
 
         metrics.update(_compute_token_stats(out_dir, name, max_tok, correct_keys))
 
     for k, v in metrics.items():
-        logger.info(f"[lighteval_5bench] {k}: {v:.4f}")
+        logger.info(f"[lighteval_bench] {k}: {v:.4f}")
 
     if log_to_wandb:
         try:
