@@ -1338,10 +1338,25 @@ class GKDADMMTrainer(ADMMTrainer):
         )
 
     def _kl_loss(self, s_logits, t_logits, attention_mask, prompt_len, gen_len):
-        """Reverse KL(student || teacher) on generated tokens. Returns (loss, opd_metrics)."""
-        s_logits_gen = s_logits[:, prompt_len - 1: -1, :]   # (B, gen_len, V)
-        t_logits_gen = t_logits[:, prompt_len - 1: -1, :]
-        gen_mask = attention_mask[:, prompt_len: prompt_len + gen_len].float()
+        """Reverse KL(student || teacher) on generated tokens. Returns (loss, opd_metrics).
+
+        prompt_len==0 (e.g. FineWeb-Edu pretrain samples, which have no masked
+        prompt prefix — the whole sequence is "answer") used to make the
+        `prompt_len - 1 : -1` slice literally empty (Python's `-1:-1` is
+        always zero-length, not "from -1 to the end"), crashing downstream on
+        a size-0 vs. size-gen_len mismatch. Position 0 has no preceding
+        logit to predict it from regardless (standard autoregressive
+        next-token shift), so when prompt_len==0 the valid generation region
+        starts at logit index 0 (predicting token index 1) same as any other
+        next-token loss — clamp the slice start at 0 and derive gen_mask's
+        length from the actual slice instead of the passed-in gen_len, which
+        also makes this robust to any other prompt_len/gen_len mismatch.
+        """
+        start = max(prompt_len - 1, 0)
+        s_logits_gen = s_logits[:, start: -1, :]   # (B, L, V)
+        t_logits_gen = t_logits[:, start: -1, :]
+        mask_start = start + 1
+        gen_mask = attention_mask[:, mask_start: mask_start + s_logits_gen.size(1)].float()
         opd_metrics = {}
 
         if self.kd_topk > 0:
