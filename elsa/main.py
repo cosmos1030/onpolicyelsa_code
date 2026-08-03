@@ -551,33 +551,31 @@ def main(argv):
         _uses_fsdp = getattr(FLAGS, 'do_gmp', False) or getattr(FLAGS, 'admm_use_fsdp', False) or getattr(FLAGS, 'gmp_use_fsdp', False)
         _fsdp_trainer_saved = _uses_fsdp and getattr(FLAGS, 'save_model', False)
         if _fsdp_trainer_saved:
-            # Shard zero-shot eval across all ranks WHILE the process group is still
-            # alive (need it for broadcast/gather) — otherwise only rank 0 would do
-            # this work and the other world_size-1 GPUs would sit idle. `model` here
-            # is still FSDP-wrapped (params flattened/sharded in-place), so each rank
-            # reloads its own fresh, non-sharded copy from the checkpoint we just saved
-            # rather than evaluating its local ~1/world_size parameter shard.
-            _path_list = [saved_pruned_model_path if local_rank == 0 else None]
-            dist.broadcast_object_list(_path_list, src=0)
-            _eval_path = _path_list[0]
-            if getattr(FLAGS, 'eval_zero_shot', False) and _eval_path:
-                del model
-                import gc as _gc; _gc.collect(); torch.cuda.empty_cache()
-                _eval_model = get_llm(_eval_path, FLAGS.seqlen)
-                _eval_model.to(device)
-                _eval_model.eval()
-                _all_tasks = ["boolq", "rte", "hellaswag", "winogrande", "arc_easy",
-                              "arc_challenge", "openbookqa", "piqa", "race"]
-                _my_tasks = [t for i, t in enumerate(_all_tasks) if i % world_size == local_rank]
-                logging.info(f"[rank {local_rank}] FSDP zero-shot shard: {_my_tasks or '(none)'}")
-                _my_results = eval_zero_shot(FLAGS, FLAGS.model, _eval_model, tokenizer, _my_tasks, 0, False) if _my_tasks else {}
-                _gathered = [None] * world_size
-                dist.all_gather_object(_gathered, _my_results)
+            # Zero-shot eval used to be sharded across ranks (each rank running a
+            # subset of the 9 tasks, then dist.all_gather_object to combine) — but
+            # task sizes are wildly uneven (hellaswag/race have tens of thousands of
+            # loglikelihood requests vs. a few hundred for boolq/rte), so one rank
+            # routinely took far longer than the others. The idle ranks then sat in
+            # all_gather_object past NCCL's watchdog timeout and the whole job died
+            # (observed repeatedly, on 6+ different nodes across both 4B and 8B —
+            # not a bad-node issue, a structural one). Only rank 0 now runs ALL 9
+            # tasks sequentially; other ranks poll a sentinel file instead of
+            # blocking in a collective, so no NCCL timeout is possible regardless of
+            # how long the eval takes.
+            _sentinel = None
+            if getattr(FLAGS, 'eval_zero_shot', False) and saved_pruned_model_path:
+                _sentinel = os.path.join(saved_pruned_model_path, ".zeroshot_done")
                 if local_rank == 0:
-                    _zs_results = {}
-                    for _d in _gathered:
-                        _zs_results.update(_d)
-                    logging.info(f"[FSDP eval] zero-shot results (sharded across {world_size} GPUs): {_zs_results}")
+                    del model
+                    import gc as _gc; _gc.collect(); torch.cuda.empty_cache()
+                    _eval_model = get_llm(saved_pruned_model_path, FLAGS.seqlen)
+                    _eval_model.to(device)
+                    _eval_model.eval()
+                    _all_tasks = ["boolq", "rte", "hellaswag", "winogrande", "arc_easy",
+                                  "arc_challenge", "openbookqa", "piqa", "race"]
+                    logging.info(f"[rank 0] Running full zero-shot suite (no sharding): {_all_tasks}")
+                    _zs_results = eval_zero_shot(FLAGS, FLAGS.model, _eval_model, tokenizer, _all_tasks, 0, False)
+                    logging.info(f"[FSDP eval] zero-shot results: {_zs_results}")
                     if FLAGS.wandb:
                         for task_name, metrics in _zs_results.items():
                             try:
@@ -589,8 +587,14 @@ def main(argv):
                                     wandb.log({f"global_admm/{task_name}_stderr": stderr})
                             except Exception as log_e:
                                 logging.warning(f"Could not log zero-shot metric for {task_name}: {log_e}")
-                del _eval_model
-                _gc.collect(); torch.cuda.empty_cache()
+                    del _eval_model
+                    _gc.collect(); torch.cuda.empty_cache()
+                    with open(_sentinel, "w") as _f:
+                        _f.write("done")
+                else:
+                    logging.info(f"[rank {local_rank}] waiting for rank 0 zero-shot eval to finish...")
+                    while not os.path.exists(_sentinel):
+                        time.sleep(5)
                 model = None
                 FLAGS.eval_zero_shot = False  # already handled above; skip the single-GPU path below
 
