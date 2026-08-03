@@ -461,7 +461,14 @@ class MixedTextDataset(Dataset):
         # synchronization without a blocking collective.
         if is_distributed:
             if not is_rank0:
-                for _attempt in range(60):
+                # A cold rank-0 build of the full 200k-sample set takes hours
+                # (confirmed: ~2.5h for this dataset) — 60 attempts * 2s (2
+                # min total) was nowhere near enough and made every other
+                # rank give up and crash the instant a cache-key change (e.g.
+                # MIN_SAMPLE_LEN) forced a rebuild. Poll for up to 4 hours.
+                _max_wait_s = 4 * 3600
+                _poll_interval_s = 10
+                for _attempt in range(_max_wait_s // _poll_interval_s):
                     if os.path.exists(cache_path):
                         try:
                             with open(cache_path, "rb") as f:
@@ -469,9 +476,10 @@ class MixedTextDataset(Dataset):
                             break
                         except (EOFError, pickle.UnpicklingError):
                             pass
-                    time.sleep(2)
+                    time.sleep(_poll_interval_s)
                 if self.samples is None:
-                    raise RuntimeError(f"MixedTextDataset: cache {cache_path} not visible after rank 0 build")
+                    raise RuntimeError(f"MixedTextDataset: cache {cache_path} not visible after rank 0 build "
+                                        f"(waited {_max_wait_s}s)")
                 logging.info(f"MixedTextDataset: loaded {len(self.samples)} samples from cache {cache_path} (non-rank0)")
 
     def __len__(self):
