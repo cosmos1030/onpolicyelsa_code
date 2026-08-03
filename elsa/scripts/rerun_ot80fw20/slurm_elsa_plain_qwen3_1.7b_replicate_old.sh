@@ -99,8 +99,8 @@ $TORCHRUN --nproc_per_node=1 --master_port=${MASTER_PORT} main.py \
     --save_model=true \
     --admm_save_path=/home1/doyoonkim/projects/elsa/models \
     --eval_math500=false \
-    --eval_zero_shot=false \
-    --eval_full_bench=false \
+    --eval_zero_shot=true \
+    --eval_full_bench=true \
     --wandb=true \
     --wandb_project=reasoning_qwen3_1.7b \
     --seed=42 \
