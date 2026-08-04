@@ -42,14 +42,12 @@ projects/
 conda create -n rac python=3.10
 conda activate rac
 pip install -r elsa/requirements.txt
+pip install flash-attn==2.8.3 --no-build-isolation
 ```
 
-> **Note:** vLLM is required for MATH-500 evaluation. Install separately if not in requirements:
-> ```bash
-> pip install vllm
-> ```
+> `elsa/requirements.txt` is a full `pip freeze` of the actual working environment (torch 2.7.1, transformers 4.56.2, vllm 0.10.0, trl 0.21.0, lighteval 0.12.0 — vLLM/lighteval are already included, no separate install needed). The conda env name **must stay `rac`** if you want to run the SLURM scripts under `elsa/scripts/` unmodified — they hardcode `/home1/.../miniconda3/envs/rac/bin/...` paths; otherwise update those paths at the top of each script for your own machine.
 
-### HuggingFace Token (for model upload)
+### HuggingFace Token (for model upload / gated model downloads)
 
 ```bash
 echo "hf_YOUR_TOKEN_HERE" > ~/.hf_token
@@ -63,6 +61,19 @@ Scripts read `~/.hf_token` automatically — never hardcode tokens in scripts.
 ```bash
 wandb login
 ```
+Alternatively, scripts read `WANDB_API_KEY` out of `~/.bashrc` (`grep WANDB_API_KEY ~/.bashrc`) — add `export WANDB_API_KEY=...` there if you'd rather not run `wandb login` interactively (e.g. on a headless SLURM node).
+
+### Other environment variables scripts rely on
+
+| Variable | Purpose |
+|---|---|
+| `HF_HOME` | HuggingFace cache dir (models/datasets) — point at fast local/scratch storage. |
+| `HF_DATASETS_OFFLINE` / `TRANSFORMERS_OFFLINE` | `1` once everything needed is cached locally (avoids hub lookups mid-training); `0` when you need to download or push. |
+| `VLLM_HOST_IP` | Set to `127.0.0.1` — vLLM's IP auto-detection fails on some cluster nodes. |
+| `TOKENIZERS_PARALLELISM` | Set to `false` to silence tokenizer fork warnings under `torchrun`. |
+| `PYTORCH_CUDA_ALLOC_CONF` | Set to `expandable_segments:True` — reduces fragmentation-driven OOMs on long ADMM runs. |
+
+On a new SLURM cluster, also update each script's `--output=/local-data/...` scratch path and `--exclude=` node list — both are specific to the cluster they were written on.
 
 ---
 
@@ -217,6 +228,19 @@ done
 | SparseGPT prompt | 30–70% | `RAC/open-r1-main/sweep_configs/qwen3_0.6_prompt_sparsity.yaml` |
 
 Sweep grid: `admm_lr ∈ {5e-6, 1e-5, 5e-5}` × `admm_lmda ∈ {1e-3, 5e-3, 1e-2}` = 9 configs.
+
+---
+
+## Current Active Workflow (OT80/FW20 rerun)
+
+The sections above describe the original paper setup (`math_220k_cot.jsonl`, single-GPU 0.6B sweeps). The actively-maintained scripts for larger models (Qwen3-1.7B/4B/8B) and the corrected mixed dataset live elsewhere:
+
+- **`elsa/scripts/rerun_ot80fw20/`** — reference SLURM scripts (train, KD, dependency-chained train→eval) for SparseGPT/ALPS/SparseLLM/ELSA on Qwen3-1.7B/4B/8B, using `elsa/data/ot3_fineweb_200k_qwen3.jsonl` (`--dataset=mixed_cot`) instead of `math_220k_cot.jsonl`.
+- **`elsa/scripts/build_ot3_fineweb_dataset.py`** — builds that mixed dataset (OpenThoughts3 CoT 80% + FineWeb-Edu 20%).
+- **`elsa/scripts/eval_full.py`** — standalone single-GPU eval (PPL + zero-shot + 5-benchmark reasoning suite), meant to run as a separate job from training (see `elsa/README.md` for why).
+- **KD flags**: use `--do_offpolicy_kd_admm=true` (dataset-CoT KD, no generation) for standard KD, **not** `--do_kd_admm` (that's a different, on-policy/generation-based path). Set `--kd_topk=0` (full vocab) — the top-k path has a known bug where it doesn't renormalize over the truncated support, producing an invalid (sometimes negative) loss.
+
+See `elsa/README.md` for the full flag reference and env var setup used by these scripts.
 
 ---
 
