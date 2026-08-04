@@ -1279,7 +1279,12 @@ def globalprune_gmp(
     use_kd         = (teacher_model is not None) and (kd_lambda > 0.0)
     use_hidden     = (teacher_model is not None) and (hidden_lambda > 0.0)
     use_teacher_gen_kd_flag = getattr(FLAGS, 'gmp_teacher_gen_kd', False)
-    use_onpolicy   = (teacher_model is not None) and (onpolicy_lambda > 0.0) and not use_teacher_gen_kd_flag
+    # Teacher-gen KD (forward KL, prompts pre-generated once from data_path)
+    # and on-policy/OPD (reverse KL, live student rollouts from gmp_prompt_path)
+    # draw from independently-configurable prompt sources and don't share any
+    # generation state, so they can run together -- both are weighted by
+    # gmp_onpolicy_kd_lambda (same knob, applied to each loss term separately).
+    use_onpolicy   = (teacher_model is not None) and (onpolicy_lambda > 0.0)
     use_anchor     = (teacher_model is not None) and (anchor_lambda > 0.0)
     use_teacher_seqkd = (teacher_model is not None) and teacher_seqkd
 
