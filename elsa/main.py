@@ -1122,8 +1122,9 @@ if __name__ == '__main__':
 
     # OPD (On-Policy Distillation inside ADMM with z-masked rollouts)
     flags.DEFINE_bool('opd_enabled', False, 'Enable OPD: generate z-masked rollouts for backward KL inside ADMM training.')
-    flags.DEFINE_float('opd_lambda', 0.0, 'OPD loss weight. If >0: NTP/KD/OPD each get opd_lambda/3.')
+    flags.DEFINE_float('opd_lambda', 0.0, 'OPD loss weight. In the NTP+KD+OPD hybrid path, NTP/KD/OPD each get opd_lambda/3; in the KD-only offpolicy path (do_offpolicy_kd_admm), it is OPD\'s own weight applied directly (paired with kd_lambda for KD\'s weight, no NTP term).')
     flags.DEFINE_integer('opd_vllm_max_tokens', 256, 'Max tokens per OPD rollout generation.')
+    flags.DEFINE_string('opd_prompt_path', '', 'Prompt source for OPD on-policy rollouts. Defaults to kd_data_path if empty -- set this to a disjoint file so OPD never rolls out on a prompt the KD loss is also training on.')
     flags.DEFINE_float('opd_vllm_gpu_mem', 0.25, 'GPU memory fraction for OPD vLLM engine (single-GPU mode).')
 
     # On-policy distillation (legacy post-ADMM phase)

@@ -1019,12 +1019,26 @@ class GKDADMMTrainer(ADMMTrainer):
         return super().training_step(model, updated_inputs, num_items_in_batch)
 
     def _training_step_offpolicy_kd(self, model, inputs, num_items_in_batch=None):
-        """Off-policy KD: student+teacher forward on dataset CoT sequences. No vLLM, no buffer."""
+        """Off-policy KD: student+teacher forward on dataset CoT sequences. No vLLM, no buffer.
+
+        OPD (on-policy, z-masked rollout) pool refill/pop lives here too --
+        _compute_loss_offpolicy_kd reads self._opd_inputs the same way
+        _compute_loss_hybrid's OPD branch does, but this path has no NTP term
+        (kd_lambda/opd_lambda each apply directly, not divided by 3).
+        """
         cot_inputs = {
             "input_ids": inputs["input_ids"],
             "attention_mask": inputs["attention_mask"],
             "labels": inputs["labels"],
         }
+        if self.opd_enabled and self._opd_vllm_engine is not None:
+            _admm_interval = self.args.admm_interval
+            _opt_step = getattr(self._get_admm_optimizer(), 'current_step', self.state.global_step)
+            if _opt_step % _admm_interval == 0 and _opt_step != self._opd_last_refill_step:
+                self._generate_opd_pool(model)
+                self._opd_last_refill_step = _opt_step
+            _device = next(model.parameters()).device
+            self._opd_inputs = self._pop_opd_inputs(_device)
         return super().training_step(model, cot_inputs, num_items_in_batch)
 
     def _training_step_hybrid(self, model, inputs, num_items_in_batch=None):
@@ -1190,9 +1204,22 @@ class GKDADMMTrainer(ADMMTrainer):
             student_out.logits, teacher_out.logits,
             attention_mask, prompt_len, gen_len,
         )
-        loss = self.kd_lambda * kd_loss
         log_dict = {"train/offpolicy_kd_loss": kd_loss.item()}
         log_dict.update({k: v.item() for k, v in opd_metrics.items()})
+
+        # KD(dataset, reverse-KL-ish per _kl_loss) + OPD (on-policy, z-masked
+        # rollout, reverse KL) -- no NTP term here (unlike _compute_loss_hybrid's
+        # OPD branch, which always mixes in ntp_loss at opd_lambda/3). kd_lambda
+        # and opd_lambda are each used directly as that loss term's own weight
+        # (e.g. 0.5/0.5), not divided by 3.
+        if self.opd_enabled and self._opd_inputs is not None and self.opd_lambda > 0:
+            opd_loss, opd_bkwd_metrics = self._compute_opd_backward_kl(model)
+            loss = self.kd_lambda * kd_loss + self.opd_lambda * opd_loss
+            log_dict["train/opd_loss"] = opd_loss.item()
+            log_dict.update({f"opd/{k.split('/')[-1]}": v.item() for k, v in opd_bkwd_metrics.items()})
+        else:
+            loss = self.kd_lambda * kd_loss
+
         self.log(log_dict)
         return (loss, student_out) if return_outputs else loss
 

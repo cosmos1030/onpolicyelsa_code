@@ -222,15 +222,16 @@ def globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device,
     _opd_vllm_engine = prebuilt_opd_vllm_engine
     _opd_vllm_params = prebuilt_opd_vllm_params
     if opd_enabled:
+        _opd_prompt_path = getattr(FLAGS, 'opd_prompt_path', '') or FLAGS.kd_data_path
         opd_prompt_dataset = MixedPromptDataset(
-            jsonl_path=FLAGS.kd_data_path,
+            jsonl_path=_opd_prompt_path,
             tokenizer=tokenizer,
             max_prompt_len=opd_max_prompt_len,
             nsamples=None,
             seed=FLAGS.seed,
         )
         if local_rank == 0:
-            logging.info(f"OPD: prompt dataset {len(opd_prompt_dataset)} samples, "
+            logging.info(f"OPD: prompt dataset {len(opd_prompt_dataset)} samples from {_opd_prompt_path}, "
                          f"lambda={opd_lambda}, max_tokens={opd_vllm_max_tokens}")
 
         # Single-GPU (no FSDP): init vLLM here if no pre-built engine provided
