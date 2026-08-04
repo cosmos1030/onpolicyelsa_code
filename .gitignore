@@ -78,3 +78,4 @@ LMOps/
 # external baseline codebases (own git repos, not part of this project)
 ALPS/
 SparseLLM/
+macko_spmv/
