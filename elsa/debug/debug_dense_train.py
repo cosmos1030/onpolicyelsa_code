@@ -3,7 +3,7 @@ import torch
 from absl import flags, app
 from lib.gmp_trainer import globalprune_gmp
 from lib.utils import get_llm
-from lib.gkd_admm_trainer import MathCotKDDataset
+from lib.gkd_admm_trainer import MixedTextDataset
 from transformers import AutoTokenizer
 
 FLAGS = flags.FLAGS
@@ -39,7 +39,7 @@ def main(_):
     before = param.data.clone()
     print(f'param before: {before.flatten()[:5]}')
 
-    dataset = MathCotKDDataset(
+    dataset = MixedTextDataset(
         jsonl_path=FLAGS.data_path,
         tokenizer=tokenizer,
         max_prompt_len=FLAGS.gmp_max_prompt_len,

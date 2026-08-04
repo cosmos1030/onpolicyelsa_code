@@ -126,7 +126,7 @@ print("\nAll checks passed.")
 
 # ── Test 5: run_grpo_opkd (10 steps with real datasets) ──────────────────────
 print("\n[5] run_grpo_opkd with real datasets (10 steps)...")
-from lib.gkd_admm_trainer import MathCotKDDataset, MathPromptDataset
+from lib.gkd_admm_trainer import MixedTextDataset, MixedPromptDataset
 
 student2 = get_llm(MODEL_PATH, 2048).to(device)
 with torch.no_grad():
@@ -135,11 +135,11 @@ with torch.no_grad():
             mask = torch.rand_like(param) > 0.5
             param.mul_(mask.float())
 
-train_ds = MathCotKDDataset(
+train_ds = MixedTextDataset(
     jsonl_path=DATA_PATH, tokenizer=tokenizer,
     max_prompt_len=128, max_len=256,
 )
-prompt_ds = MathPromptDataset(
+prompt_ds = MixedPromptDataset(
     jsonl_path=PROMPT_PATH, tokenizer=tokenizer,
     max_prompt_len=128,
 )

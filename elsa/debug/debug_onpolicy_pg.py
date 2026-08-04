@@ -14,7 +14,7 @@ from lib.gmp_trainer import (
     FisherAccumulator, GradualMaskManager, RolloutBuffer,
     _find_linear_weights, _cubic_sparsity, _kl_loss, _pg_loss, _mixed_sample,
 )
-from lib.gkd_admm_trainer import MathPromptDataset, collate_prompts
+from lib.gkd_admm_trainer import MixedPromptDataset, collate_prompts
 
 MODEL_PATH  = "/home1/doyoonkim/.cache/huggingface/hub/models--deepseek-ai--DeepSeek-R1-Distill-Qwen-1.5B/snapshots/ad9f0ae0864d7fbcd1cd905e3c6c5b069cc8b562"
 DATA_PATH   = "/home1/doyoonkim/projects/elsa/data/math_220k_cot.jsonl"
@@ -86,7 +86,7 @@ def collate_ntp(batch):
     return {k: torch.stack(v) for k, v in r.items()}
 
 ntp_ds     = NTPDataset(DATA_PATH, tok)
-prompt_ds  = MathPromptDataset(PROMPT_PATH, tok, max_prompt_len=256, nsamples=200)
+prompt_ds  = MixedPromptDataset(PROMPT_PATH, tok, max_prompt_len=256, nsamples=200)
 ntp_loader = DataLoader(ntp_ds, batch_size=1, shuffle=True, collate_fn=collate_ntp)
 prompt_loader = DataLoader(prompt_ds, batch_size=1, shuffle=True,
                            collate_fn=collate_prompts(tok.pad_token_id))

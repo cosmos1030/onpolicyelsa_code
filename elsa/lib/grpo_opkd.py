@@ -632,8 +632,8 @@ def run_grpo_opkd(model, teacher_model, tokenizer, train_dataset, prompt_dataset
     named_params = _find_linear_weights(model)
 
     # ── hyperparams ───────────────────────────────────────────────────────────
-    lr              = FLAGS.gmp_lr
-    total_steps     = FLAGS.gmp_steps
+    lr              = FLAGS.lr
+    total_steps     = FLAGS.steps
     batch_size      = getattr(FLAGS, 'gmp_batch_size', 1)
     grad_accum      = getattr(FLAGS, 'gmp_grad_accum', 8)
     warmup_steps    = int(total_steps * getattr(FLAGS, 'gmp_warmup_ratio', 0.05))
@@ -818,8 +818,8 @@ def run_chunk_grpo_opkd(model, teacher_model, tokenizer, train_dataset, prompt_d
     device = next(model.parameters()).device
     named_params = _find_linear_weights(model)
 
-    lr              = FLAGS.gmp_lr
-    total_steps     = FLAGS.gmp_steps
+    lr              = FLAGS.lr
+    total_steps     = FLAGS.steps
     batch_size      = getattr(FLAGS, 'gmp_batch_size', 1)
     grad_accum      = getattr(FLAGS, 'gmp_grad_accum', 8)
     warmup_steps    = int(total_steps * getattr(FLAGS, 'gmp_warmup_ratio', 0.05))

@@ -87,10 +87,10 @@ def collate_ntp(batch):
 # ── Prompt dataset ────────────────────────────────────────────────────────
 import sys
 sys.path.insert(0, "/home1/doyoonkim/projects/elsa")
-from lib.gkd_admm_trainer import MathPromptDataset, collate_prompts
+from lib.gkd_admm_trainer import MixedPromptDataset, collate_prompts
 
 ntp_ds   = NTPDataset(DATA_PATH, tok, args.seq_len)
-prompt_ds = MathPromptDataset(PROMPT_PATH, tok, max_prompt_len=args.max_prompt_len, nsamples=500)
+prompt_ds = MixedPromptDataset(PROMPT_PATH, tok, max_prompt_len=args.max_prompt_len, nsamples=500)
 
 ntp_loader    = DataLoader(ntp_ds, batch_size=args.batch_size, shuffle=True, collate_fn=collate_ntp)
 prompt_loader = DataLoader(prompt_ds, batch_size=args.batch_size, shuffle=True,

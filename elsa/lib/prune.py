@@ -39,7 +39,7 @@ class AdmmTrainingArguments(TrainingArguments):
     admm_init_lambda_from_inv_resid: bool = field(default=False, metadata={"help": "Initialize lambda from inverse of initial residual."})
     admm_lmda_schedule_mode: str = field(default='constant', metadata={"help": "Mode for lambda schedule (linear/cosine/exponential/constant)."})
     admm_interval: int = field(default=32, metadata={"help": "Interval for ADMM projection and dual updates."})
-    admm_projection_mode: str = field(default='identity', metadata={"help": "Projection mode for ADMM (identity/momentum)."})
+    admm_projection_mode: str = field(default='momentum', metadata={"help": "Projection mode for ADMM (identity/momentum)."})
     admm_projection_bias_correction: bool = field(default=False, metadata={"help": "Use bias correction in ADMM projection (for momentum)."})
     prune_n: int = field(default=0, metadata={"help": "N for N:M sparsity."})
     prune_m: int = field(default=0, metadata={"help": "M for N:M sparsity."})
@@ -58,6 +58,8 @@ class AdmmTrainingArguments(TrainingArguments):
     admm_tr_init_delta: float = field(default=0.05, metadata={"help": "Initial sparsity step size for TR z-projection."})
     admm_tr_delta_min: float = field(default=1e-3, metadata={"help": "Minimum sparsity delta for TR z-projection."})
     admm_z_schedule_mode: str = field(default='trust_region', metadata={"help": "z-projection schedule: 'trust_region' (KL-gated, adaptive) or 'cubic' (fixed schedule from admm-pruning/Boza et al., no KL check)."})
+    admm_tr_gate_at_target: bool = field(default=True, metadata={"help": "Once trust-region sparsity has reached the final target, still KL-gate any further mask reselection (via the same swap/freeze logic used when growth fails) instead of reselecting unconditionally every interval."})
+    admm_z_layerwise: bool = field(default=False, metadata={"help": "Compute the TR-z/cubic threshold per-parameter-tensor (like plain ELSA's default projection) instead of pooling all params into one global threshold."})
     admm_cubic_steps: int = field(default=2048, metadata={"help": "ks: training step at which the cubic schedule reaches final sparsity (independent of admm_interval, which controls z-projection call cadence)."})
 
 # --- globalprune_admm function ---
@@ -67,7 +69,7 @@ def globalprune_admm(FLAGS, model, tokenizer, device, prune_n=0, prune_m=0):
     """
     model_name_part = FLAGS.model.split('/')[-1]
     dataset_tag = FLAGS.dataset if FLAGS.dataset else "unknown"
-    admm_run_name = f"{model_name_part}_pruned{FLAGS.sparsity_ratio}_{dataset_tag}_admm_lr{FLAGS.admm_lr}_lmda{FLAGS.admm_lmda}_{datetime.now().strftime('%Y%m%d_%H%M')}"
+    admm_run_name = f"{model_name_part}_pruned{FLAGS.sparsity_ratio}_{dataset_tag}_admm_lr{FLAGS.lr}_lmda{FLAGS.admm_lmda}_{datetime.now().strftime('%Y%m%d_%H%M')}"
     if FLAGS.admm_save_path:
         admm_output_dir = Path(FLAGS.admm_save_path) / admm_run_name
         admm_output_dir.mkdir(parents=True, exist_ok=True)
@@ -80,13 +82,13 @@ def globalprune_admm(FLAGS, model, tokenizer, device, prune_n=0, prune_m=0):
         run_name=admm_run_name,
         output_dir=admm_output_dir_str,
         num_train_epochs=FLAGS.admm_epochs,
-        max_steps=FLAGS.admm_steps if FLAGS.admm_steps > 0 else -1,
+        max_steps=FLAGS.steps if FLAGS.steps > 0 else -1,
         per_device_train_batch_size=FLAGS.admm_batch_size,
         per_device_eval_batch_size=1,
         gradient_accumulation_steps=FLAGS.admm_gradient_accumulation_steps,
-        learning_rate=FLAGS.admm_lr,
-        lr_scheduler_type=FLAGS.admm_lr_scheduler,
-        warmup_steps=FLAGS.admm_warmup_steps,
+        learning_rate=FLAGS.lr,
+        lr_scheduler_type=FLAGS.lr_scheduler,
+        warmup_steps=FLAGS.lr_warmup_steps,
         weight_decay=FLAGS.admm_weight_decay,
         gradient_checkpointing=FLAGS.admm_gradient_checkpointing,
         fp16=(FLAGS.admm_precision == 'fp16'),
@@ -130,7 +132,9 @@ def globalprune_admm(FLAGS, model, tokenizer, device, prune_n=0, prune_m=0):
         admm_tr_init_delta=getattr(FLAGS, 'admm_tr_init_delta', 0.05),
         admm_tr_delta_min=getattr(FLAGS, 'admm_tr_delta_min', 1e-3),
         admm_z_schedule_mode=getattr(FLAGS, 'admm_z_schedule_mode', 'trust_region'),
+        admm_z_layerwise=getattr(FLAGS, 'admm_z_layerwise', False),
         admm_cubic_steps=getattr(FLAGS, 'admm_cubic_steps', 15),
+        admm_tr_gate_at_target=getattr(FLAGS, 'admm_tr_gate_at_target', True),
         fsdp="full_shard auto_wrap" if getattr(FLAGS, 'admm_use_fsdp', False) else "",
         fsdp_config={"fsdp_transformer_layer_cls_to_wrap": "Qwen3DecoderLayer"} if getattr(FLAGS, 'admm_use_fsdp', False) else {},
     )
@@ -149,8 +153,8 @@ def globalprune_admm(FLAGS, model, tokenizer, device, prune_n=0, prune_m=0):
     if admm_training_args.local_rank == 0:
         logging.info("Preparing dataset for ADMM training...")
     # Use ADMM specific flags for dataset parameters
-    if FLAGS.admm_steps > 0:
-        num_train_samples = FLAGS.admm_steps * FLAGS.admm_batch_size * FLAGS.admm_gradient_accumulation_steps * admm_training_args.world_size
+    if FLAGS.steps > 0:
+        num_train_samples = FLAGS.steps * FLAGS.admm_batch_size * FLAGS.admm_gradient_accumulation_steps * admm_training_args.world_size
     else:
         num_train_samples = FLAGS.admm_num_train_samples
     if FLAGS.data_ablation:
@@ -229,6 +233,18 @@ def globalprune_admm(FLAGS, model, tokenizer, device, prune_n=0, prune_m=0):
     if admm_training_args.local_rank == 0:
         logging.info("Starting ADMM training on all processes...")
     trainer.train()
+
+    if admm_training_args.local_rank == 0:
+        # Gradient fine-tuning: ~6*N*tokens (forward+backward+update), vs ~2*N*tokens
+        # for forward-only one-shot calibration (ALPS/SparseGPT/Wanda/SparseLLM).
+        n_params = sum(p.numel() for p in model.parameters())
+        global_batch = (FLAGS.admm_batch_size * FLAGS.admm_gradient_accumulation_steps
+                        * max(admm_training_args.world_size, 1))
+        n_tokens = trainer.state.global_step * global_batch * FLAGS.seqlen
+        flops = 6 * n_params * n_tokens
+        logging.info(f"Training FLOPs: {flops:.3e} ({n_params} params x {n_tokens} tokens)")
+        if FLAGS.wandb and has_wandb:
+            wandb.log({"flops": flops})
 
     if FLAGS.save_model:
         trainer.save_model(admm_output_dir_str)

@@ -120,7 +120,7 @@ print("  [PASS] loss stays finite across steps")
 
 # ── Test 5: run_chunk_grpo_opkd full loop (10 steps) ─────────────────────────
 print("\n[5] run_chunk_grpo_opkd with real datasets (10 steps)...")
-from lib.gkd_admm_trainer import MathCotKDDataset, MathPromptDataset
+from lib.gkd_admm_trainer import MixedTextDataset, MixedPromptDataset
 
 # Free test 1-4 student before loading a second model
 del student, optimizer, optimizer2
@@ -133,11 +133,11 @@ with torch.no_grad():
             mask = torch.rand_like(param) > 0.5
             param.mul_(mask.float())
 
-train_ds = MathCotKDDataset(
+train_ds = MixedTextDataset(
     jsonl_path=DATA_PATH, tokenizer=tokenizer,
     max_prompt_len=128, max_len=256,
 )
-prompt_ds = MathPromptDataset(
+prompt_ds = MixedPromptDataset(
     jsonl_path=PROMPT_PATH, tokenizer=tokenizer,
     max_prompt_len=128,
 )

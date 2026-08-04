@@ -12,7 +12,7 @@ import torch.nn.functional as F
 from transformers import AutoTokenizer
 from lib.utils import get_llm
 from lib.grpo_opkd import _get_chunk_logps_no_grad, _make_eos_mask, chunk_grpo_opkd_loss
-from lib.gkd_admm_trainer import MathCotKDDataset, MathPromptDataset, collate_prompts
+from lib.gkd_admm_trainer import MixedTextDataset, MixedPromptDataset, collate_prompts
 from torch.utils.data import DataLoader
 from lib.gmp_trainer import _collate, _infinite, _find_linear_weights, FisherAccumulator, GradualMaskManager, _cubic_sparsity
 from transformers import get_cosine_schedule_with_warmup
@@ -120,11 +120,11 @@ print(f"  acc_before = {acc_before:.2f}  scores={scores_before}", flush=True)
 
 
 # ── Datasets / optimizer ──────────────────────────────────────────────────────
-train_ds = MathCotKDDataset(
+train_ds = MixedTextDataset(
     jsonl_path=DATA_PATH, tokenizer=tokenizer,
     max_prompt_len=128, max_len=512,
 )
-prompt_ds = MathPromptDataset(
+prompt_ds = MixedPromptDataset(
     jsonl_path=PROMPT_PATH, tokenizer=tokenizer,
     max_prompt_len=128,
 )

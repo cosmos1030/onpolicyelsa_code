@@ -8,7 +8,7 @@ import math
 from torch.optim import Adam, AdamW, SGD
 from torch.optim.optimizer import _get_scalar_dtype, _device_dtype_check_for_fused
 from torchao.optim import Adam8bit,Adam4bit
-from .utils import FP8Config, FP8State, ScalingType
+from .utils import FP8Config, FP8State, ScalingType, _as_dense_a
 
 def _is_dtensor(x): 
     return hasattr(x, "to_local")
@@ -124,6 +124,10 @@ def get_admm_optimizer(base_optimizer_cls):
             self.mask_metrics = {'step_hamming': 0.0, 'initial_hamming': 0.0, 'step_iou': 0.0, 'initial_iou': 0.0}
             # TR global z-projection: callable() -> {id(w): z_tensor}, set by ADMMTrainer
             self._z_override_fn = None
+            # Diagnostic: split gradient norm into task (NTP) vs ADMM-proximal components,
+            # recomputed every _proximal_update() call (i.e. every optimizer step).
+            self._last_ntp_grad_norm_sq = 0.0
+            self._last_admm_grad_norm_sq = 0.0
 
         def _lazy_init_admm_state(self, p: torch.nn.Parameter, group: Dict):
             """
@@ -229,6 +233,9 @@ def get_admm_optimizer(base_optimizer_cls):
                 world = 1
             avg_div = world if world > 0 else 1
 
+            ntp_sq = torch.zeros((), device='cpu')
+            admm_sq = torch.zeros((), device='cpu')
+
             for g in self.param_groups:
                 if not g.get("admm", False):
                     continue
@@ -254,11 +261,26 @@ def get_admm_optimizer(base_optimizer_cls):
                     if avg_div > 1:
                         prox_local = prox_local / avg_div
 
-                    if hasattr(w.grad, "to_local"):
-                        gl = w.grad.to_local()
-                        gl.add_(prox_local)
-                    else:
-                        w.grad.add_(prox_local)
+                    gl = w.grad.to_local() if hasattr(w.grad, "to_local") else w.grad
+                    # Diagnostic: task-gradient norm (pre-proximal) vs proximal-term norm,
+                    # accumulated before prox is added so the two components are separable.
+                    ntp_sq += gl.detach().float().pow(2).sum().cpu()
+                    admm_sq += prox_local.detach().float().pow(2).sum().cpu()
+                    gl.add_(prox_local)
+
+            if dist.is_initialized():
+                _t = torch.tensor([ntp_sq.item(), admm_sq.item()], device=next(iter(self.state.keys())).device if self.state else 'cuda')
+                dist.all_reduce(_t, op=dist.ReduceOp.SUM)
+                ntp_sq, admm_sq = _t[0].cpu(), _t[1].cpu()
+            self._last_ntp_grad_norm_sq = ntp_sq.item()
+            self._last_admm_grad_norm_sq = admm_sq.item()
+
+        def get_grad_norm_breakdown(self) -> Dict[str, float]:
+            """Return (ntp_grad_norm, admm_grad_norm) from the most recent _proximal_update()."""
+            return {
+                'ntp_grad_norm': self._last_ntp_grad_norm_sq ** 0.5,
+                'admm_grad_norm': self._last_admm_grad_norm_sq ** 0.5,
+            }
 
         @torch.no_grad()
         def _dual_update(self):
@@ -280,7 +302,10 @@ def get_admm_optimizer(base_optimizer_cls):
                     import logging as _logging
                     _logging.warning(f"TR z_override_fn failed: {_e}")
 
-            self.mask_metrics = {'step_hamming': 0.0, 'initial_hamming': 0.0, 'step_iou': 0.0, 'initial_iou': 0.0}
+            self.mask_metrics = {'step_hamming': 0.0, 'initial_hamming': 0.0, 'step_iou': 0.0, 'initial_iou': 0.0,
+                                  'revived_frac': 0.0, 'newly_pruned_frac': 0.0,
+                                  'revived_cycle2_frac': 0.0, 'pruned_cycle2_frac': 0.0,
+                                  'revived_w2_ratio': 0.0, 'pruned_w2_ratio': 0.0}
             admm_groups = 0
 
             for g in self.param_groups:
@@ -294,6 +319,15 @@ def get_admm_optimizer(base_optimizer_cls):
                 device = weights[0].device
                 flip_sum_step = torch.tensor(0, device=device, dtype=torch.int64)
                 flip_sum_initial = torch.tensor(0, device=device, dtype=torch.int64)
+                revived_sum = torch.tensor(0, device=device, dtype=torch.int64)
+                newly_pruned_sum = torch.tensor(0, device=device, dtype=torch.int64)
+                revived_cycle2_sum = torch.tensor(0, device=device, dtype=torch.int64)
+                pruned_cycle2_sum = torch.tensor(0, device=device, dtype=torch.int64)
+                revived_w2_sum = torch.zeros((), device=device, dtype=torch.float64)
+                pruned_w2_sum = torch.zeros((), device=device, dtype=torch.float64)
+                stable_kept_w2_sum = torch.zeros((), device=device, dtype=torch.float64)
+                stable_kept_count = torch.tensor(0, device=device, dtype=torch.int64)
+                per_param_log = []
                 intersection_step = torch.tensor(0, device=device, dtype=torch.int64)
                 union_step = torch.tensor(0, device=device, dtype=torch.int64)
                 intersection_initial = torch.tensor(0, device=device, dtype=torch.int64)
@@ -391,6 +425,43 @@ def get_admm_optimizer(base_optimizer_cls):
                     flip_sum_step += flip_local_step
                     flip_sum_initial += flip_local_initial
                     numel_sum += numel_local
+                    # Per-layer churn breakdown: which module is oscillating, not just
+                    # how much overall. Only meaningful on rank 0 / non-distributed
+                    # (per_param_log is never all-reduced, just logged for inspection).
+                    _pname = getattr(self, '_param_id_to_name', {}).get(id(w), None)
+                    if _pname is not None:
+                        per_param_log.append((_pname, float(flip_local_step) / (numel_local.item() + 1e-12), numel_local.item()))
+                    # Split the step flip into direction: revived (pruned -> kept) vs
+                    # newly pruned (kept -> pruned) — these sum to flip_local_step.
+                    revived_mask = (~old_mask & new_mask)
+                    newly_pruned_mask = (old_mask & ~new_mask)
+                    revived_sum += revived_mask.sum().to(device=device)
+                    newly_pruned_sum += newly_pruned_mask.sum().to(device=device)
+
+                    # Does churn hit "important" (large-magnitude) weights disproportionately?
+                    # Compare avg w^2 of flipped params against avg w^2 of the stably-kept
+                    # population (kept before AND after this interval) — same churn %
+                    # could have wildly different loss impact depending on which weights
+                    # it touches.
+                    w_sq = _loc(w).detach().float().pow(2)
+                    stable_kept_mask = old_mask & new_mask
+                    revived_w2_sum += w_sq[revived_mask].sum().double().to(device=device)
+                    pruned_w2_sum += w_sq[newly_pruned_mask].sum().double().to(device=device)
+                    stable_kept_w2_sum += w_sq[stable_kept_mask].sum().double().to(device=device)
+                    stable_kept_count += stable_kept_mask.sum().to(device=device)
+
+                    # Period-2 oscillation check: of the params revived this interval
+                    # (pruned last interval, kept now), how many were ALSO kept 2
+                    # intervals ago (kept -> pruned -> kept, a clean flip-flop on the
+                    # same coordinates)? Symmetric check for newly-pruned params that
+                    # were also pruned 2 intervals ago (kept -> pruned -> ... no wait,
+                    # kept briefly then pruned again). Requires caching the mask from
+                    # 2 intervals back per-param.
+                    mask_2ago = st.get("_mask_2ago", None)
+                    if mask_2ago is not None:
+                        revived_cycle2_sum += (revived_mask & mask_2ago).sum().to(device=device)
+                        pruned_cycle2_sum += (newly_pruned_mask & ~mask_2ago).sum().to(device=device)
+                    st["_mask_2ago"] = old_mask.clone()
 
                     ## for fp8 states, requantize to save fp8 states
                     st['dual'].requant(u_new) if isinstance(st['dual'], FP8State) else dual.copy_(u_new)
@@ -399,9 +470,25 @@ def get_admm_optimizer(base_optimizer_cls):
                     st["lmda"] = new_lmda_for_param
                     st["prev_lmda"] = current_lmda
 
+                if per_param_log and (not dist.is_initialized() or dist.get_rank() == 0):
+                    import logging as _logging
+                    per_param_log.sort(key=lambda x: x[1], reverse=True)
+                    top = ", ".join(f"{n}={h:.3f}" for n, h, _ in per_param_log[:8])
+                    bot = ", ".join(f"{n}={h:.3f}" for n, h, _ in per_param_log[-5:])
+                    _logging.info(f"  [layer churn] step {self.current_step} highest: {top}")
+                    _logging.info(f"  [layer churn] step {self.current_step} lowest:  {bot}")
+
                 if dist.is_initialized():
                     dist.all_reduce(flip_sum_step,  op=dist.ReduceOp.SUM)
                     dist.all_reduce(flip_sum_initial, op=dist.ReduceOp.SUM)
+                    dist.all_reduce(revived_sum, op=dist.ReduceOp.SUM)
+                    dist.all_reduce(newly_pruned_sum, op=dist.ReduceOp.SUM)
+                    dist.all_reduce(revived_cycle2_sum, op=dist.ReduceOp.SUM)
+                    dist.all_reduce(pruned_cycle2_sum, op=dist.ReduceOp.SUM)
+                    dist.all_reduce(revived_w2_sum, op=dist.ReduceOp.SUM)
+                    dist.all_reduce(pruned_w2_sum, op=dist.ReduceOp.SUM)
+                    dist.all_reduce(stable_kept_w2_sum, op=dist.ReduceOp.SUM)
+                    dist.all_reduce(stable_kept_count, op=dist.ReduceOp.SUM)
                     dist.all_reduce(intersection_step, op=dist.ReduceOp.SUM)
                     dist.all_reduce(union_step, op=dist.ReduceOp.SUM)
                     dist.all_reduce(intersection_initial, op=dist.ReduceOp.SUM)
@@ -413,12 +500,41 @@ def get_admm_optimizer(base_optimizer_cls):
                 self.mask_metrics['initial_hamming'] += float(flip_sum_initial.float() / (numel_sum.float() + eps))
                 self.mask_metrics['step_iou'] += float(intersection_step.float() / (union_step.float() + eps))
                 self.mask_metrics['initial_iou'] += float(intersection_initial.float() / (union_initial.float() + eps))
+                # Fraction of all prunable params that flipped, split by direction —
+                # of the total, how many were revived (pruned->kept) vs newly pruned
+                # (kept->pruned) at this interval. revived_frac + newly_pruned_frac == step_hamming.
+                self.mask_metrics['revived_frac'] += float(revived_sum.float() / (numel_sum.float() + eps))
+                self.mask_metrics['newly_pruned_frac'] += float(newly_pruned_sum.float() / (numel_sum.float() + eps))
+                # Of the params revived/newly-pruned THIS interval, what fraction were
+                # also kept/pruned (respectively) 2 intervals ago — i.e. literally the
+                # same coordinates flip-flopping (kept -> pruned -> kept), rather than a
+                # continually-different pool churning through. Denominator is the
+                # revived/pruned count itself, not numel_sum, since this is a
+                # conditional fraction ("of the ones that flipped, how many are repeat
+                # offenders").
+                self.mask_metrics['revived_cycle2_frac'] += float(revived_cycle2_sum.float() / (revived_sum.float() + eps))
+                self.mask_metrics['pruned_cycle2_frac'] += float(pruned_cycle2_sum.float() / (newly_pruned_sum.float() + eps))
+                # Are the flipped params "bigger" (more important) than the params that
+                # stayed kept the whole time? Ratio of avg w^2 among revived/newly-pruned
+                # params to avg w^2 among stably-kept params — same churn % could have
+                # very different loss impact depending on which weights it touches.
+                revived_avg_w2 = revived_w2_sum / (revived_sum.double() + eps)
+                pruned_avg_w2 = pruned_w2_sum / (newly_pruned_sum.double() + eps)
+                stable_avg_w2 = stable_kept_w2_sum / (stable_kept_count.double() + eps)
+                self.mask_metrics['revived_w2_ratio'] += float(revived_avg_w2 / (stable_avg_w2 + eps))
+                self.mask_metrics['pruned_w2_ratio'] += float(pruned_avg_w2 / (stable_avg_w2 + eps))
 
             if admm_groups > 0:
                 self.mask_metrics['step_hamming'] /= admm_groups
                 self.mask_metrics['initial_hamming'] /= admm_groups
                 self.mask_metrics['step_iou'] /= admm_groups
                 self.mask_metrics['initial_iou'] /= admm_groups
+                self.mask_metrics['revived_frac'] /= admm_groups
+                self.mask_metrics['newly_pruned_frac'] /= admm_groups
+                self.mask_metrics['revived_cycle2_frac'] /= admm_groups
+                self.mask_metrics['pruned_cycle2_frac'] /= admm_groups
+                self.mask_metrics['revived_w2_ratio'] /= admm_groups
+                self.mask_metrics['pruned_w2_ratio'] /= admm_groups
 
         @torch.no_grad()
         def step(self, closure=None):
@@ -438,15 +554,23 @@ def get_admm_optimizer(base_optimizer_cls):
         def final_projection(self):
             """
             Apply the final projection to ADMM-tagged parameter groups (in-place).
-            This should be called after training is complete to ensure weights have the desired sparsity structure.
+            Called after training AND at every intermediate sparse-eval (see
+            trainer._evaluate_sparse_model), so it must always reflect the CURRENT
+            w, not a stale snapshot.
 
             Under TR z-projection, sparsity is grown gradually and validated via a KL
-            trust region (trainer._tr_z_sp tracks the actually-achieved level, which may
-            be well below st["sparsity"] — the fixed final target — if the KL budget
-            didn't allow full growth). Re-projecting to st["sparsity"] here would silently
-            jump straight to the final target in one unvalidated shot, discarding all of
-            TR-z's gradual validation and wrecking the model. Instead, just apply the last
-            accepted z (already the correct, KL-validated sparse solution).
+            trust region (or the cubic schedule), so the achieved level may be below
+            st["sparsity"] — the fixed final target. Jumping straight to st["sparsity"]
+            here would discard all of that gradual validation. Previously this branch
+            just copied st["split"] verbatim, which is the z from the LAST admm_interval
+            dual update (up to admm_interval-1 steps stale) — between updates, every
+            intermediate eval kept showing that same frozen snapshot, then jumped
+            discretely the instant split refreshed, producing a staircase in
+            eval/sparse_loss even though the underlying dense w was training smoothly.
+            Fixed to re-derive the mask fresh from the CURRENT w+dual each call, same
+            as the non-TR path, just targeting the sparsity level already achieved
+            (read off st["split"]'s current zero-fraction) instead of the fixed final
+            target.
             """
             _tr_z_active = getattr(self, '_z_override_fn', None) is not None
             for g in self.param_groups:
@@ -456,10 +580,6 @@ def get_admm_optimizer(base_optimizer_cls):
                     if w.numel() == 0:
                         continue
                     st = self.state[w]
-                    if _tr_z_active:
-                        z_final = st["split"].dequant() if hasattr(st["split"], 'dequant') else st["split"]
-                        w.data.copy_(z_final.to(w.dtype))
-                        continue
                     importance = None
                     if self.projection_mode == "momentum":
                         v_t = st.get("exp_avg_sq")
@@ -471,6 +591,15 @@ def get_admm_optimizer(base_optimizer_cls):
                         if isinstance(importance, DTensor):
                             importance = importance.redistribute(placements=[Replicate()]).to_local()
 
+                    if _tr_z_active:
+                        z_prev = st["split"].dequant() if hasattr(st["split"], 'dequant') else st["split"]
+                        achieved_sparsity = float((_as_dense_a(z_prev) == 0).float().mean().item())
+                        dual = st["dual"].dequant() if isinstance(st["dual"], FP8State) else st["dual"]
+                        z_in = w.detach() + dual.detach()
+                        wnew = self.projection([z_in], achieved_sparsity, self.prune_n, self.prune_m,
+                                               [importance], comparison_group="layer")[0]
+                        w.data.copy_(wnew.to(w.dtype))
+                        continue
 
                     wnew = self.projection([w.detach()], st["sparsity"], self.prune_n, self.prune_m,
                                            [importance], comparison_group="layer")[0]
