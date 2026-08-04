@@ -42,6 +42,7 @@ echo "NODE=$(hostname)  JOB=$SLURM_JOB_ID"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 
 cd /home1/doyoonkim/projects/elsa
+export PYTHONPATH="/home1/doyoonkim/projects/elsa:${PYTHONPATH}"
 
 /home1/doyoonkim/miniconda3/envs/rac/bin/python scripts/pregenerate_tgkd_cache.py \
     --model="$MODEL" \
