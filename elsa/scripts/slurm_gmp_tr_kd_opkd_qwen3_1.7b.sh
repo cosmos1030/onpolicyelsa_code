@@ -26,11 +26,12 @@ exec 2>&1
 # 180k, opdprompts=last 20k) so OPD never rolls out on a prompt the offline
 # KD loss is also training on.
 #
-# Usage: sbatch slurm_gmp_tr_kd_opkd_qwen3_1.7b.sh <SPARSITY> <KL_THRESHOLD>
-# e.g.: sbatch slurm_gmp_tr_kd_opkd_qwen3_1.7b.sh 0.5 0.01
+# Usage: sbatch slurm_gmp_tr_kd_opkd_qwen3_1.7b.sh <SPARSITY> <KL_THRESHOLD> [OPD_GEN_LEN]
+# e.g.: sbatch slurm_gmp_tr_kd_opkd_qwen3_1.7b.sh 0.5 0.01 512
 
-SPARSITY=${1:?"Usage: sbatch slurm_gmp_tr_kd_opkd_qwen3_1.7b.sh <SPARSITY> <KL_THRESHOLD>"}
+SPARSITY=${1:?"Usage: sbatch slurm_gmp_tr_kd_opkd_qwen3_1.7b.sh <SPARSITY> <KL_THRESHOLD> [OPD_GEN_LEN]"}
 KL_THRESHOLD=${2:-0.01}
+OPD_GEN_LEN=${3:-256}
 SPARSITY_PCT=$(python3 -c "print(int(${SPARSITY}*100))")
 
 PYTHON=/home1/doyoonkim/miniconda3/envs/rac/bin/python
@@ -57,7 +58,7 @@ export TRITON_CACHE_DIR=/tmp/triton_cache_${USER}
 export HF_DATASETS_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 
-echo "=== TR-GMP KD+OPKD(0.5/0.5, no NTP) Qwen3-1.7B s${SPARSITY_PCT} kl=${KL_THRESHOLD} (OT80/FW20) ==="
+echo "=== TR-GMP KD+OPKD(0.5/0.5, no NTP) Qwen3-1.7B s${SPARSITY_PCT} kl=${KL_THRESHOLD} opd_gen_len=${OPD_GEN_LEN} (OT80/FW20) ==="
 echo "NODE=$(hostname)  JOB=$SLURM_JOB_ID"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 
@@ -87,7 +88,7 @@ $PYTHON main.py \
     --gmp_kd_only=true \
     --gmp_kd_lambda=0.5 \
     --gmp_onpolicy_kd_lambda=0.5 \
-    --gmp_onpolicy_max_new_tokens=256 \
+    --gmp_onpolicy_max_new_tokens=${OPD_GEN_LEN} \
     --gmp_opkd_prev_mask_teacher=false \
     --gmp_opkd_vllm_gpu_mem=0.15 \
     --gmp_prompt_path="$OPD_PROMPT_PATH" \
