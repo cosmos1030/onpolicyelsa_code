@@ -159,7 +159,7 @@ def main(argv):
     )
     _use_admm_opd_fsdp = (
         is_distributed
-        and getattr(FLAGS, 'do_kd_admm', False)
+        and (getattr(FLAGS, 'do_kd_admm', False) or getattr(FLAGS, 'do_offpolicy_kd_admm', False))
         and getattr(FLAGS, 'admm_use_fsdp', False)
         and getattr(FLAGS, 'opd_enabled', False)
     )
@@ -516,7 +516,11 @@ def main(argv):
         elif getattr(FLAGS, 'do_offpolicy_kd_admm', False):
             teacher_model = get_llm(FLAGS.model, FLAGS.seqlen)
             teacher_model.to(device)
-            saved_pruned_model_path = globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device, offpolicy_kd=True)
+            saved_pruned_model_path = globalprune_admm_kd(
+                FLAGS, model, teacher_model, tokenizer, device, offpolicy_kd=True,
+                prebuilt_opd_vllm_engine=_prebuilt_opd_vllm_engine,
+                prebuilt_opd_vllm_params=_prebuilt_opd_vllm_params,
+            )
             del teacher_model
             torch.cuda.empty_cache()
         elif getattr(FLAGS, 'do_safe', False):
