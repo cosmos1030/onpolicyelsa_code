@@ -134,6 +134,8 @@ def _build_run_name(FLAGS):
             mode = getattr(F, 'admm_z_schedule_mode', 'trust_region')
             if mode == 'cubic':
                 name += f"_cubic{getattr(F, 'admm_cubic_steps', 2048)}"
+            elif mode == 'cosine':
+                name += f"_cosinez{getattr(F, 'admm_cubic_steps', 2048)}"
             else:
                 name += f"_trz{getattr(F, 'admm_tr_kl_threshold', 0.5)}"
         name += f"_steps{F.steps}"
@@ -958,7 +960,7 @@ if __name__ == '__main__':
     flags.DEFINE_float('admm_tr_init_delta', 0.05, 'Initial sparsity step size for TR z-projection.')
     flags.DEFINE_float('admm_tr_delta_min', 1e-3, 'Minimum sparsity delta before giving up in TR z-projection.')
     flags.DEFINE_enum('admm_tr_kl_reduce', 'mean', ['mean', 'quantile'], 'KL reduce mode for TR z-projection.')
-    flags.DEFINE_enum('admm_z_schedule_mode', 'trust_region', ['trust_region', 'cubic'], "z-projection schedule: 'trust_region' (KL-gated, adaptive) or 'cubic' (fixed schedule from admm-pruning/Boza et al. Algorithm 1, no KL check).")
+    flags.DEFINE_enum('admm_z_schedule_mode', 'trust_region', ['trust_region', 'cubic', 'cosine'], "z-projection schedule: 'trust_region' (KL-gated, adaptive), 'cubic' (fixed schedule from admm-pruning/Boza et al. Algorithm 1, no KL check), or 'cosine' (fixed cosine ramp to final sparsity over admm_cubic_steps, no KL check).")
     flags.DEFINE_integer('admm_cubic_steps', 2048, 'ks: training step at which the cubic schedule reaches final sparsity (independent of admm_interval, which controls z-projection call cadence).')
     flags.DEFINE_bool('admm_z_layerwise', False, 'Compute the TR-z/cubic threshold per-parameter-tensor (like plain ELSA default projection) instead of one global threshold pooled across all params.')
     flags.DEFINE_bool('admm_tr_gate_at_target', True, 'Once trust-region sparsity reaches the final target, still KL-gate further mask reselection (swap/freeze) instead of reselecting unconditionally every interval.')

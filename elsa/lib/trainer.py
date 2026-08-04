@@ -164,12 +164,18 @@ class ADMMTrainer(Trainer):
                 return {}
             if schedule_mode == 'cubic':
                 return trainer_ref._compute_cubic_z(model, cal_batch)
+            if schedule_mode == 'cosine':
+                return trainer_ref._compute_cosine_z(model, cal_batch)
             return trainer_ref._compute_global_tr_z(model, cal_batch)
 
         opt = self._get_admm_optimizer()
         opt._z_override_fn = _z_override_fn
         if schedule_mode == 'cubic':
             logging.info(f"Cubic global z-projection enabled: "
+                         f"ks={getattr(self.args, 'admm_cubic_steps', 2048)} steps, "
+                         f"final_sparsity={self.args.sparsity_ratio}")
+        elif schedule_mode == 'cosine':
+            logging.info(f"Cosine global z-projection enabled: "
                          f"ks={getattr(self.args, 'admm_cubic_steps', 2048)} steps, "
                          f"final_sparsity={self.args.sparsity_ratio}")
         else:
@@ -214,6 +220,44 @@ class ADMMTrainer(Trainer):
             'tr_z/mask_zeros': int(mask_total - mask_nnz),
         }
         logging.info(f"  cubic-z step {t}: sparsity={cur_sp:.4f} (ks={ks})")
+        return z_new
+
+    def _compute_cosine_z(self, model, cal_batch):
+        """Cosine sparsity ramp: 0 -> final_sparsity over admm_cubic_steps training
+        steps (cur_sp = final_sp * (1 - cos(pi * t/ks)) / 2), held at final_sp
+        afterward. Same no-KL-check saliency top-k selection as _compute_cubic_z,
+        just a different growth curve (front-loaded like cubic near t=0, but
+        symmetric rather than cubic's slower start).
+        """
+        admm_state = self._collect_admm_projection_centers()
+        if not admm_state:
+            return {}
+        final_sp = self.args.sparsity_ratio
+        opt = self._get_admm_optimizer()
+        ks = max(1, getattr(self.args, 'admm_cubic_steps', 2048))
+        t = opt.current_step
+        if t < ks:
+            cur_sp = final_sp * (1 - math.cos(math.pi * t / ks)) / 2
+        else:
+            cur_sp = final_sp
+        self._cubic_iter += 1
+
+        z_new = self._select_z(admm_state, cur_sp)
+        self._tr_z_sp = cur_sp
+
+        mask_nnz = sum((v != 0).sum().item() for v in z_new.values())
+        mask_total = sum(v.numel() for v in z_new.values())
+        self._tr_z_metrics_pending = {
+            'tr_z/sparsity': cur_sp,
+            'tr_z/kl': float('nan'),
+            'tr_z/delta': 0.0,
+            'tr_z/outcome': 1.0,
+            'tr_z/iters': self._cubic_iter,
+            'tr_z/mask_nnz': int(mask_nnz),
+            'tr_z/mask_total': int(mask_total),
+            'tr_z/mask_zeros': int(mask_total - mask_nnz),
+        }
+        logging.info(f"  cosine-z step {t}: sparsity={cur_sp:.4f} (ks={ks})")
         return z_new
 
     def _collect_admm_projection_centers(self):
