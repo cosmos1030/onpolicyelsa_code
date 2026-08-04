@@ -1,0 +1,279 @@
+<title>Pruning Results</title>
+<style>
+  :root {
+    --bg:#0D0F18;--surface:#161926;--surface2:#1D2135;--border:#252840;
+    --text:#DDE1F0;--muted:#5A607E;--accent:#1BC4B6;--accent-dim:rgba(27,196,182,0.13);
+    --dense-row:rgba(255,255,255,0.03);--best-glow:rgba(27,196,182,0.18);
+    --running:#F59E0B;--link-w:#F97316;--link-hf:#FBBF24;
+    --badge-dense:#6B7280;--badge-sgpt:#D97706;--badge-gmp:#3B82F6;
+    --badge-opkd:#8B5CF6;--badge-tr:#1BC4B6;--badge-tropkd:#10B981;
+  }
+  @media(prefers-color-scheme:light){:root{
+    --bg:#F0F2FA;--surface:#FFFFFF;--surface2:#EEF0F8;--border:#D8DCF0;
+    --text:#1A1D2E;--muted:#8A90AB;--accent:#0B9D96;--accent-dim:rgba(11,157,150,0.10);
+    --dense-row:rgba(0,0,0,0.03);--best-glow:rgba(11,157,150,0.14);
+    --link-w:#EA580C;--link-hf:#D97706;
+  }}
+  :root[data-theme="dark"]{--bg:#0D0F18;--surface:#161926;--surface2:#1D2135;--border:#252840;--text:#DDE1F0;--muted:#5A607E;--accent:#1BC4B6;--accent-dim:rgba(27,196,182,0.13);--dense-row:rgba(255,255,255,0.03);--best-glow:rgba(27,196,182,0.18);--link-w:#F97316;--link-hf:#FBBF24;}
+  :root[data-theme="light"]{--bg:#F0F2FA;--surface:#FFFFFF;--surface2:#EEF0F8;--border:#D8DCF0;--text:#1A1D2E;--muted:#8A90AB;--accent:#0B9D96;--accent-dim:rgba(11,157,150,0.10);--dense-row:rgba(0,0,0,0.03);--best-glow:rgba(11,157,150,0.14);--link-w:#EA580C;--link-hf:#D97706;}
+
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font-family:-apple-system,'Helvetica Neue',Arial,sans-serif;font-size:13px;line-height:1.5;min-height:100vh}
+  .page{max-width:1800px;margin:0 auto;padding:32px 24px 64px}
+
+  .page-eyebrow{font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--accent);margin-bottom:8px;font-weight:600}
+  .page-title{font-size:22px;font-weight:700;color:var(--text);letter-spacing:-.02em;margin-bottom:6px}
+  .page-subtitle{color:var(--muted);font-size:12.5px;margin-bottom:20px}
+
+  .tab-bar{display:flex;gap:0;margin-bottom:24px;border-bottom:1px solid var(--border)}
+  .tab-btn{padding:8px 18px;font-size:12px;font-weight:600;color:var(--muted);border:none;background:none;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;letter-spacing:.02em;transition:color .1s,border-color .1s;font-family:inherit}
+  .tab-btn.active{color:var(--accent);border-bottom-color:var(--accent)}
+  .tab-btn:hover:not(.active){color:var(--text)}
+
+  .method-guide{margin-bottom:28px;display:flex;flex-direction:column;gap:6px}
+  .mg-row{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+  .badge{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:4px;font-size:11px;font-weight:600;letter-spacing:.01em;border:1px solid;white-space:nowrap;flex-shrink:0}
+  .badge-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
+  .badge.dense{border-color:var(--badge-dense);color:var(--badge-dense)}.badge-dot.dense{background:var(--badge-dense)}
+  .badge.sgpt{border-color:var(--badge-sgpt);color:var(--badge-sgpt)}.badge-dot.sgpt{background:var(--badge-sgpt)}
+  .badge.gmp{border-color:var(--badge-gmp);color:var(--badge-gmp)}.badge-dot.gmp{background:var(--badge-gmp)}
+  .badge.opkd{border-color:var(--badge-opkd);color:var(--badge-opkd)}.badge-dot.opkd{background:var(--badge-opkd)}
+  .badge.tr{border-color:var(--badge-tr);color:var(--badge-tr)}.badge-dot.tr{background:var(--badge-tr)}
+  .badge.tropkd{border-color:var(--badge-tropkd);color:var(--badge-tropkd)}.badge-dot.tropkd{background:var(--badge-tropkd)}
+  .mg-desc{font-size:11.5px;color:var(--muted);line-height:1.4}
+
+  .section{margin-bottom:36px}
+  .section-label{display:flex;align-items:center;gap:12px;margin-bottom:10px}
+  .section-label-tag{font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--accent);background:var(--accent-dim);padding:3px 10px;border-radius:4px;border:1px solid var(--accent)}
+  .section-label-sparsity{font-size:11px;color:var(--muted)}
+  .section-label-line{flex:1;height:1px;background:var(--border)}
+
+  .tbl-wrap{overflow-x:auto;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+  table{border-collapse:collapse;width:max-content;min-width:100%}
+
+  .colgroup-header th{background:var(--surface2);color:var(--muted);font-size:9.5px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;padding:5px 8px;border-bottom:1px solid var(--border);text-align:center;white-space:nowrap}
+  .colgroup-header th:first-child{text-align:left}
+  thead tr.col-headers th{background:var(--surface2);color:var(--muted);font-size:10px;font-weight:600;letter-spacing:.04em;padding:7px 8px 6px;border-bottom:2px solid var(--border);white-space:nowrap;text-align:right;position:sticky;top:0;z-index:2}
+  thead tr.col-headers th:first-child{text-align:left;position:sticky;left:0;z-index:3}
+  thead tr.colgroup-header th:first-child{position:sticky;left:0;z-index:3;background:var(--surface2)}
+
+  tbody tr{border-bottom:1px solid var(--border);transition:background .08s}
+  tbody tr:last-child{border-bottom:none}
+  tbody tr:hover{background:rgba(128,140,180,.05)}
+  tbody tr.dense-row{background:var(--dense-row)}
+  tbody td{padding:7px 8px;white-space:nowrap;font-variant-numeric:tabular-nums;text-align:right;color:var(--text);font-size:12.5px}
+  tbody td:first-child{text-align:left;position:sticky;left:0;background:inherit;z-index:1;min-width:220px;max-width:260px;border-right:1px solid var(--border);padding-right:12px}
+  tbody tr:hover td:first-child{background:var(--surface)}
+  tbody tr.dense-row td:first-child{background:var(--surface)}
+
+  .csep{border-left:1px solid var(--border)!important}
+  .method-cell{display:flex;align-items:center;gap:7px}
+  .method-stripe{width:3px;height:20px;border-radius:2px;flex-shrink:0}
+  .method-stripe.dense{background:var(--badge-dense)}.method-stripe.sgpt{background:var(--badge-sgpt)}
+  .method-stripe.gmp{background:var(--badge-gmp)}.method-stripe.opkd{background:var(--badge-opkd)}
+  .method-stripe.tr{background:var(--badge-tr)}.method-stripe.tropkd{background:var(--badge-tropkd)}
+  .method-name{font-size:12px;font-weight:500;color:var(--text);overflow:hidden;text-overflow:ellipsis}
+  .method-sub{font-size:10px;color:var(--muted);display:block;margin-top:1px}
+
+  td.best{color:var(--accent)!important;font-weight:700;background:var(--best-glow);border-radius:3px}
+  td.second{font-weight:600;opacity:.7;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:3px}
+  td.ppl-col{color:var(--muted)}
+  td.ppl-col.best-ppl{color:var(--accent)!important;font-weight:700;background:var(--best-glow)}
+  td.ppl-col.second-ppl{font-weight:600;opacity:.7;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:3px}
+  td.running{color:var(--running);font-style:italic;font-size:11px}
+  td.dash{color:var(--muted)}
+  tr.failed-target td{opacity:.45}
+  tr.failed-target td:first-child{opacity:1}
+  .failed-badge{display:inline-block;font-size:9px;font-weight:700;color:#F87171;border:1px solid #F87171;border-radius:3px;padding:0 4px;margin-left:4px;vertical-align:middle;letter-spacing:.02em}
+  td.step-col{color:var(--muted);font-size:11.5px}
+  td.link-cell{text-align:center;padding:5px 6px}
+  a.link-btn{display:inline-block;padding:2px 7px;border-radius:3px;font-size:10px;font-weight:700;letter-spacing:.03em;text-decoration:none;border:1px solid;transition:opacity .1s}
+  a.link-btn:hover{opacity:.75}
+  a.link-btn.wb{color:var(--link-w);border-color:var(--link-w)}
+  a.link-btn.hf{color:var(--link-hf);border-color:var(--link-hf)}
+  span.no-link{color:var(--muted);font-size:10px}
+
+  .notes{margin-top:14px;display:flex;flex-direction:column;gap:5px}
+  .note{font-size:11px;color:var(--muted);display:flex;align-items:center;gap:6px}
+  .note-dot{width:6px;height:6px;border-radius:50%;background:var(--running);flex-shrink:0;animation:pulse 1.4s ease-in-out infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+  @media(prefers-reduced-motion:reduce){.note-dot{animation:none}}
+</style>
+
+<div class="page">
+  <div class="page-eyebrow" id="page-eyebrow"></div>
+  <div class="page-title">Pruning Results</div>
+  <div class="page-subtitle" id="page-subtitle"></div>
+
+  <div class="tab-bar" id="tab-bar"></div>
+
+  <div class="method-guide">
+    <div class="mg-row"><span class="badge dense"><span class="badge-dot dense"></span>Dense</span><span class="mg-desc">No pruning — baseline model</span></div>
+    <div class="mg-row"><span class="badge sgpt"><span class="badge-dot sgpt"></span>SparseGPT</span><span class="mg-desc">One-shot Hessian-based unstructured pruning · calibration: OT 80% + FW 20% · no fine-tuning</span></div>
+    <div class="mg-row"><span class="badge gmp"><span class="badge-dot gmp"></span>GMP NTP+KD</span><span class="mg-desc">Gradual Magnitude Pruning · NTP on CoT data + KD from dense teacher (λ_kd=1) · sparsity linearly scheduled over training</span></div>
+    <div class="mg-row"><span class="badge opkd"><span class="badge-dot opkd"></span>GMP NTP+KD+OPKD</span><span class="mg-desc">GMP NTP+KD + On-Policy KD · student rollouts distilled against dense teacher · Prev Mask: previous-step sparse checkpoint (prev_mask_teacher=True)</span></div>
+    <div class="mg-row"><span class="badge tr"><span class="badge-dot tr"></span>TR-GMP NTP+KD</span><span class="mg-desc">GMP NTP+KD with task regularization · pruning halts when KL(student‖teacher) > threshold · prevents over-pruning collapse</span></div>
+    <div class="mg-row"><span class="badge tropkd"><span class="badge-dot tropkd"></span>TR-GMP+OPKD</span><span class="mg-desc">TR-GMP NTP+KD + On-Policy KD · Dual (prev_mask_teacher=False): original dense teacher · Prev Mask: previous-step sparse checkpoint</span></div>
+  </div>
+
+  <div id="app"></div>
+  <div class="notes" id="notes"></div>
+</div>
+
+<script>
+const DB = {"meta":{"entity":"dyk6208-gwangju-institute-of-science-and-technology","hf_base":"https://huggingface.co/"},"models":{"deepseek_1.5b":{"display":"DeepSeek-R1-Distill-Qwen-1.5B","wb_project":"reasoning_pruning_v2","notes":["S70 TR-GMP NTP+KD kl=0.005 (ze6qflhi) — LCB 미측정, OpenBook=acc(not acc_norm)","S60/S70 Prev Mask & Dual kl=0.0025 — 32k 재실행 중 (job 611383/385/386/387)","† OpenBook: acc_norm 미기록, acc 값 사용 — 실제보다 낮을 수 있음"],"S50":[{"wbid":"4t6quvd1","badge":"dense","name":"Dense","sub":"DeepSeek-R1-Distill-Qwen-1.5B","isDense":true,"hf":"deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B","math":80.2,"lcb":15.3,"gpqa":32.8,"ifeval":29.2,"wino":53.8,"rte":57.8,"race":32.1,"piqa":65.2,"ob":32.4,"hella":44.7,"boolq":68.7,"arce":53.8,"arcc":32.9,"c4":42.16,"wt2":40.76},{"wbid":"tvatqxx4","badge":"sgpt","name":"SparseGPT 50%","sub":"OT 80% + FW 20%","hf":"cosmos1030/deepseek-r1-distill-qwen-1.5b-sgpt-s50pct-ot80fw20","math":65.4,"lcb":6.3,"gpqa":31.3,"ifeval":21.4,"wino":52.6,"rte":54.5,"race":29.0,"piqa":61.6,"ob":30.4,"hella":38.3,"boolq":63.9,"arce":41.2,"arcc":28.4,"c4":80.62,"wt2":80.21},{"wbid":"ipubu9cq","badge":"gmp","name":"GMP NTP+KD","sub":"lr=1e-4","hf":"cosmos1030/gmp-kd1e0-s50pct-lr1e-4_20260705_130752","steps":1024,"math":64.6,"lcb":6.0,"gpqa":31.3,"ifeval":22.0,"wino":57.2,"rte":59.6,"race":32.4,"piqa":64.0,"ob":31.2,"hella":35.7,"boolq":71.1,"arce":61.1,"arcc":31.1,"c4":75.1,"wt2":61.75},{"wbid":"2je0fyab","badge":"opkd","name":"GMP NTP+KD+OPKD","sub":"dense teacher · lr=1e-4","hf":"cosmos1030/gmp-kd1e0-s50pct-lr1e-4_20260706_020934","steps":1024,"math":66.2,"lcb":7.8,"gpqa":28.3,"ifeval":22.4,"wino":57.3,"rte":58.8,"race":32.8,"piqa":64.2,"ob":31.0,"hella":35.6,"boolq":71.2,"arce":60.9,"arcc":29.5,"c4":59.77,"wt2":55.11},{"wbid":"zktj96b7","badge":"tr","name":"TR-GMP + NTP+KD","sub":"kl=0.005","hf":"cosmos1030/gmp-kd1e0-s50pct-lr1e-4_20260707_013118","steps":736,"math":61.8,"lcb":6.0,"gpqa":26.3,"ifeval":21.3,"wino":57.4,"rte":58.5,"race":32.7,"piqa":64.2,"ob":30.4,"hella":35.6,"boolq":67.4,"arce":61.2,"arcc":31.7,"c4":60.05,"wt2":55.37},{"wbid":"ph42mgbi","badge":"tr","name":"TR-GMP + NTP+KD","sub":"kl=0.01","hf":"cosmos1030/gmp-kd1e0-s50pct-lr1e-4_20260707_011305","steps":320,"math":59.2,"lcb":4.9,"gpqa":23.2,"ifeval":20.3,"wino":57.3,"rte":66.1,"race":32.3,"piqa":64.4,"ob":29.6,"hella":35.6,"boolq":71.0,"arce":60.9,"arcc":33.2,"c4":54.19,"wt2":48.16},{"wbid":"q8us6c6n","badge":"tr","name":"TR-GMP + NTP+KD","sub":"kl=0.02","hf":"cosmos1030/gmp-kd1e0-s50pct-lr1e-4_20260707_010755","steps":224,"math":63.8,"lcb":7.8,"gpqa":26.3,"ifeval":21.1,"wino":56.9,"rte":61.0,"race":32.3,"piqa":64.5,"ob":29.8,"hella":35.2,"boolq":70.7,"arce":59.9,"arcc":30.5,"c4":56.88,"wt2":53.06},{"wbid":"ul11t38q","badge":"tropkd","name":"TR-GMP + NTP+KD + OPKD (Dense)","sub":"kl=0.005","hf":"cosmos1030/gmp-kd1e0-s50pct-lr1e-4_20260707_121943","steps":896,"math":68.6,"lcb":5.6,"gpqa":29.3,"ifeval":22.4,"wino":56.5,"rte":62.5,"race":33.5,"piqa":65.3,"ob":30.0,"hella":35.7,"boolq":67.9,"arce":61.1,"arcc":32.3,"c4":55.66,"wt2":50.15},{"wbid":"w0j7gvlz","badge":"tropkd","name":"TR-GMP + NTP+KD + OPKD (Dense)","sub":"kl=0.01","hf":"cosmos1030/gmp-kd1e0-s50pct-lr1e-4_20260707_114525","steps":448,"math":65.8,"lcb":9.0,"gpqa":28.8,"ifeval":23.5,"wino":56.4,"rte":58.1,"race":33.2,"piqa":64.0,"ob":30.0,"hella":35.4,"boolq":68.5,"arce":60.6,"arcc":29.5,"c4":49.62,"wt2":44.08},{"wbid":"6337e12s","badge":"tropkd","name":"TR-GMP + NTP+KD + OPKD (Dense)","sub":"kl=0.02","hf":"cosmos1030/gmp-kd1e0-s50pct-lr1e-4_20260707_114011","steps":256,"math":58.8,"lcb":7.5,"gpqa":25.3,"ifeval":21.1,"wino":55.9,"rte":63.9,"race":33.0,"piqa":64.4,"ob":29.6,"hella":35.2,"boolq":71.5,"arce":60.9,"arcc":32.2,"c4":54.63,"wt2":49.4},{"wbid":"qd1117ir","badge":"tropkd","name":"TR-GMP + NTP+KD + OPKD (Dual)","sub":"kl=0.0025","hf":"cosmos1030/gmp-kd1e0-s50pct-lr1e-4_20260710_171528","steps":2165,"math":70.2,"lcb":9.3,"gpqa":28.3,"ifeval":23.3,"wino":57.1,"rte":63.9,"race":32.2,"piqa":65.1,"ob":30.0,"hella":36.1,"boolq":70.1,"arce":61.6,"arcc":32.1,"c4":47.07,"wt2":39.43},{"wbid":"skv34ivb","badge":"tropkd","name":"TR-GMP + NTP+KD + OPKD (Dual)","sub":"kl=0.005","hf":"cosmos1030/gmp-kd1e0-s50pct-lr1e-4_20260710_144853","steps":981,"math":66.4,"lcb":7.5,"gpqa":25.8,"ifeval":23.8,"wino":56.6,"rte":64.6,"race":32.5,"piqa":64.9,"ob":30.4,"hella":35.6,"boolq":67.4,"arce":61.3,"arcc":31.9,"c4":53.24,"wt2":47.88},{"wbid":"vavkcbhd","badge":"tropkd","name":"TR-GMP + NTP+KD + OPKD (Dual)","sub":"kl=0.01","hf":"cosmos1030/gmp-kd1e0-s50pct-lr1e-4_20260710_184120","steps":533,"math":68.4,"lcb":7.1,"gpqa":31.8,"ifeval":24.2,"wino":56.1,"rte":64.3,"race":32.7,"piqa":64.3,"ob":31.2,"hella":43.6,"boolq":69.3,"arce":53.0,"arcc":31.7,"c4":48.39,"wt2":43.31},{"wbid":"mjfwh085","badge":"tropkd","name":"TR-GMP + NTP+KD + OPKD (Dual)","sub":"8k · kl=0.005","hf":"cosmos1030/gmp-kd1e0-s50pct-lr1e-4_20260708_123251","steps":800,"math":65.0,"lcb":7.8,"gpqa":29.3,"ifeval":23.5,"wino":57.4,"rte":63.2,"race":32.5,"piqa":65.2,"ob":29.6,"hella":35.9,"boolq":69.0,"arce":60.6,"arcc":31.5,"c4":52.5,"wt2":48.92},{"wbid":"v85j5bdl","badge":"tropkd","name":"TR-GMP + NTP+KD + OPKD (Dual)","sub":"8k · kl=0.01","hf":"cosmos1030/gmp-kd1e0-s50pct-lr1e-4_20260708_120835","steps":448,"math":67.8,"lcb":6.7,"gpqa":30.3,"ifeval":21.1,"wino":57.8,"rte":62.5,"race":32.8,"piqa":64.0,"ob":31.0,"hella":35.3,"boolq":68.6,"arce":60.3,"arcc":29.4,"c4":49.71,"wt2":44.79},{"wbid":"15btrmnv","badge":"tropkd","name":"TR-GMP + NTP+KD + OPKD (Dual)","sub":"8k · kl=0.02","hf":"cosmos1030/gmp-kd1e0-s50pct-lr1e-4_20260708_120030","steps":224,"math":63.0,"lcb":6.0,"gpqa":22.7,"ifeval":23.3,"wino":55.9,"rte":59.2,"race":32.7,"piqa":64.3,"ob":29.6,"hella":34.9,"boolq":70.9,"arce":57.7,"arcc":29.7,"c4":51.54,"wt2":46.67},{"wbid":"u1i8zgs4","badge":"opkd","name":"GMP NTP+KD+OPKD (Prev Mask)","sub":"kl=0.005","hf":"cosmos1030/gmp-kd1e0-s50pct-lr1e-4_20260710_071332","steps":1152,"math":66.2,"lcb":4.9,"gpqa":26.8,"ifeval":21.4,"wino":55.8,"rte":62.5,"race":32.4,"piqa":64.9,"ob":29.6,"hella":35.7,"boolq":67.2,"arce":61.3,"arcc":32.4,"c4":46.44,"wt2":40.06},{"wbid":"q5kzdkf6","badge":"opkd","name":"GMP NTP+KD+OPKD (Prev Mask)","sub":"kl=0.01","hf":"cosmos1030/gmp-kd1e0-s50pct-lr1e-4_20260710_064323","steps":512,"math":59.4,"lcb":5.2,"gpqa":29.8,"ifeval":21.4,"wino":58.1,"rte":61.4,"race":33.6,"piqa":64.7,"ob":31.0,"hella":35.3,"boolq":67.8,"arce":60.1,"arcc":30.3,"c4":51.51,"wt2":46.58}],"S60":[{"wbid":"4t6quvd1","badge":"dense","name":"Dense","sub":"DeepSeek-R1-Distill-Qwen-1.5B","isDense":true,"hf":"deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B","math":80.2,"lcb":15.3,"gpqa":32.8,"ifeval":29.2,"wino":53.8,"rte":57.8,"race":32.1,"piqa":65.2,"ob":32.4,"hella":44.7,"boolq":68.7,"arce":53.8,"arcc":32.9,"c4":42.16,"wt2":40.76},{"wbid":"6qftdjlo","badge":"sgpt","name":"SparseGPT 60%","sub":"OT 80% + FW 20%","hf":"cosmos1030/deepseek-r1-distill-qwen-1.5b-sgpt-s60pct-ot80fw20","math":38.2,"lcb":0.0,"gpqa":26.3,"ifeval":17.4,"wino":51.1,"rte":52.7,"race":27.7,"piqa":59.9,"ob":27.8,"hella":33.6,"boolq":61.4,"arce":36.0,"arcc":25.4,"c4":159.12,"wt2":208.73},{"wbid":"3w3ubwja","badge":"gmp","name":"GMP NTP+KD","sub":"lr=1e-4","hf":"cosmos1030/gmp-kd1e0-s60pct-lr1e-4_20260705_131614","steps":1024,"math":49.8,"lcb":1.9,"gpqa":32.8,"ifeval":20.5,"wino":56.0,"rte":57.0,"race":31.6,"piqa":63.2,"ob":28.0,"hella":34.0,"boolq":68.3,"arce":57.0,"arcc":29.5,"c4":130.53,"wt2":107.5},{"wbid":"ebf8oski","badge":"opkd","name":"GMP NTP+KD+OPKD","sub":"dense teacher · lr=1e-4","hf":"cosmos1030/gmp-kd1e0-s60pct-lr1e-4_20260706_022219","steps":1024,"math":53.0,"lcb":3.0,"gpqa":23.7,"ifeval":18.3,"wino":56.1,"rte":61.7,"race":31.7,"piqa":62.3,"ob":28.2,"hella":33.8,"boolq":68.6,"arce":57.5,"arcc":29.2,"c4":125.45,"wt2":103.71},{"wbid":"3i7n0udd","badge":"tr","name":"TR-GMP + NTP+KD","sub":"kl=0.005","hf":"cosmos1030/gmp-kd1e0-s60pct-lr1e-4_20260707_020505","steps":1376,"math":56.0,"lcb":4.5,"gpqa":27.3,"ifeval":22.4,"wino":55.6,"rte":58.1,"race":33.3,"piqa":63.7,"ob":28.8,"hella":34.4,"boolq":66.1,"arce":58.8,"arcc":30.5,"c4":67.81,"wt2":55.17},{"wbid":"yxho0vmq","badge":"tr","name":"TR-GMP + NTP+KD","sub":"kl=0.01","hf":"cosmos1030/gmp-kd1e0-s60pct-lr1e-4_20260707_012832","steps":608,"math":57.0,"lcb":2.2,"gpqa":24.8,"ifeval":20.9,"wino":56.8,"rte":59.9,"race":32.3,"piqa":62.4,"ob":27.6,"hella":34.1,"boolq":66.6,"arce":58.1,"arcc":29.6,"c4":107.67,"wt2":90.47},{"wbid":"1krya5s0","badge":"tr","name":"TR-GMP + NTP+KD","sub":"kl=0.02","hf":"cosmos1030/gmp-kd1e0-s60pct-lr1e-4_20260707_031928","steps":352,"math":53.2,"lcb":3.0,"gpqa":22.2,"ifeval":20.0,"wino":56.8,"rte":60.3,"race":31.4,"piqa":62.6,"ob":28.0,"hella":34.0,"boolq":69.5,"arce":57.9,"arcc":30.0,"c4":109.21,"wt2":96.99},{"wbid":"qq3dhm8n","badge":"tropkd","name":"TR-GMP + NTP+KD + OPKD (Dense)","sub":"kl=0.005","hf":"cosmos1030/gmp-kd1e0-s60pct-lr1e-4_20260707_124907","steps":1344,"math":59.0,"lcb":3.0,"gpqa":28.3,"ifeval":21.6,"wino":55.4,"rte":54.9,"race":31.7,"piqa":63.4,"ob":28.2,"hella":34.5,"boolq":67.2,"arce":58.4,"arcc":30.5,"c4":102.99,"wt2":84.43},{"wbid":"rdzjtvpv","badge":"tropkd","name":"TR-GMP + NTP+KD + OPKD (Dense)","sub":"kl=0.01","hf":"cosmos1030/gmp-kd1e0-s60pct-lr1e-4_20260707_120906","steps":704,"math":52.6,"lcb":4.5,"gpqa":29.3,"ifeval":20.3,"wino":56.1,"rte":60.3,"race":30.9,"piqa":62.9,"ob":27.4,"hella":34.0,"boolq":65.5,"arce":57.6,"arcc":29.4,"c4":110.06,"wt2":85.87},{"wbid":"ch788zxg","badge":"tropkd","name":"TR-GMP + NTP+KD + OPKD (Dense)","sub":"kl=0.02","hf":"cosmos1030/gmp-kd1e0-s60pct-lr1e-4_20260707_115022","steps":384,"math":51.6,"lcb":3.0,"gpqa":26.8,"ifeval":20.3,"wino":57.5,"rte":59.9,"race":31.1,"piqa":62.0,"ob":27.6,"hella":33.8,"boolq":68.1,"arce":57.9,"arcc":29.9,"c4":114.93,"wt2":94.9},{"wbid":"cxjsv04f","badge":"opkd","name":"GMP NTP+KD+OPKD (Prev Mask)","sub":"kl=0.0025 · 32k 재실행 중","pending":false,"math":58.6,"lcb":3.7,"gpqa":20.7,"ifeval":21.4,"c4":108.47,"wt2":85.21,"wino":56.0,"rte":53.4,"race":32.3,"piqa":65.0,"ob":29.2,"hella":43.7,"boolq":59.8,"arce":57.1,"arcc":35.2,"steps":32768.0,"hf":"cosmos1030/gmp-kd1e0-s60pct-lr1e-4_20260712_073213"},{"wbid":"sesjbe9j","badge":"tropkd","name":"TR-GMP + NTP+KD + OPKD (Dual)","sub":"kl=0.0025 · 32k 재실행 중","pending":false,"math":59.8,"lcb":3.0,"gpqa":25.3,"ifeval":21.1,"c4":100.24,"wt2":75.23,"wino":55.4,"rte":59.2,"race":32.3,"piqa":64.1,"ob":30.2,"hella":43.6,"boolq":59.6,"arce":56.1,"arcc":33.7,"steps":26368.0,"hf":"cosmos1030/gmp-kd1e0-s60pct-lr1e-4_20260712_023504"}],"S70":[{"wbid":"4t6quvd1","badge":"dense","name":"Dense","sub":"DeepSeek-R1-Distill-Qwen-1.5B","isDense":true,"hf":"deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B","math":80.2,"lcb":15.3,"gpqa":32.8,"ifeval":29.2,"wino":53.8,"rte":57.8,"race":32.1,"piqa":65.2,"ob":32.4,"hella":44.7,"boolq":68.7,"arce":53.8,"arcc":32.9,"c4":42.16,"wt2":40.76},{"wbid":"mgxa9eus","badge":"sgpt","name":"SparseGPT 70%","sub":"OT 80% + FW 20%","hf":"cosmos1030/deepseek-r1-distill-qwen-1.5b-sgpt-s70pct-ot80fw20","math":6.6,"lcb":0.0,"gpqa":21.2,"ifeval":10.5,"wino":51.1,"rte":52.7,"race":27.6,"piqa":54.1,"ob":26.2,"hella":29.8,"boolq":54.9,"arce":30.6,"arcc":24.8,"c4":468.58,"wt2":564.86},{"wbid":"ov87u2y0","badge":"gmp","name":"GMP NTP+KD","sub":"lr=1e-4","hf":"cosmos1030/gmp-kd1e0-s70pct-lr1e-4_20260705_132250","steps":1024,"math":27.8,"lcb":0.0,"gpqa":24.8,"ifeval":15.0,"wino":53.7,"rte":54.9,"race":29.1,"piqa":60.5,"ob":27.0,"hella":31.8,"boolq":64.3,"arce":50.2,"arcc":26.4,"c4":230.0,"wt2":225.4},{"wbid":"xn5x8fdy","badge":"opkd","name":"GMP NTP+KD+OPKD","sub":"dense teacher · lr=1e-4","hf":"cosmos1030/gmp-kd1e0-s70pct-lr1e-4_20260706_023531","steps":1024,"math":24.4,"lcb":0.0,"gpqa":26.3,"ifeval":15.0,"wino":52.3,"rte":53.4,"race":29.5,"piqa":60.7,"ob":27.2,"hella":31.8,"boolq":63.3,"arce":50.8,"arcc":25.8,"c4":206.55,"wt2":187.19},{"wbid":"ze6qflhi","badge":"tr","name":"TR-GMP + NTP+KD","sub":"kl=0.005","hf":null,"steps":2464.0,"lcbNull":true,"math":33.6,"gpqa":21.7,"ifeval":18.9,"wino":53.4,"rte":54.2,"race":28.4,"piqa":62.5,"ob":16.8,"obNote":"†","hella":32.7,"boolq":65.0,"arce":54.9,"arcc":27.0,"c4":160.71,"wt2":141.7},{"wbid":"hbwmkmyr","badge":"tr","name":"TR-GMP + NTP+KD","sub":"kl=0.01","hf":"cosmos1030/gmp-kd1e0-s70pct-lr1e-4_20260707_020027","steps":1024,"math":31.0,"lcb":0.0,"gpqa":19.2,"ifeval":18.5,"wino":53.0,"rte":57.0,"race":28.9,"piqa":62.2,"ob":28.2,"hella":32.4,"boolq":65.3,"arce":52.5,"arcc":27.9,"c4":169.46,"wt2":151.68},{"wbid":"b7btobbb","badge":"tr","name":"TR-GMP + NTP+KD","sub":"kl=0.02","hf":"cosmos1030/gmp-kd1e0-s70pct-lr1e-4_20260707_013419","steps":608,"math":31.2,"lcb":0.0,"gpqa":25.3,"ifeval":17.7,"wino":53.9,"rte":53.4,"race":29.2,"piqa":60.8,"ob":27.0,"hella":32.2,"boolq":66.6,"arce":51.9,"arcc":27.2,"c4":183.17,"wt2":165.23},{"wbid":"bblrnf9d","badge":"tropkd","name":"TR-GMP + NTP+KD + OPKD (Dense)","sub":"kl=0.005","hf":"cosmos1030/gmp-kd1e0-s70pct-lr1e-4_20260707_145811","steps":3136,"math":37.0,"lcb":1.5,"gpqa":26.3,"ifeval":20.7,"wino":53.3,"rte":53.8,"race":28.6,"piqa":62.0,"ob":28.4,"hella":32.6,"boolq":65.3,"arce":53.9,"arcc":27.0,"c4":165.56,"wt2":142.98},{"wbid":"v4bbime0","badge":"tropkd","name":"TR-GMP + NTP+KD + OPKD (Dense)","sub":"kl=0.01","hf":"cosmos1030/gmp-kd1e0-s70pct-lr1e-4_20260707_130931","steps":1184,"math":31.8,"lcb":0.0,"gpqa":27.8,"ifeval":18.7,"wino":53.1,"rte":57.4,"race":29.6,"piqa":61.9,"ob":29.2,"hella":32.2,"boolq":65.0,"arce":53.1,"arcc":27.0,"c4":171.48,"wt2":149.54},{"wbid":"guma0zsg","badge":"tropkd","name":"TR-GMP + NTP+KD + OPKD (Dense)","sub":"kl=0.02","hf":"cosmos1030/gmp-kd1e0-s70pct-lr1e-4_20260707_122404","steps":608,"math":34.6,"lcb":0.0,"gpqa":27.3,"ifeval":18.9,"wino":53.4,"rte":55.2,"race":28.8,"piqa":61.0,"ob":28.6,"hella":32.0,"boolq":65.0,"arce":51.3,"arcc":25.9,"c4":182.13,"wt2":166.74},{"wbid":"y0ae9lmj","badge":"opkd","name":"GMP NTP+KD+OPKD (Prev Mask)","sub":"kl=0.0025 · 32k 재실행 중","pending":false,"math":27.4,"lcb":0.4,"gpqa":28.3,"ifeval":18.5,"c4":244.92,"wt2":235.52,"wino":54.9,"rte":53.4,"race":30.5,"piqa":62.0,"ob":30.4,"hella":38.3,"boolq":63.6,"arce":50.3,"arcc":31.6,"steps":32768.0,"hf":"cosmos1030/gmp-kd1e0-s70pct-lr1e-4_20260712_072156","failed_target":true,"actual_sp":59.1},{"wbid":"das8tm7h","badge":"tropkd","name":"TR-GMP + NTP+KD + OPKD (Dual)","sub":"kl=0.0025 · 32k 재실행 중","pending":false,"math":27.8,"lcb":0,"gpqa":26.3,"ifeval":18.5,"c4":232.41,"wt2":233.48,"wino":54.9,"rte":52.7,"race":29.6,"piqa":62.8,"ob":29.2,"hella":38.9,"boolq":62.0,"arce":49.7,"arcc":30.7,"steps":32768.0,"hf":"cosmos1030/gmp-kd1e0-s70pct-lr1e-4_20260712_080022","failed_target":true,"actual_sp":59.6}]},"qwen3_1.7b":{"display":"Qwen3-1.7B","wb_project":"reasoning_qwen3_1.7b","notes":["TR-GMP NTP+KD S60 kl=0.005 (tpg4vr99) — TR이 sp=50%에서 조기 종료 (target 60%), 4096 steps 완주","TR-GMP NTP+KD S70 kl=0.005/0.01 — sp 각각 48%/59% 달성 후 training 4096 steps 완주, math≈0","Dual S70 kl=0.005 (xfiafo8q) math=0, kl=0.01 (oomrjlla) math=2.6 — S70 collapse 심각","PrevMask S70 kl=0.005 (vcyefies) crashed step=8211 → sweep 24imavyt에서 재실행 중","SparseGPT S60 재실행 중 (613183 n52에서 실패 → --exclude=n52,n55,n58,n80 수정 후 재제출)","Dual S70 kl=0.02 (89hbf71t) 실행 중"],"S50":[{"wbid":"wwom9h2p","badge":"dense","name":"Dense","sub":"Qwen3-1.7B","isDense":true,"math":84.6,"lcb":18.7,"gpqa":36.4,"ifeval":69.7,"wino":61.8,"rte":70.4,"race":36.7,"piqa":72.1,"ob":37.2,"hella":60.4,"boolq":77.5,"arce":69.7,"arcc":43.1,"c4":22.36,"wt2":16.69},{"wbid":"r21mokbt","badge":"sgpt","name":"SparseGPT 50%","sub":"OT 80% + FW 20%","math":41.2,"lcb":0.7,"gpqa":26.8,"ifeval":23.5,"wino":54.2,"rte":56.3,"race":34.5,"piqa":63.0,"ob":34.2,"hella":45.7,"boolq":62.2,"arce":50.1,"arcc":31.5,"c4":48.52,"wt2":34.07},{"wbid":"5blx73bh","badge":"tr","name":"TR-GMP + NTP+KD","sub":"kl=0.005","hf":"cosmos1030/gmp-kd1e0-s50pct-lr1e-4_20260711_190919","steps":3381,"math":64.2,"lcb":10.4,"gpqa":30.3,"ifeval":39.2,"wino":59.8,"rte":69.3,"race":38.1,"piqa":70.8,"ob":39.4,"hella":57.9,"boolq":75.2,"arce":68.4,"arcc":41.6,"c4":22.97,"wt2":15.94},{"wbid":"yibplt48","badge":"tr","name":"TR-GMP + NTP+KD","sub":"kl=0.01","hf":"cosmos1030/gmp-kd1e0-s50pct-lr1e-4_20260711_175036","steps":1621,"math":59.2,"lcb":9.3,"gpqa":27.3,"ifeval":36.6,"wino":58.9,"rte":63.2,"race":36.5,"piqa":70.9,"ob":38.2,"hella":56.2,"boolq":75.2,"arce":66.3,"arcc":40.6,"c4":23.12,"wt2":15.97},{"wbid":"7aqzatnq","badge":"tr","name":"TR-GMP + NTP+KD","sub":"kl=0.02","hf":"cosmos1030/gmp-kd1e0-s50pct-lr1e-4_20260711_223422","steps":853,"math":46.0,"lcb":6.7,"gpqa":31.8,"ifeval":38.6,"wino":57.7,"rte":71.5,"race":37.1,"piqa":70.2,"ob":36.2,"hella":55.6,"boolq":74.2,"arce":66.9,"arcc":39.9,"c4":23.91,"wt2":17.01},{"wbid":"o65xo2z5","badge":"gmp","name":"GMP NTP+KD","sub":"8192 steps","hf":"cosmos1030/gmp-kd1e0-s50pct-lr1e-4_20260711_195221","steps":8212,"math":67.0,"lcb":10.8,"gpqa":28.8,"ifeval":44.2,"wino":60.1,"rte":66.4,"race":37.7,"piqa":71.7,"ob":39.4,"hella":58.4,"boolq":73.0,"arce":70.3,"arcc":41.8,"c4":23.32,"wt2":16.0},{"wbid":"95z4mrtx","badge":"opkd","name":"GMP NTP+KD+OPKD (Dense)","sub":"cubic 32k steps · lr=1e-4","steps":32768,"math":69.4,"lcb":1.5,"gpqa":31.8,"ifeval":47.5,"wino":57.6,"rte":64.3,"race":36.9,"piqa":69.8,"ob":39.8,"hella":59.3,"boolq":73.0,"arce":68.9,"arcc":42.7,"c4":24.34,"wt2":16.54},{"wbid":"unmj819z","badge":"tropkd","name":"TR-GMP + NTP+KD + OPKD (Prev Mask)","sub":"kl=0.005","hf":"cosmos1030/gmp-kd1e0-s50pct-lr1e-4_20260711_234224","steps":6293,"math":65.8,"lcb":8.6,"gpqa":30.3,"ifeval":46.4,"wino":60.0,"rte":63.9,"race":38.9,"piqa":70.8,"ob":40.2,"hella":58.1,"boolq":72.4,"arce":68.0,"arcc":42.9,"c4":23.46,"wt2":16.2},{"wbid":"jmagj6yb","badge":"tropkd","name":"TR-GMP + NTP+KD + OPKD (Dense)","sub":"kl=0.005","steps":2688,"math":64.8,"lcb":11.2,"gpqa":27.8,"ifeval":42.5,"wino":59.4,"rte":62.1,"race":37.3,"piqa":70.7,"ob":38.2,"hella":56.9,"boolq":76.0,"arce":69.0,"arcc":41.5,"c4":23.3,"wt2":16.0},{"wbid":"qka9u28l","badge":"tropkd","name":"TR-GMP + NTP+KD + OPKD (Dense)","sub":"kl=0.01","steps":1248,"math":58.2,"lcb":8.6,"gpqa":24.7,"ifeval":39.0,"wino":61.7,"rte":69.7,"race":36.1,"piqa":70.6,"ob":37.4,"hella":55.0,"boolq":66.4,"arce":63.8,"arcc":40.0,"c4":23.8,"wt2":16.5},{"wbid":"f67yydns","badge":"tropkd","name":"TR-GMP + NTP+KD + OPKD (Dense)","sub":"kl=0.02","steps":608,"math":52.8,"lcb":6.3,"gpqa":23.2,"ifeval":39.0,"wino":61.2,"rte":70.4,"race":35.9,"piqa":70.7,"ob":38.2,"hella":54.2,"boolq":77.9,"arce":65.7,"arcc":39.8,"c4":25.4,"wt2":18.0},{"wbid":"fjivswpi","badge":"tropkd","name":"TR-GMP + NTP+KD + OPKD (Dual)","sub":"kl=0.02 · True Dual (dense+prevmask)","hf":"cosmos1030/gmp-kd1e0-s50pct-lr1e-4_20260712_183815","steps":800,"math":69.0,"lcb":7.8,"gpqa":30.8,"ifeval":48.2,"wino":59.0,"rte":59.9,"race":35.9,"piqa":70.1,"ob":37.0,"hella":53.3,"boolq":74.8,"arce":64.6,"arcc":37.8,"c4":25.22,"wt2":19.03},{"wbid":"l1vrrdiw","badge":"tropkd","name":"TR-GMP + NTP+KD + OPKD (Dual)","sub":"kl=0.01 · True Dual (dense+prevmask)","hf":"cosmos1030/gmp-kd1e0-s50pct-lr1e-4_20260712_203917","steps":2144,"math":60.8,"lcb":9.7,"gpqa":29.3,"ifeval":37.2,"wino":59.7,"rte":65.3,"race":35.2,"piqa":70.4,"ob":38.0,"hella":55.9,"boolq":74.4,"arce":68.6,"arcc":39.9,"c4":23.26,"wt2":16.5}],"S60":[{"wbid":"wwom9h2p","badge":"dense","name":"Dense","sub":"Qwen3-1.7B","isDense":true,"math":84.6,"lcb":18.7,"gpqa":36.4,"ifeval":69.7,"wino":61.8,"rte":70.4,"race":36.7,"piqa":72.1,"ob":37.2,"hella":60.4,"boolq":77.5,"arce":69.7,"arcc":43.1,"c4":22.36,"wt2":16.69},{"wbid":"yfy0nd3c","badge":"sgpt","name":"SparseGPT 60%","sub":"OT 80% + FW 20%","math":4.6,"lcb":0.0,"gpqa":1.0,"ifeval":11.5,"wino":50.5,"rte":53.1,"race":28.6,"piqa":56.6,"ob":27.8,"hella":33.8,"boolq":51.9,"arce":35.5,"arcc":24.6,"c4":173.14,"wt2":99.57},{"wbid":"tpg4vr99","badge":"tr","name":"TR-GMP + NTP+KD","sub":"kl=0.005","hf":"cosmos1030/gmp-kd1e0-s60pct-lr1e-4_20260711_103056","steps":4117,"math":36.2,"lcb":0.0,"gpqa":29.8,"ifeval":23.3,"wino":58.1,"rte":65.7,"race":37.0,"piqa":67.9,"ob":35.2,"hella":49.6,"boolq":63.9,"arce":61.9,"arcc":37.4,"c4":34.73,"wt2":21.48,"failed_target":true,"actual_sp":50.0},{"wbid":"wsc7jpcd","badge":"tr","name":"TR-GMP + NTP+KD","sub":"kl=0.01","hf":"cosmos1030/gmp-kd1e0-s60pct-lr1e-4_20260711_094953","steps":2741,"math":53.6,"lcb":4.9,"gpqa":20.7,"ifeval":31.8,"wino":58.2,"rte":62.1,"race":37.3,"piqa":69.8,"ob":37.2,"hella":52.1,"boolq":68.2,"arce":66.8,"arcc":40.8,"c4":32.51,"wt2":20.05},{"wbid":"xgvrw1f4","badge":"tr","name":"TR-GMP + NTP+KD","sub":"kl=0.02","hf":"cosmos1030/gmp-kd1e0-s60pct-lr1e-4_20260711_085206","steps":1525,"math":45.8,"lcb":3.4,"gpqa":25.8,"ifeval":29.6,"wino":57.5,"rte":66.1,"race":36.7,"piqa":69.1,"ob":37.6,"hella":51.5,"boolq":69.4,"arce":64.9,"arcc":40.5,"c4":30.67,"wt2":20.5},{"wbid":"txfgrpg5","badge":"gmp","name":"GMP NTP+KD","sub":"8192 steps","steps":8192,"math":51.6,"lcb":4.5,"gpqa":24.2,"ifeval":28.7,"wino":58.9,"rte":66.8,"race":38.4,"piqa":69.9,"ob":38.8,"hella":52.7,"boolq":62.4,"arce":66.2,"arcc":40.3,"c4":33.3,"wt2":20.6},{"wbid":"rxvwx6u1","badge":"opkd","name":"GMP NTP+KD+OPKD (Dense)","sub":"cubic 32k steps · lr=1e-4","steps":32768,"math":47.2,"lcb":2.2,"gpqa":26.8,"ifeval":31.4,"wino":58.6,"rte":66.1,"race":37.8,"piqa":69.3,"ob":39.4,"hella":53.2,"boolq":68.4,"arce":65.0,"arcc":40.3,"c4":33.03,"wt2":21.03},{"wbid":"k422e39y","badge":"tropkd","name":"TR-GMP + NTP+KD + OPKD (Dense)","sub":"kl=0.005","hf":"cosmos1030/gmp-kd1e0-s60pct-lr1e-4_20260711_092116","steps":4117,"math":51.2,"lcb":3.7,"gpqa":26.8,"ifeval":28.3,"wino":56.8,"rte":70.0,"race":35.9,"piqa":68.7,"ob":36.4,"hella":49.8,"boolq":64.1,"arce":64.0,"arcc":37.4,"c4":34.09,"wt2":21.59,"failed_target":true,"actual_sp":52.6},{"wbid":"ij8z2bi7","badge":"tropkd","name":"TR-GMP + NTP+KD + OPKD (Dense)","sub":"kl=0.01","hf":"cosmos1030/gmp-kd1e0-s60pct-lr1e-4_20260711_081102","steps":1877,"math":49.0,"lcb":3.4,"gpqa":29.3,"ifeval":27.0,"wino":58.2,"rte":67.5,"race":36.5,"piqa":69.4,"ob":37.4,"hella":50.6,"boolq":61.4,"arce":63.9,"arcc":37.8,"c4":29.51,"wt2":21.62},{"wbid":"z8z9qvz8","badge":"tropkd","name":"TR-GMP + NTP+KD + OPKD (Dense)","sub":"kl=0.02","hf":"cosmos1030/gmp-kd1e0-s60pct-lr1e-4_20260711_071148","steps":1141,"math":42.4,"lcb":1.1,"gpqa":23.7,"ifeval":25.1,"wino":56.5,"rte":52.0,"race":35.6,"piqa":67.9,"ob":36.0,"hella":49.8,"boolq":63.1,"arce":62.7,"arcc":36.2,"c4":29.89,"wt2":21.03},{"wbid":"crt5l9ty","badge":"tropkd","name":"TR-GMP + NTP+KD + OPKD (Prev Mask)","sub":"kl=0.005","steps":8192,"math":35.4,"lcb":0.7,"gpqa":26.3,"ifeval":21.4,"wino":58.4,"rte":64.3,"race":36.1,"piqa":68.5,"ob":36.6,"hella":50.9,"boolq":71.0,"arce":64.0,"arcc":39.6,"c4":29.6,"wt2":21.4,"failed_target":true,"actual_sp":51.9},{"wbid":"i8n23nca","badge":"tropkd","name":"TR-GMP + NTP+KD + OPKD (Prev Mask)","sub":"kl=0.01","steps":2400,"math":32.8,"lcb":0.0,"gpqa":27.8,"ifeval":19.4,"wino":57.2,"rte":68.6,"race":35.7,"piqa":69.0,"ob":37.6,"hella":51.1,"boolq":73.0,"arce":66.0,"arcc":39.3,"c4":28.7,"wt2":20.8},{"wbid":"dwlif4kh","badge":"tropkd","name":"TR-GMP + NTP+KD + OPKD (Dual)","sub":"kl=0.02 · True Dual (dense+prevmask)","hf":"cosmos1030/gmp-kd1e0-s60pct-lr1e-4_20260712_193204","steps":1184,"math":43.2,"lcb":2.2,"gpqa":27.8,"ifeval":29.6,"wino":55.1,"rte":66.1,"race":34.9,"piqa":67.3,"ob":34.8,"hella":48.0,"boolq":64.8,"arce":58.9,"arcc":35.2,"c4":32.08,"wt2":24.66},{"wbid":"59ctppvk","badge":"tropkd","name":"TR-GMP + NTP+KD + OPKD (Dual)","sub":"kl=0.01 · True Dual (dense+prevmask)","hf":"cosmos1030/gmp-kd1e0-s60pct-lr1e-4_20260712_221513","steps":3296,"math":55.0,"lcb":6.0,"gpqa":25.8,"ifeval":28.8,"wino":58.9,"rte":66.8,"race":36.8,"piqa":69.1,"ob":37.0,"hella":51.9,"boolq":65.0,"arce":66.0,"arcc":39.1,"c4":28.57,"wt2":20.28}],"S70":[{"wbid":"wwom9h2p","badge":"dense","name":"Dense","sub":"Qwen3-1.7B","isDense":true,"math":84.6,"lcb":18.7,"gpqa":36.4,"ifeval":69.7,"wino":61.8,"rte":70.4,"race":36.7,"piqa":72.1,"ob":37.2,"hella":60.4,"boolq":77.5,"arce":69.7,"arcc":43.1,"c4":22.36,"wt2":16.69},{"wbid":"lk11d8om","badge":"sgpt","name":"SparseGPT 70%","sub":"OT 80% + FW 20%","math":0.2,"lcb":0.0,"gpqa":2.5,"ifeval":13.1,"wino":48.4,"rte":52.7,"race":24.7,"piqa":51.1,"ob":26.4,"hella":27.3,"boolq":48.2,"arce":27.7,"arcc":24.5,"c4":5449.7,"wt2":5794.8},{"wbid":"uny05phx","badge":"tr","name":"TR-GMP + NTP+KD","sub":"kl=0.005","hf":"cosmos1030/gmp-kd1e0-s70pct-lr1e-4_20260711_132542","steps":4117,"math":0.0,"lcb":0.0,"gpqa":4.0,"ifeval":0.6,"wino":52.4,"rte":59.2,"race":26.4,"piqa":61.4,"ob":28.8,"hella":34.9,"boolq":53.0,"arce":47.6,"arcc":26.3,"c4":151.24,"wt2":104.73,"failed_target":true,"actual_sp":47.9},{"wbid":"93r2dvtd","badge":"tr","name":"TR-GMP + NTP+KD","sub":"kl=0.01","hf":"cosmos1030/gmp-kd1e0-s70pct-lr1e-4_20260711_133212","steps":4117,"math":0.0,"lcb":0.0,"gpqa":0.5,"ifeval":12.2,"wino":54.3,"rte":58.1,"race":30.8,"piqa":62.8,"ob":31.4,"hella":39.7,"boolq":59.1,"arce":51.8,"arcc":29.9,"c4":76.01,"wt2":51.63,"failed_target":true,"actual_sp":59.1},{"wbid":"rms2ucjw","badge":"tr","name":"TR-GMP + NTP+KD","sub":"kl=0.02","hf":"cosmos1030/gmp-kd1e0-s70pct-lr1e-4_20260711_135950","steps":2485,"math":2.4,"lcb":0.0,"gpqa":14.6,"ifeval":16.3,"wino":53.9,"rte":61.4,"race":33.6,"piqa":64.7,"ob":34.4,"hella":42.9,"boolq":64.3,"arce":57.1,"arcc":32.5,"c4":52.07,"wt2":32.52},{"wbid":"etuxvug6","badge":"gmp","name":"GMP NTP+KD","sub":"8192 steps","hf":"cosmos1030/gmp-kd1e0-s70pct-lr1e-4_20260711_181703","steps":8212,"math":0.4,"lcb":0.0,"gpqa":3.0,"ifeval":9.2,"wino":54.7,"rte":56.3,"race":34.8,"piqa":65.6,"ob":35.0,"hella":43.1,"boolq":67.5,"arce":59.1,"arcc":34.6,"c4":52.55,"wt2":32.33},{"wbid":"xfiafo8q","badge":"tropkd","name":"TR-GMP + NTP+KD + OPKD (Dense)","sub":"kl=0.005","steps":4096.0,"math":0,"lcb":0,"gpqa":0,"ifeval":8.5,"c4":111.95,"wt2":81.15,"pending":false,"wino":53.0,"rte":56.7,"race":27.7,"piqa":62.1,"ob":28.4,"hella":36.8,"boolq":54.5,"arce":47.4,"arcc":27.6,"hf":"cosmos1030/gmp-kd1e0-s70pct-lr1e-4_20260712_092549","failed_target":true,"actual_sp":52.9},{"wbid":"oomrjlla","badge":"tropkd","name":"TR-GMP + NTP+KD + OPKD (Dense)","sub":"kl=0.01","steps":4096,"math":2.6,"lcb":0.0,"gpqa":17.2,"ifeval":14.8,"wino":55.2,"rte":61.4,"race":33.5,"piqa":63.1,"ob":33.6,"hella":41.2,"boolq":58.3,"arce":56.4,"arcc":32.8,"c4":56.3,"wt2":35.9,"failed_target":true,"actual_sp":68.1},{"wbid":"89hbf71t","badge":"tropkd","name":"TR-GMP + NTP+KD + OPKD (Dense)","sub":"kl=0.02 · 실행 중","pending":false,"c4":42.74,"wt2":33.24,"wino":54.9,"rte":67.1,"race":33.9,"piqa":63.4,"ob":32.0,"hella":41.8,"boolq":66.4,"arce":54.1,"arcc":32.8,"steps":1536.0,"math":15.4,"lcb":0.4,"gpqa":23.7,"ifeval":17.4,"hf":"cosmos1030/gmp-kd1e0-s70pct-lr1e-4_20260712_144947"},{"wbid":"8mg06201","badge":"tropkd","name":"TR-GMP + NTP+KD + OPKD (Prev Mask)","sub":"kl=0.01","steps":2016.0,"math":0,"lcb":0,"gpqa":1.0,"ifeval":14.8,"c4":38.09,"wt2":27.74,"pending":false,"wino":54.5,"rte":62.1,"race":34.3,"piqa":64.0,"ob":35.2,"hella":42.8,"boolq":58.8,"arce":58.5,"arcc":32.8,"hf":"cosmos1030/gmp-kd1e0-s70pct-lr1e-4_20260712_073935"},{"wbid":"vcyefies","badge":"tropkd","name":"TR-GMP + NTP+KD + OPKD (Prev Mask)","sub":"kl=0.005 · 재실행 중 (24imavyt)","pending":true,"c4":122.53,"wt2":91.34,"wino":53.2,"rte":54.5,"race":27.8,"piqa":61.9,"ob":28.6,"hella":35.9,"boolq":56.1,"arce":46.4,"arcc":27.8,"steps":8192.0}]},"qwen3_4b":{"display":"Qwen3-4B","wb_project":"reasoning_qwen3_4b","notes":[],"S50":[{"wbid":"eer6rob2","badge":"dense","name":"Dense","sub":"Qwen3-4B","isDense":true,"hf":"Qwen/Qwen3-4B","math":91.4,"lcb":27.6,"gpqa":57.1,"ifeval":82.3,"wino":65.7,"rte":75.8,"race":41.5,"piqa":75.0,"ob":40.4,"hella":68.4,"boolq":85.0,"arce":78.5,"arcc":53.7,"c4":19.83,"wt2":13.65}],"S60":[{"wbid":"eer6rob2","badge":"dense","name":"Dense","sub":"Qwen3-4B","isDense":true,"hf":"Qwen/Qwen3-4B","math":91.4,"lcb":27.6,"gpqa":57.1,"ifeval":82.3,"wino":65.7,"rte":75.8,"race":41.5,"piqa":75.0,"ob":40.4,"hella":68.4,"boolq":85.0,"arce":78.5,"arcc":53.7,"c4":19.83,"wt2":13.65}],"S70":[{"wbid":"eer6rob2","badge":"dense","name":"Dense","sub":"Qwen3-4B","isDense":true,"hf":"Qwen/Qwen3-4B","math":91.4,"lcb":27.6,"gpqa":57.1,"ifeval":82.3,"wino":65.7,"rte":75.8,"race":41.5,"piqa":75.0,"ob":40.4,"hella":68.4,"boolq":85.0,"arce":78.5,"arcc":53.7,"c4":19.83,"wt2":13.65}]}}};
+const HF0 = DB.meta.hf_base;
+
+const MODEL_KEYS = Object.keys(DB.models);
+let currentModel = MODEL_KEYS[0];
+
+// ── tab bar ──────────────────────────────────────────────────────────────────
+(function buildTabs() {
+  const bar = document.getElementById('tab-bar');
+  MODEL_KEYS.forEach((k, i) => {
+    const btn = document.createElement('button');
+    btn.className = 'tab-btn' + (i === 0 ? ' active' : '');
+    btn.dataset.m = k;
+    btn.textContent = DB.models[k].display;
+    btn.onclick = () => switchModel(k);
+    bar.appendChild(btn);
+  });
+})();
+
+// ── table header ─────────────────────────────────────────────────────────────
+const THEAD = `<thead>
+  <tr class="colgroup-header">
+    <th style="min-width:220px">Method</th>
+    <th class="csep" colspan="4">Reasoning</th>
+    <th class="csep" colspan="10">Zero-shot</th>
+    <th class="csep" colspan="2">Perplexity ↓</th>
+    <th class="csep">Steps</th>
+    <th class="csep" colspan="2">Links</th>
+  </tr>
+  <tr class="col-headers">
+    <th>Method</th>
+    <th class="csep" data-higher>MATH-500</th><th data-higher>LCB</th><th data-higher>GPQA</th><th data-higher>IFEval</th>
+    <th class="csep" data-higher>ZS Avg</th><th data-higher>Wino.</th><th data-higher>RTE</th><th data-higher>RACE</th><th data-higher>PIQA</th><th data-higher>OpenBook</th><th data-higher>HellaSwag</th><th data-higher>BoolQ</th><th data-higher>ARC-E</th><th data-higher>ARC-C</th>
+    <th class="csep" data-lower>C4</th><th data-lower>WT2</th>
+    <th class="csep">#step</th>
+    <th class="csep">W&B</th><th>HF</th>
+  </tr>
+</thead>`;
+
+function mcell(r) {
+  const failBadge = r.failed_target
+    ? `<span class="failed-badge">sp=${r.actual_sp}%</span>`
+    : '';
+  return `<div class="method-cell"><span class="method-stripe ${r.badge}"></span><div><span class="method-name">${r.name}${failBadge}</span><span class="method-sub">${r.sub||''}</span></div></div>`;
+}
+
+function makeRow(r, wbBase) {
+  const tr = document.createElement('tr');
+  if (r.isDense) tr.className = 'dense-row';
+  else if (r.failed_target) tr.classList.add('failed-target');
+  const wbLink = r.wbid
+    ? `<td class="csep link-cell"><a class="link-btn wb" href="${wbBase}${r.wbid}" target="_blank">W&B</a></td>`
+    : `<td class="csep link-cell"><span class="no-link">—</span></td>`;
+  const hfHref = r.hf ? (r.hf.startsWith('http') ? r.hf : HF0 + r.hf) : null;
+  const hfLink = hfHref
+    ? `<td class="link-cell"><a class="link-btn hf" href="${hfHref}" target="_blank">HF</a></td>`
+    : `<td class="link-cell"><span class="no-link">—</span></td>`;
+
+  if (r.pending) {
+    tr.innerHTML = `<td>${mcell(r)}</td>
+      <td class="csep running">—</td><td class="running">—</td><td class="running">—</td><td class="running">—</td>
+      <td class="csep dash">—</td><td class="dash">—</td><td class="dash">—</td><td class="dash">—</td><td class="dash">—</td><td class="dash">—</td><td class="dash">—</td><td class="dash">—</td><td class="dash">—</td><td class="dash">—</td>
+      <td class="csep ppl-col dash">—</td><td class="ppl-col dash">—</td>
+      <td class="csep step-col dash">—</td>${wbLink}<td class="link-cell"><span class="no-link">—</span></td>`;
+    return tr;
+  }
+
+  const f = v => (v === null || v === undefined) ? '<span class="dash">—</span>' : v;
+  const lcbTd = r.lcbNull ? `<td class="dash">—</td>` : `<td>${f(r.lcb)}</td>`;
+  const obVal = r.obNote ? `${f(r.ob)}${r.obNote}` : f(r.ob);
+  const stepsTd = (r.steps == null)
+    ? `<td class="csep step-col dash">—</td>`
+    : `<td class="csep step-col">${r.steps}</td>`;
+
+  const zsVals = [r.wino, r.rte, r.race, r.piqa, r.ob, r.hella, r.boolq, r.arce, r.arcc]
+    .filter(v => v !== null && v !== undefined);
+  const zsAvg = zsVals.length === 9
+    ? (zsVals.reduce((a, b) => a + b, 0) / 9).toFixed(1)
+    : null;
+
+  tr.innerHTML = `<td>${mcell(r)}</td>
+    <td class="csep">${f(r.math)}</td>${lcbTd}<td>${f(r.gpqa)}</td><td>${f(r.ifeval)}</td>
+    <td class="csep">${f(zsAvg)}</td><td>${f(r.wino)}</td><td>${f(r.rte)}</td><td>${f(r.race)}</td><td>${f(r.piqa)}</td><td>${obVal}</td><td>${f(r.hella)}</td><td>${f(r.boolq)}</td><td>${f(r.arce)}</td><td>${f(r.arcc)}</td>
+    <td class="csep ppl-col">${f(r.c4)}</td><td class="ppl-col">${f(r.wt2)}</td>
+    ${stepsTd}${wbLink}${hfLink}`;
+  return tr;
+}
+
+function highlightBest(id) {
+  const tbl = document.getElementById(id);
+  if (!tbl) return;
+  const ths = Array.from(tbl.querySelector('tr.col-headers').querySelectorAll('th'));
+  const rows = Array.from(tbl.querySelectorAll('tbody tr')).filter(r => !r.classList.contains('dense-row') && !r.classList.contains('failed-target'));
+  ths.forEach((th, ci) => {
+    const hi = th.hasAttribute('data-higher'), lo = th.hasAttribute('data-lower');
+    if (!hi && !lo) return;
+    const cells = rows.map(r => r.querySelectorAll('td')[ci]).filter(Boolean);
+    const vals = cells.map(td => { const n = parseFloat(td.textContent); return isNaN(n) ? null : n; });
+    const valid = vals.filter(v => v !== null);
+    if (!valid.length) return;
+    const sorted = [...new Set(valid)].sort((a, b) => hi ? b - a : a - b);
+    const best = sorted[0], second = sorted[1];
+    cells.forEach((td, i) => {
+      if (vals[i] === best) td.classList.add(lo ? 'best-ppl' : 'best');
+      else if (second !== undefined && vals[i] === second) td.classList.add(lo ? 'second-ppl' : 'second');
+    });
+  });
+}
+
+function renderSection(sec, model) {
+  const runs = model[sec] || [];
+  const wbBase = `https://wandb.ai/${DB.meta.entity}/${model.wb_project}/runs/`;
+  const sparsity = {S50:'50%',S60:'60%',S70:'70%'}[sec];
+  const id = 'tbl-' + sec.toLowerCase();
+  const wrap = document.createElement('div');
+  wrap.className = 'section';
+  wrap.innerHTML = `
+    <div class="section-label">
+      <span class="section-label-tag">${sec.toLowerCase()}</span>
+      <span class="section-label-sparsity">${sparsity} sparsity</span>
+      <div class="section-label-line"></div>
+    </div>
+    <div class="tbl-wrap"><table id="${id}">${THEAD}<tbody></tbody></table></div>`;
+  const tbody = wrap.querySelector('tbody');
+  runs.forEach(r => tbody.appendChild(makeRow(r, wbBase)));
+  return wrap;
+}
+
+function renderNotes(notesList) {
+  const notesEl = document.getElementById('notes');
+  notesEl.innerHTML = '';
+  notesList.forEach(n => {
+    const d = document.createElement('div');
+    d.className = 'note';
+    d.innerHTML = `<span class="note-dot"></span>${n}`;
+    notesEl.appendChild(d);
+  });
+}
+
+function switchModel(k) {
+  currentModel = k;
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.m === k));
+  const model = DB.models[k];
+  document.getElementById('page-eyebrow').textContent = `${model.display} · ${model.wb_project}`;
+  document.getElementById('page-subtitle').textContent = 'A100-80GB · eval: MATH-500, LCB, GPQA, IFEval + 9 zero-shot tasks';
+  const app = document.getElementById('app');
+  app.innerHTML = '';
+  ['S50','S60','S70'].forEach(s => {
+    app.appendChild(renderSection(s, model));
+    highlightBest('tbl-' + s.toLowerCase());
+  });
+  renderNotes(model.notes || []);
+}
+
+switchModel(MODEL_KEYS[0]);
+</script>
