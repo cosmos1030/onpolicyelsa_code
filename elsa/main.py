@@ -157,10 +157,13 @@ def main(argv):
         and getattr(FLAGS, 'gmp_use_fsdp', False)
         and getattr(FLAGS, 'gmp_onpolicy_kd_lambda', 0.0) > 0
     )
-    _use_admm_opd_fsdp = (
-        is_distributed
-        and (getattr(FLAGS, 'do_kd_admm', False) or getattr(FLAGS, 'do_offpolicy_kd_admm', False))
-        and getattr(FLAGS, 'admm_use_fsdp', False)
+    # OPD's vLLM always runs isolated on a dedicated GPU (index = world_size,
+    # i.e. one GPU beyond the training world — world_size=1 for single-GPU
+    # training). This doesn't require FSDP/distributed training: a single
+    # training GPU + one dedicated vLLM GPU works the same way, just with
+    # world_size=1 and no dist.barrier() needed (see below).
+    _use_admm_opd_dedicated = (
+        (getattr(FLAGS, 'do_kd_admm', False) or getattr(FLAGS, 'do_offpolicy_kd_admm', False))
         and getattr(FLAGS, 'opd_enabled', False)
     )
 
@@ -237,9 +240,10 @@ def main(argv):
         if local_rank != 0:
             logging.info(f"[rank {local_rank}] vLLM barrier passed — proceeding")
 
-    # ADMM + OPD + FSDP: vLLM subprocess on dedicated GPU (index = world_size)
-    # Requires requesting world_size+1 GPUs in the SLURM script.
-    if _use_admm_opd_fsdp:
+    # ADMM + OPD: vLLM subprocess on dedicated GPU (index = world_size, e.g.
+    # GPU 1 for single-GPU training). Requires requesting world_size+1 GPUs
+    # in the SLURM script.
+    if _use_admm_opd_dedicated:
         _opd_gpu_mem = getattr(FLAGS, 'opd_vllm_gpu_mem', 0.25)
         _opd_max_prompt = getattr(FLAGS, 'kd_max_prompt_len', 512)
         _opd_max_new = getattr(FLAGS, 'opd_vllm_max_tokens', 256)
@@ -259,12 +263,14 @@ def main(argv):
                 default_temp=0.6,
                 startup_timeout=300,
             )
-            logging.info("[rank 0] OPD vLLM subprocess ready — signaling via dist.barrier")
+            logging.info("[rank 0] OPD vLLM subprocess ready"
+                         + (" — signaling via dist.barrier" if is_distributed else ""))
         else:
             logging.info(f"[rank {local_rank}] OPD: waiting for rank 0 vLLM via dist.barrier")
-        dist.barrier()
-        if local_rank != 0:
-            logging.info(f"[rank {local_rank}] OPD vLLM barrier passed — proceeding")
+        if is_distributed:
+            dist.barrier()
+            if local_rank != 0:
+                logging.info(f"[rank {local_rank}] OPD vLLM barrier passed — proceeding")
 
     if FLAGS.wandb and local_rank == 0:
         if getattr(FLAGS, 'do_grpo_opkd', False):
