@@ -1,7 +1,7 @@
 """Re-run all lighteval benchmarks and patch into existing wandb run (reasoning_pruning_v2)."""
 import argparse, os, sys
 sys.path.insert(0, '/home1/doyoonkim/projects/elsa')
-from lib.lighteval_5bench import _run_lighteval, _parse_results, _compute_token_stats
+from lib.lighteval_bench import _run_lighteval, _parse_results, _compute_token_stats
 import wandb
 
 parser = argparse.ArgumentParser()

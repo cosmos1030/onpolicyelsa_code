@@ -33,7 +33,7 @@ echo "LOCAL_JOB_BASE: $LOCAL_JOB_BASE"
 
 /home1/doyoonkim/miniconda3/envs/rac/bin/python main.py \
     --model=$MODEL \
-    --dataset=math_cot \
+    --dataset=mixed_cot \
     --data_path=/home1/doyoonkim/projects/elsa/data/math_220k_cot.jsonl \
     --sparsity_ratio=0 \
     --eval_math500=true \

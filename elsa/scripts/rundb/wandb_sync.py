@@ -17,15 +17,15 @@ LIGHTEVAL_KEYS = {
 }
 
 ZEROSHOT_KEYS = {
-    "wino":  ["eval/winogrande_acc", "winogrande/acc,none", "zeroshot/winogrande"],
-    "rte":   ["eval/rte_acc", "rte/acc,none", "zeroshot/rte"],
-    "race":  ["eval/race_acc", "race/acc,none", "zeroshot/race"],
-    "piqa":  ["eval/piqa_acc_norm", "piqa/acc_norm,none", "zeroshot/piqa"],
-    "ob":    ["eval/openbookqa_acc_norm", "openbookqa/acc_norm,none", "zeroshot/openbookqa"],
-    "hella": ["eval/hellaswag_acc_norm", "hellaswag/acc_norm,none", "zeroshot/hellaswag"],
-    "boolq": ["eval/boolq_acc", "boolq/acc,none", "zeroshot/boolq"],
-    "arce":  ["eval/arc_easy_acc_norm", "arc_easy/acc_norm,none", "zeroshot/arc_easy"],
-    "arcc":  ["eval/arc_challenge_acc_norm", "arc_challenge/acc_norm,none", "zeroshot/arc_challenge"],
+    "wino":  ["eval/winogrande_acc", "winogrande/acc,none", "zeroshot/winogrande", "zero_shot/winogrande"],
+    "rte":   ["eval/rte_acc", "rte/acc,none", "zeroshot/rte", "zero_shot/rte"],
+    "race":  ["eval/race_acc", "race/acc,none", "zeroshot/race", "zero_shot/race"],
+    "piqa":  ["eval/piqa_acc_norm", "piqa/acc_norm,none", "zeroshot/piqa", "zero_shot/piqa"],
+    "ob":    ["eval/openbookqa_acc_norm", "openbookqa/acc_norm,none", "zeroshot/openbookqa", "zero_shot/openbookqa"],
+    "hella": ["eval/hellaswag_acc_norm", "hellaswag/acc_norm,none", "zeroshot/hellaswag", "zero_shot/hellaswag"],
+    "boolq": ["eval/boolq_acc", "boolq/acc,none", "zeroshot/boolq", "zero_shot/boolq"],
+    "arce":  ["eval/arc_easy_acc_norm", "arc_easy/acc_norm,none", "zeroshot/arc_easy", "zero_shot/arc_easy"],
+    "arcc":  ["eval/arc_challenge_acc_norm", "arc_challenge/acc_norm,none", "zeroshot/arc_challenge", "zero_shot/arc_challenge"],
 }
 
 PPL_KEYS = {
@@ -198,7 +198,7 @@ def scan_new_runs(db, projects: list[str], entity: str = ENTITY,
 
     known_wbids = set()
     for model in db.models.values():
-        for tier in ["S50", "S60", "S70"]:
+        for tier in ["S50", "S60", "S70", "N24"]:
             for e in getattr(model, tier):
                 if e.wbid:
                     known_wbids.add(e.wbid)

@@ -8,18 +8,19 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=80G
 #SBATCH --time=12:00:00
-#SBATCH --exclude=n3,n51,n54,n60,n76,n80
+#SBATCH --exclude=n3,n42,n46,n51,n54,n60,n76,n77,n80,n87,n91
 #SBATCH --output=/home1/doyoonkim/projects/elsa/logs/eval_full_%j.out
 exec 2>&1
 
-# Full eval (PPL + zero-shot + 5bench) for an existing checkpoint → reasoning_pruning_v2
-# Usage: sbatch slurm_eval_full.sh <MODEL_PATH> <RUN_NAME> <METHOD> <SPARSITY>
-# e.g.:  sbatch slurm_eval_full.sh /path/to/model sgpt_s60 sparsegpt 0.6
+# Full eval (PPL + zero-shot + bench (6 tasks)) for an existing checkpoint
+# Usage: sbatch slurm_eval_full.sh <MODEL_PATH> <RUN_NAME> <METHOD> <SPARSITY> <WANDB_PROJECT>
+# e.g.:  sbatch slurm_eval_full.sh /path/to/model sgpt_s60 sparsegpt 0.6 reasoning_qwen3_4b
 
-MODEL_PATH=${1:?"Usage: sbatch slurm_eval_full.sh <MODEL_PATH> <RUN_NAME> <METHOD> <SPARSITY>"}
+MODEL_PATH=${1:?"Usage: sbatch slurm_eval_full.sh <MODEL_PATH> <RUN_NAME> <METHOD> <SPARSITY> <WANDB_PROJECT>"}
 RUN_NAME=${2:-"eval"}
 METHOD=${3:-"sparsegpt"}
 SPARSITY=${4:-0.0}
+WANDB_PROJECT=${5:-"reasoning_pruning_v2"}
 
 PYTHON=/home1/doyoonkim/miniconda3/envs/rac/bin/python
 
@@ -53,7 +54,7 @@ cd /home1/doyoonkim/projects/elsa
 
 $PYTHON scripts/eval_full.py \
     --model_path "$MODEL_PATH" \
-    --wandb_project reasoning_pruning_v2 \
+    --wandb_project "$WANDB_PROJECT" \
     --run_name "$RUN_NAME" \
     --method "$METHOD" \
     --sparsity "$SPARSITY" \

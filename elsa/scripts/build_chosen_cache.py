@@ -35,7 +35,7 @@ def _chosen_cache_key(prompt_path: str, n_pairs: int, max_new_tokens: int, tempe
     return hashlib.md5(raw.encode()).hexdigest()[:12]
 
 
-# ── minimal dataset (same logic as MathCotKDDataset + NTPPromptWrapper) ────
+# ── minimal dataset (same logic as MixedTextDataset + NTPPromptWrapper) ────
 class PromptDataset(Dataset):
     def __init__(self, jsonl_path, tokenizer, max_prompt_len=512, seed=42):
         random.seed(seed)

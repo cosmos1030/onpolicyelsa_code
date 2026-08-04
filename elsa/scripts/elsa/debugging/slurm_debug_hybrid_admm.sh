@@ -20,7 +20,7 @@ MODEL=/home1/doyoonkim/.cache/huggingface/hub/models--Qwen--Qwen3-0.6B/snapshots
 
 $PYTHON main.py \
     --model=$MODEL \
-    --dataset=math_cot \
+    --dataset=mixed_cot \
     --data_path=/home1/doyoonkim/projects/elsa/data/math_220k_cot.jsonl \
     --sparsity_ratio=0.3 \
     --admm_steps=20 \

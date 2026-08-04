@@ -11,7 +11,7 @@ METRIC_FIELDS = ["math", "lcb", "gpqa", "ifeval",
                  "wino", "rte", "race", "piqa", "ob", "hella", "boolq", "arce", "arcc",
                  "c4", "wt2"]
 
-TIERS = ["S50", "S60", "S70"]
+TIERS = ["S50", "S60", "S70", "N24"]
 MODELS = ["deepseek_1.5b", "qwen3_1.7b", "qwen3_4b", "qwen3_8b"]
 
 ENTITY = "dyk6208-gwangju-institute-of-science-and-technology"
@@ -80,6 +80,7 @@ class ModelEntry:
     S50: list[RunEntry] = field(default_factory=list)
     S60: list[RunEntry] = field(default_factory=list)
     S70: list[RunEntry] = field(default_factory=list)
+    N24: list[RunEntry] = field(default_factory=list)
 
 
 class DB:
@@ -127,6 +128,7 @@ class DB:
                 S50=entries["S50"],
                 S60=entries["S60"],
                 S70=entries["S70"],
+                N24=entries["N24"],
             )
         return db
 

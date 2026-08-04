@@ -15,7 +15,7 @@ conda activate rac
 
 cd /home1/doyoonkim/projects/elsa
 
-/home1/doyoonkim/miniconda3/envs/rac/bin/python scripts/make_math_cot_jsonl.py \
+/home1/doyoonkim/miniconda3/envs/rac/bin/python scripts/make_mixed_cot_jsonl.py \
     --output /home1/doyoonkim/projects/elsa/data/math_220k_cot.jsonl
 
 echo "Done."

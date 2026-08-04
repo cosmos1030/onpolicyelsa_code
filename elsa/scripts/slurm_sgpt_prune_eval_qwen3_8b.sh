@@ -9,7 +9,7 @@
 #SBATCH --mem=128G
 #SBATCH --time=12:00:00
 #SBATCH --output=/home1/doyoonkim/projects/elsa/logs/sgpt_qwen3_8b_%j.out
-#SBATCH --exclude=n3,n42,n51,n52,n54,n55,n58,n60,n76,n77,n80
+#SBATCH --exclude=n3,n42,n46,n51,n54,n60,n76,n77,n80,n87,n91,n61,n64
 exec 2>&1
 
 # SparseGPT prune + full eval for Qwen3-8B
@@ -61,7 +61,8 @@ $PYTHON src/open_r1/prune_and_eval.py \
     --nsamples "$NSAMPLES" \
     --seqlen 2048 \
     --save_path "$SAVE_PATH" \
-    --wandb_project reasoning_qwen3_4b \
-    --wandb_name "qwen3_8b_sgpt_s${SPARSITY_PCT}"
+    --wandb_project reasoning_qwen3_8b \
+    --wandb_name "qwen3_8b_sgpt_s${SPARSITY_PCT}" \
+    --push_to_hub
 
 echo "##### END #####"

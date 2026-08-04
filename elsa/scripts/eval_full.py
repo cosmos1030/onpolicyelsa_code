@@ -1,4 +1,4 @@
-"""Full evaluation: PPL (c4/wikitext2) + zero-shot (9 tasks) + lighteval 5bench.
+"""Full evaluation: PPL (c4/wikitext2) + zero-shot (9 tasks) + lighteval bench (5 tasks).
 
 Usage:
     python eval_full.py \
@@ -22,7 +22,7 @@ import wandb
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from lib.eval import eval_ppl, eval_zero_shot
-from lib.lighteval_5bench import run_lighteval_5bench
+from lib.lighteval_bench import run_lighteval_bench
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -49,7 +49,7 @@ ZERO_SHOT_METRIC = {
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--model_path", required=True)
-    p.add_argument("--wandb_project", default="reasoning_pruning_v2")
+    p.add_argument("--wandb_project", required=True)
     p.add_argument("--wandb_entity", default="dyk6208-gwangju-institute-of-science-and-technology")
     p.add_argument("--run_name", default=None, help="e.g. dense, sparsegpt_s50 (optional if --wandb_run_id given)")
     p.add_argument("--wandb_run_id", default=None, help="resume existing wandb run and log PPL there")
@@ -63,6 +63,13 @@ def parse_args():
     p.add_argument("--skip_lighteval", action="store_true")
     p.add_argument("--max_samples", type=int, default=None, help="limit samples per lighteval benchmark (smoke test)")
     p.add_argument("--out_base", default=None, help="base dir for lighteval outputs")
+    p.add_argument("--flops", type=float, default=None,
+                   help="Precomputed compute cost (FLOPs) for the pruning/calibration step that produced this "
+                        "model, passed through by the caller (e.g. 2*n_params*n_tokens for one-shot methods "
+                        "like ALPS/SparseGPT/Wanda/SparseLLM, 6*n_params*n_tokens for gradient fine-tuning). "
+                        "Logged as-is; not computed here since this script doesn't know nsamples/seqlen.")
+    p.add_argument("--hub_model_id", default=None, help="HF Hub repo id the caller already pushed the model to (logged into this run's summary).")
+    p.add_argument("--hub_url", default=None, help="HF Hub URL the caller already pushed the model to (logged into this run's summary).")
     return p.parse_args()
 
 
@@ -153,6 +160,16 @@ def main():
         "method":   args.method,
         "sparsity": args.sparsity,
     }
+    if args.flops is not None:
+        all_metrics["flops"] = args.flops
+        if use_wandb:
+            wandb.log({"flops": args.flops})
+    if args.hub_model_id:
+        all_metrics["hub_model_id"] = args.hub_model_id
+        all_metrics["hub_model_url"] = args.hub_url
+        if use_wandb:
+            wandb.run.summary["hub_model_id"] = args.hub_model_id
+            wandb.run.summary["hub_model_url"] = args.hub_url
 
     # ── PPL + zero-shot: load model via HF ──────────────────────────────────
     if not args.skip_ppl or not args.skip_zeroshot:
@@ -181,11 +198,12 @@ def main():
         torch.cuda.empty_cache()
         logger.info("Model unloaded, GPU memory freed.")
 
-    # ── 5 lighteval benchmarks: vLLM subprocess ─────────────────────────────
+    # ── lighteval benchmarks: vLLM subprocess ───────────────────────────────
+    # 5 tasks: math500, gpqa, ifeval, lcb, gsm8k
     if not args.skip_lighteval:
-        logger.info("=== lighteval 5bench ===")
+        logger.info("=== lighteval bench (5 tasks) ===")
         lighteval_out = os.path.join(out_base, "lighteval")
-        m = run_lighteval_5bench(
+        m = run_lighteval_bench(
             model_path=args.model_path,
             out_base=lighteval_out,
             gpu_util=args.gpu_util,

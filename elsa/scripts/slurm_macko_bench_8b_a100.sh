@@ -35,7 +35,8 @@ export TRITON_CACHE_DIR=/tmp/triton_cache_macko_${SLURM_JOB_ID}
 echo "=== Python / torch version ==="
 $PYTHON -c "import torch; print('torch:', torch.__version__, 'cuda:', torch.version.cuda, 'device:', torch.cuda.get_device_name(0))"
 
-echo "=== macko_spmv import test ==="
+echo "=== ninja / macko_spmv import test ==="
+$PYTHON -c "import ninja; print('ninja OK')" || { $PYTHON -m pip install ninja -q && echo "ninja installed"; }
 $PYTHON -c "import macko_spmv; print('macko_spmv OK')"
 
 echo "=== Starting benchmark: Qwen3-8B SparseGPT S70 vs Dense ==="

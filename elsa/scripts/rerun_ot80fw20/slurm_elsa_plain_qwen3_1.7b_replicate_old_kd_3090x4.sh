@@ -96,7 +96,7 @@ $TORCHRUN --nproc_per_node=4 --master_port=${MASTER_PORT} main.py \
     --admm_precision=bf16 \
     --admm_dual_dtype=fp32 \
     --admm_split_dtype=fp32 \
-    --do_kd_admm=true \
+    --do_offpolicy_kd_admm=true \
     --kd_lambda=0.5 \
     --kd_ntp_lambda=0.5 \
     --kd_use_vllm=false \

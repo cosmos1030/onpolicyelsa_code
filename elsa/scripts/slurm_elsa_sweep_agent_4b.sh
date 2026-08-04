@@ -79,7 +79,7 @@ fi
 TRAIN_RUN_ID=$(grep -oP "(?<=runs/)[a-z0-9]{8}(?=[^/]|$)" "$TRAIN_LOG" 2>/dev/null | tail -1)
 echo "=== Training wandb run ID: ${TRAIN_RUN_ID:-NOT FOUND} ==="
 
-# ── Full eval: PPL + zeroshot + lighteval 5bench ─────────────────────────────
+# ── Full eval: PPL + zeroshot + lighteval bench (6 tasks) ─────────────────────────────
 echo "=== Starting eval_full.py (tp_size=1) ==="
 
 EVAL_ARGS=(

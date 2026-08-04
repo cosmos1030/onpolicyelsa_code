@@ -6,7 +6,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=10
-#SBATCH --output=/home1/doyoonkim/projects/elsa/output_qwen/qwen1.5b_ntp_math_cot/%j.out
+#SBATCH --output=/home1/doyoonkim/projects/elsa/output_qwen/qwen1.5b_ntp_mixed_cot/%j.out
 #SBATCH -t 3-00:00:00
 #SBATCH --exclude=n3
 
@@ -17,7 +17,7 @@ if [ -z "$SWEEP_ID" ]; then
     exit 1
 fi
 
-mkdir -p /home1/doyoonkim/projects/elsa/output_qwen/qwen1.5b_ntp_math_cot
+mkdir -p /home1/doyoonkim/projects/elsa/output_qwen/qwen1.5b_ntp_mixed_cot
 
 source ~/miniconda3/etc/profile.d/conda.sh
 cd /home1/doyoonkim/projects/elsa

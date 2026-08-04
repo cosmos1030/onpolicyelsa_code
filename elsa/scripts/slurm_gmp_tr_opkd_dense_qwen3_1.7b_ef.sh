@@ -21,7 +21,7 @@ KL_THRESHOLD=${1:-0.02}
 
 PYTHON=/home1/doyoonkim/miniconda3/envs/rac/bin/python
 MODEL="/home1/doyoonkim/.cache/huggingface/hub/models--Qwen--Qwen3-1.7B/snapshots/70d244cc86ccca08cf5af4e1e306ecf908b1ad5e"
-DATA_PATH="/home1/doyoonkim/projects/elsa/data/ot3_fineweb_20k.jsonl"
+DATA_PATH="/home1/doyoonkim/projects/elsa/data/ot3_fineweb_200k_qwen3.jsonl"
 
 LOCAL_JOB_BASE="/local-data/user-data/${USER}/job_${SLURM_JOB_ID}"
 mkdir -p "$LOCAL_JOB_BASE/wandb"
@@ -48,7 +48,7 @@ cd /home1/doyoonkim/projects/elsa
 
 $PYTHON main.py \
     --model="$MODEL" \
-    --dataset=math_cot \
+    --dataset=mixed_cot \
     --data_path="$DATA_PATH" \
     --sparsity_ratio=0.7 \
     --do_gmp=true \

@@ -34,7 +34,7 @@ cd /home1/doyoonkim/projects/elsa
 #   no ref model used → ref logprobs set to 0
 /home1/doyoonkim/miniconda3/envs/rac/bin/python main.py \
     --model=$MODEL \
-    --dataset=math_cot \
+    --dataset=mixed_cot \
     --data_path=$DATA_PATH \
     --sparsity_ratio=0.7 \
     --do_gmp=true \

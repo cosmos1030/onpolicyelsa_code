@@ -8,8 +8,8 @@
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=200G
 #SBATCH --time=48:00:00
-#SBATCH --output=/home1/doyoonkim/projects/elsa/logs/gmp_ntp_kd_8k_8b_%j.out
-#SBATCH --exclude=n3,n42,n51,n52,n54,n55,n58,n60,n76,n77,n80
+#SBATCH --output=/local-data/user-data/%u/gmp_ntp_kd_8k_8b_%j/slurm_%j.out
+#SBATCH --exclude=n3,n42,n46,n51,n52,n54,n55,n58,n60,n76,n77,n80,n91
 exec 2>&1
 
 # GMP NTP+KD for Qwen3-8B, 8192 steps, FSDP 2-GPU
@@ -26,17 +26,18 @@ if [ -z "$MODEL" ] || [ ! -f "$MODEL/config.json" ]; then
     echo "ERROR: Qwen3-8B not found in HF cache" >&2
     exit 1
 fi
-DATA_PATH="/home1/doyoonkim/projects/elsa/data/ot3_fineweb_20k.jsonl"
+DATA_PATH="/home1/doyoonkim/projects/elsa/data/ot3_fineweb_200k_qwen3.jsonl"
 
-LOCAL_JOB_BASE="/local-data/user-data/${USER}/job_${SLURM_JOB_ID}"
+LOCAL_JOB_BASE="/local-data/user-data/${USER}/gmp_ntp_kd_8k_8b_${SLURM_JOB_ID}"
 mkdir -p "$LOCAL_JOB_BASE/wandb" "$LOCAL_JOB_BASE/eval_out"
-mkdir -p /home1/doyoonkim/projects/elsa/logs
 
 export WANDB_DIR="$LOCAL_JOB_BASE/wandb"
 export WANDB_SERVICE_WAIT=300
 export WANDB_START_METHOD=fork
+export WANDB_INIT_TIMEOUT=120
 export TMPDIR=/tmp
 export HF_TOKEN=$(cat ~/.hf_token 2>/dev/null || echo "")
+export WANDB_API_KEY=$(grep WANDB_API_KEY ~/.bashrc | cut -d'=' -f2 | tail -1)
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=7200
 export TOKENIZERS_PARALLELISM=false
@@ -60,7 +61,7 @@ TRAIN_LOG="$LOCAL_JOB_BASE/train_stdout.txt"
 # ── Training (torchrun 2 GPU, FSDP) ─────────────────────────────────────────
 $TORCHRUN --nproc_per_node=4 --master_port=29501 main.py \
     --model="$MODEL" \
-    --dataset=math_cot \
+    --dataset=mixed_cot \
     --data_path="$DATA_PATH" \
     --sparsity_ratio=${SPARSITY} \
     --do_gmp=true \
@@ -111,7 +112,7 @@ if [ -z "$SAVED_MODEL" ]; then
     exit 1
 fi
 
-# ── Full eval: PPL + zeroshot + lighteval 5bench ─────────────────────────────
+# ── Full eval: PPL + zeroshot + lighteval bench (6 tasks) ─────────────────────────────
 unset TORCHELASTIC_WORKER_PORT TORCHELASTIC_ERROR_FILE TORCHELASTIC_RESTART_COUNT TORCHELASTIC_MAX_RESTARTS
 unset MASTER_ADDR MASTER_PORT RANK LOCAL_RANK WORLD_SIZE
 echo "=== Starting eval_full.py (tp_size=2) ==="

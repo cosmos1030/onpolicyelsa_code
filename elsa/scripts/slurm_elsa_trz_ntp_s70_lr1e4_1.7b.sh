@@ -54,7 +54,7 @@ cd /home1/doyoonkim/projects/elsa
 $PYTHON main.py \
     --model="$MODEL" \
     --data_path="$DATA_PATH" \
-    --dataset=math_cot \
+    --dataset=mixed_cot \
     --sparsity_ratio=0.7 \
     --admm_steps=2048 \
     --admm_batch_size=1 \

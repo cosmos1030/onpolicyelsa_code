@@ -96,9 +96,10 @@ $TORCHRUN --nproc_per_node=1 --master_port=${MASTER_PORT} main.py \
     --admm_precision=bf16 \
     --admm_dual_dtype=fp32 \
     --admm_split_dtype=fp32 \
-    --do_kd_admm=true \
+    --do_offpolicy_kd_admm=true \
     --kd_lambda=0.5 \
     --kd_ntp_lambda=0.5 \
+    --kd_topk=0 \
     --kd_use_vllm=false \
     --save_model=true \
     --admm_save_path=/home1/doyoonkim/projects/elsa/models \

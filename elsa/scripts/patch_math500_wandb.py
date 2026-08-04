@@ -1,7 +1,7 @@
 """Re-run math500 with max_model_length=32768 and patch into existing wandb run."""
 import argparse, math, os, sys
 sys.path.insert(0, '/home1/doyoonkim/projects/elsa')
-from lib.lighteval_5bench import _run_lighteval, _parse_results
+from lib.lighteval_bench import _run_lighteval, _parse_results
 import wandb
 
 parser = argparse.ArgumentParser()

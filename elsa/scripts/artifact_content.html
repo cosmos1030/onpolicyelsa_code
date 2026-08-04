@@ -114,6 +114,20 @@
   .note-dot{width:6px;height:6px;border-radius:50%;background:var(--running);flex-shrink:0;animation:pulse 1.4s ease-in-out infinite}
   @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
   @media(prefers-reduced-motion:reduce){.note-dot{animation:none}}
+
+  /* ── filter bar ─────────────────────────────────────────────────────────── */
+  .filter-bar{display:flex;align-items:center;flex-wrap:wrap;gap:6px;padding:9px 13px;background:var(--surface);border:1px solid var(--border);border-radius:6px;margin-bottom:20px}
+  .filter-label{font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);margin-right:3px;flex-shrink:0}
+  .filter-chip{cursor:pointer;transition:opacity .13s,text-decoration .13s;user-select:none;font-size:11px}
+  .filter-chip.off{opacity:.22;text-decoration:line-through;text-decoration-thickness:1px}
+  .filter-sep{width:1px;height:14px;background:var(--border);margin:0 3px;flex-shrink:0}
+  .filter-reset{margin-left:auto;font-size:10px;color:var(--muted);background:none;border:1px solid var(--border);border-radius:3px;padding:2px 9px;cursor:pointer;font-family:inherit;letter-spacing:.02em;transition:color .1s,border-color .1s}
+  .filter-reset:hover{color:var(--text);border-color:var(--muted)}
+  .filter-hidden-count{font-size:10px;color:var(--muted);background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:1px 7px;letter-spacing:.02em}
+  /* row-level hide button */
+  .row-hide-btn{display:none;align-items:center;justify-content:center;width:14px;height:14px;margin-left:5px;border-radius:2px;border:1px solid var(--border);background:none;cursor:pointer;font-size:9px;color:var(--muted);padding:0;flex-shrink:0;line-height:1;transition:color .1s,border-color .1s}
+  tbody tr:hover .row-hide-btn{display:inline-flex}
+  .row-hide-btn:hover{color:#F87171;border-color:#F87171}
 </style>
 
 <div class="page">
@@ -138,6 +152,7 @@
     <div class="mg-row"><span class="badge alps"><span class="badge-dot alps"></span>ALPS</span><span class="mg-desc">One-shot unstructured pruning via ADMM-based layer-wise proximal optimization · no fine-tuning</span></div>
   </div>
 
+  <div id="filter-bar" class="filter-bar"></div>
   <div id="app"></div>
   <div class="notes" id="notes"></div>
 </div>
@@ -145,11 +160,25 @@
 <script>
 const DB = __DB_JSON__
 const HF0 = DB.meta.hf_base;
-
 const MODEL_KEYS = Object.keys(DB.models);
 let currentModel = MODEL_KEYS[0];
 
-// ── tab bar ──────────────────────────────────────────────────────────────────
+// ── filter state (localStorage per model) ────────────────────────────────────
+const _states = {};
+function loadState(k) {
+  try {
+    const s = localStorage.getItem('rdb_flt_' + k);
+    if (s) { const p = JSON.parse(s); return { hb: new Set(p.hb||[]), hr: new Set(p.hr||[]) }; }
+  } catch(e) {}
+  return { hb: new Set(), hr: new Set() };
+}
+function saveState(k) {
+  const st = _states[k]; if (!st) return;
+  try { localStorage.setItem('rdb_flt_' + k, JSON.stringify({hb:[...st.hb],hr:[...st.hr]})); } catch(e) {}
+}
+function getState(k) { if (!_states[k]) _states[k] = loadState(k); return _states[k]; }
+
+// ── tab bar ───────────────────────────────────────────────────────────────────
 (function buildTabs() {
   const bar = document.getElementById('tab-bar');
   MODEL_KEYS.forEach((k, i) => {
@@ -162,7 +191,7 @@ let currentModel = MODEL_KEYS[0];
   });
 })();
 
-// ── table header ─────────────────────────────────────────────────────────────
+// ── table header ──────────────────────────────────────────────────────────────
 const THEAD = `<thead>
   <tr class="colgroup-header">
     <th style="min-width:220px">Method</th>
@@ -182,19 +211,23 @@ const THEAD = `<thead>
   </tr>
 </thead>`;
 
-function mcell(r) {
-  const failBadge = r.failed_target
-    ? `<span class="failed-badge">sp=${r.actual_sp}%</span>`
-    : '';
-  return `<div class="method-cell"><span class="method-stripe ${r.badge}"></span><div><span class="method-name">${r.name}${failBadge}</span><span class="method-sub">${r.sub||''}</span></div></div>`;
+function mcell(r, rowKey) {
+  const failBadge = r.failed_target ? `<span class="failed-badge">sp=${r.actual_sp}%</span>` : '';
+  return `<div class="method-cell">
+    <span class="method-stripe ${r.badge}"></span>
+    <div><span class="method-name">${r.name}${failBadge}</span><span class="method-sub">${r.sub||''}</span></div>
+    <button class="row-hide-btn" data-key="${rowKey}" title="Hide this row">×</button>
+  </div>`;
 }
 
-function makeRow(r, wbBase) {
+function makeRow(r, wbBase, modelKey, sec, idx) {
+  const rowKey = `${modelKey}::${sec}::${idx}`;
   const tr = document.createElement('tr');
+  tr.dataset.badge = r.badge;
+  tr.dataset.rowKey = rowKey;
   if (r.isDense) tr.className = 'dense-row';
   else if (r.failed_target) tr.classList.add('failed-target');
-  // train_wbid: training run (별도 없으면 wbid와 동일)
-  // wbid: eval run (eval_full.py가 만든 run)
+
   const trainId = r.train_wbid || r.wbid;
   const evalId  = r.wbid;
   const trainLink = trainId
@@ -209,7 +242,7 @@ function makeRow(r, wbBase) {
     : `<td class="link-cell"><span class="no-link">—</span></td>`;
 
   if (r.pending) {
-    tr.innerHTML = `<td>${mcell(r)}</td>
+    tr.innerHTML = `<td>${mcell(r, rowKey)}</td>
       <td class="csep running">—</td><td class="running">—</td><td class="running">—</td><td class="running">—</td>
       <td class="csep dash">—</td><td class="dash">—</td><td class="dash">—</td><td class="dash">—</td><td class="dash">—</td><td class="dash">—</td><td class="dash">—</td><td class="dash">—</td><td class="dash">—</td><td class="dash">—</td>
       <td class="csep ppl-col dash">—</td><td class="ppl-col dash">—</td>
@@ -223,14 +256,12 @@ function makeRow(r, wbBase) {
   const stepsTd = (r.steps == null)
     ? `<td class="csep step-col dash">—</td>`
     : `<td class="csep step-col">${r.steps}</td>`;
-
   const zsVals = [r.wino, r.rte, r.race, r.piqa, r.ob, r.hella, r.boolq, r.arce, r.arcc]
     .filter(v => v !== null && v !== undefined);
   const zsAvg = zsVals.length === 9
-    ? (zsVals.reduce((a, b) => a + b, 0) / 9).toFixed(1)
-    : null;
+    ? (zsVals.reduce((a, b) => a + b, 0) / 9).toFixed(1) : null;
 
-  tr.innerHTML = `<td>${mcell(r)}</td>
+  tr.innerHTML = `<td>${mcell(r, rowKey)}</td>
     <td class="csep">${f(r.math)}</td>${lcbTd}<td>${f(r.gpqa)}</td><td>${f(r.ifeval)}</td>
     <td class="csep">${f(zsAvg)}</td><td>${f(r.wino)}</td><td>${f(r.rte)}</td><td>${f(r.race)}</td><td>${f(r.piqa)}</td><td>${obVal}</td><td>${f(r.hella)}</td><td>${f(r.boolq)}</td><td>${f(r.arce)}</td><td>${f(r.arcc)}</td>
     <td class="csep ppl-col">${f(r.c4)}</td><td class="ppl-col">${f(r.wt2)}</td>
@@ -241,8 +272,13 @@ function makeRow(r, wbBase) {
 function highlightBest(id) {
   const tbl = document.getElementById(id);
   if (!tbl) return;
+  tbl.querySelectorAll('td.best,td.second,td.best-ppl,td.second-ppl').forEach(td =>
+    td.classList.remove('best','second','best-ppl','second-ppl'));
   const ths = Array.from(tbl.querySelector('tr.col-headers').querySelectorAll('th'));
-  const rows = Array.from(tbl.querySelectorAll('tbody tr')).filter(r => !r.classList.contains('dense-row') && !r.classList.contains('failed-target'));
+  const rows = Array.from(tbl.querySelectorAll('tbody tr')).filter(r =>
+    !r.classList.contains('dense-row') &&
+    !r.classList.contains('failed-target') &&
+    r.style.display !== 'none');
   ths.forEach((th, ci) => {
     const hi = th.hasAttribute('data-higher'), lo = th.hasAttribute('data-lower');
     if (!hi && !lo) return;
@@ -259,22 +295,92 @@ function highlightBest(id) {
   });
 }
 
-function renderSection(sec, model) {
+function applyFilters(modelKey) {
+  const st = getState(modelKey);
+  let hiddenCount = 0;
+  document.querySelectorAll('tbody tr[data-badge]').forEach(tr => {
+    const hidden = st.hb.has(tr.dataset.badge) || st.hr.has(tr.dataset.rowKey);
+    tr.style.display = hidden ? 'none' : '';
+    if (hidden) hiddenCount++;
+  });
+  document.querySelectorAll('.filter-chip').forEach(c =>
+    c.classList.toggle('off', st.hb.has(c.dataset.badge)));
+  const countEl = document.getElementById('filter-hidden-count');
+  if (countEl) countEl.style.display = hiddenCount > 0 ? '' : 'none';
+  if (countEl) countEl.textContent = `${hiddenCount} hidden`;
+  ['S50','S60','S70','N24'].forEach(s => highlightBest('tbl-' + s.toLowerCase()));
+}
+
+function buildFilterBar(model, modelKey) {
+  const bar = document.getElementById('filter-bar');
+  bar.innerHTML = '';
+
+  const lbl = document.createElement('span');
+  lbl.className = 'filter-label';
+  lbl.textContent = 'Show:';
+  bar.appendChild(lbl);
+
+  const badges = [], seen = new Set();
+  ['S50','S60','S70','N24'].forEach(sec =>
+    (model[sec]||[]).forEach(r => { if (!seen.has(r.badge)) { seen.add(r.badge); badges.push(r.badge); } }));
+
+  badges.forEach(badge => {
+    const chip = document.createElement('span');
+    chip.className = `filter-chip badge ${badge}`;
+    chip.dataset.badge = badge;
+    chip.innerHTML = `<span class="badge-dot ${badge}"></span>${badge}`;
+    chip.title = 'Click to show/hide all rows with this badge';
+    chip.onclick = () => {
+      const st = getState(modelKey);
+      if (st.hb.has(badge)) st.hb.delete(badge); else st.hb.add(badge);
+      saveState(modelKey);
+      applyFilters(modelKey);
+    };
+    bar.appendChild(chip);
+  });
+
+  const sep = document.createElement('span');
+  sep.className = 'filter-sep';
+  bar.appendChild(sep);
+
+  const countEl = document.createElement('span');
+  countEl.id = 'filter-hidden-count';
+  countEl.className = 'filter-hidden-count';
+  countEl.style.display = 'none';
+  bar.appendChild(countEl);
+
+  const reset = document.createElement('button');
+  reset.className = 'filter-reset';
+  reset.textContent = 'Reset';
+  reset.title = 'Show all hidden rows';
+  reset.onclick = () => {
+    const st = getState(modelKey);
+    st.hb.clear(); st.hr.clear();
+    saveState(modelKey);
+    applyFilters(modelKey);
+  };
+  bar.appendChild(reset);
+}
+
+function renderSection(sec, model, modelKey) {
   const runs = model[sec] || [];
+  if (sec === 'N24' && runs.length === 0) return null;
   const wbBase = `https://wandb.ai/${DB.meta.entity}/${model.wb_project}/runs/`;
-  const sparsity = {S50:'50%',S60:'60%',S70:'70%'}[sec];
+  const sparsity = {S50:'50%',S60:'60%',S70:'70%',N24:'2:4'}[sec];
+  const tag = sec === 'N24' ? '2:4' : sec.toLowerCase();
+  const sparsityLabel = sec === 'N24' ? 'N:M semi-structured' : `${sparsity} sparsity`;
   const id = 'tbl-' + sec.toLowerCase();
   const wrap = document.createElement('div');
   wrap.className = 'section';
   wrap.innerHTML = `
     <div class="section-label">
-      <span class="section-label-tag">${sec.toLowerCase()}</span>
-      <span class="section-label-sparsity">${sparsity} sparsity</span>
+      <span class="section-label-tag">${tag}</span>
+      <span class="section-label-sparsity">${sparsityLabel}</span>
       <div class="section-label-line"></div>
     </div>
     <div class="tbl-wrap"><table id="${id}">${THEAD}<tbody></tbody></table></div>`;
   const tbody = wrap.querySelector('tbody');
-  runs.forEach(r => tbody.appendChild(makeRow(r, wbBase)));
+  runs.forEach((r, idx) => tbody.appendChild(makeRow(r, wbBase, modelKey, sec, idx)));
   return wrap;
 }
 
@@ -295,12 +401,28 @@ function switchModel(k) {
   const model = DB.models[k];
   document.getElementById('page-eyebrow').textContent = `${model.display} · ${model.wb_project}`;
   document.getElementById('page-subtitle').textContent = 'A100-80GB · eval: MATH-500, LCB, GPQA, IFEval + 9 zero-shot tasks';
+
+  buildFilterBar(model, k);
+
   const app = document.getElementById('app');
   app.innerHTML = '';
-  ['S50','S60','S70'].forEach(s => {
-    app.appendChild(renderSection(s, model));
-    highlightBest('tbl-' + s.toLowerCase());
+  ['S50','S60','S70','N24'].forEach(s => {
+    const sec = renderSection(s, model, k);
+    if (sec) app.appendChild(sec);
   });
+
+  // wire row-hide buttons
+  document.querySelectorAll('.row-hide-btn').forEach(btn => {
+    btn.onclick = e => {
+      e.stopPropagation();
+      const st = getState(k);
+      st.hr.add(btn.dataset.key);
+      saveState(k);
+      applyFilters(k);
+    };
+  });
+
+  applyFilters(k);
   renderNotes(model.notes || []);
 }
 

@@ -26,7 +26,7 @@ cd /home1/doyoonkim/projects/elsa
 
 /home1/doyoonkim/miniconda3/envs/rac/bin/python main.py \
     --model=$MODEL_PATH \
-    --dataset=math_cot \
+    --dataset=mixed_cot \
     --data_path=/home1/doyoonkim/projects/elsa/data/math_220k_cot.jsonl \
     --sparsity_ratio=0.0 \
     --do_gmp=false \

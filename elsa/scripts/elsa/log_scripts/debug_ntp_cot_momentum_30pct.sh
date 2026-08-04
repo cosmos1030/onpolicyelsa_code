@@ -19,7 +19,7 @@ export HF_TOKEN=$(cat ~/.hf_token 2>/dev/null || echo "")
 
 PYTHON=/home/doyoonkim/.conda/envs/rac/bin/python
 MODEL=/home/shared/huggingface/hub/models--Qwen--Qwen3-0.6B/snapshots/c1899de289a04d12100db370d81485cdf75e47ca
-DATA=/home/shared/dataset/math_cot_debug_500.jsonl
+DATA=/home/shared/dataset/mixed_cot_debug_500.jsonl
 
 echo "=== DEBUG: NTP-CoT momentum 30pct ==="
 echo "Job ID: $SLURM_JOB_ID"
@@ -29,7 +29,7 @@ echo "======================================"
 
 $PYTHON main.py \
     --model=$MODEL \
-    --dataset=math_cot \
+    --dataset=mixed_cot \
     --data_path=$DATA \
     --sparsity_ratio=0.30 \
     --admm_steps=64 \

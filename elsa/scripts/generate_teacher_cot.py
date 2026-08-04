@@ -1,6 +1,6 @@
 """
 Generate teacher CoT completions using vLLM offline inference.
-Saves to JSONL with 'text' field in MathCotKDDataset format:
+Saves to JSONL with 'text' field in MixedTextDataset format:
   "problem\n\n<think>CoT</think>answer"
 """
 import argparse
@@ -77,7 +77,7 @@ def main():
         for rec, out in zip(records, outputs):
             generated = out.outputs[0].text  # continuation after <think>
             problem = extract_problem(rec["prompt"])
-            # Reconstruct in MathCotKDDataset format
+            # Reconstruct in MixedTextDataset format
             text = problem + "\n\n<think>" + generated
             f.write(json.dumps({"text": text}, ensure_ascii=False) + "\n")
             written += 1

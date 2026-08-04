@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=eval_5bench
+#SBATCH --job-name=eval_bench
 #SBATCH --partition=A100-80GB
 #SBATCH --qos=hpgpu
 #SBATCH --gres=gpu:1
@@ -9,11 +9,11 @@
 #SBATCH --mem=80G
 #SBATCH --time=12:00:00
 #SBATCH --exclude=n80
-#SBATCH --output=/local-data/user-data/%u/job_%j/slurm/eval_5bench_%j.out
+#SBATCH --output=/local-data/user-data/%u/job_%j/slurm/eval_bench_%j.out
 exec 2>&1
 
 # Usage:
-#   sbatch slurm_eval_5bench.sh <MODEL_PATH> [WANDB_RUN_ID] [WANDB_PROJECT]
+#   sbatch slurm_eval_bench.sh <MODEL_PATH> [WANDB_RUN_ID] [WANDB_PROJECT]
 #
 # Runs MATH-500, GPQA-Diamond, MMLU-Redux, IFEval, LiveCodeBench sequentially,
 # then logs all results to wandb (resuming existing run if WANDB_RUN_ID is given).
@@ -22,7 +22,7 @@ exec 2>&1
 # max_new_tokens=32768 for reasoning tasks, 32768 for LCB
 # MMLU-Redux and IFEval use max_new_tokens=4096 (short-answer tasks)
 
-MODEL_PATH=${1:?"Usage: sbatch slurm_eval_5bench.sh <MODEL_PATH> [WANDB_RUN_ID] [WANDB_PROJECT]"}
+MODEL_PATH=${1:?"Usage: sbatch slurm_eval_bench.sh <MODEL_PATH> [WANDB_RUN_ID] [WANDB_PROJECT]"}
 WANDB_RUN_ID=${2:-""}
 WANDB_PROJECT=${3:-"elsa_eval"}
 
@@ -41,7 +41,7 @@ export VLLM_HOST_IP=127.0.0.1
 LIGHTEVAL=/home1/doyoonkim/miniconda3/envs/rac/bin/lighteval
 PYTHON=/home1/doyoonkim/miniconda3/envs/rac/bin/python
 
-echo "=== eval_5bench ==="
+echo "=== eval_bench ==="
 echo "MODEL_PATH=$MODEL_PATH"
 echo "WANDB_RUN_ID=$WANDB_RUN_ID"
 echo "WANDB_PROJECT=$WANDB_PROJECT"
@@ -56,7 +56,7 @@ print(f'{free/total*0.92:.4f}')
 ")
 echo "GPU_UTIL=$GPU_UTIL"
 
-OUTPUT_BASE="${MODEL_PATH}/eval_5bench"
+OUTPUT_BASE="${MODEL_PATH}/eval_bench"
 mkdir -p "$OUTPUT_BASE"
 
 # MMLU-Redux subset list (57 subsets)
@@ -126,7 +126,7 @@ import wandb
 model_path    = '$MODEL_PATH'
 wandb_run_id  = '$WANDB_RUN_ID'
 wandb_project = '$WANDB_PROJECT'
-output_base = os.path.join(model_path, "eval_5bench")
+output_base = os.path.join(model_path, "eval_bench")
 
 
 def parse_results(out_dir):

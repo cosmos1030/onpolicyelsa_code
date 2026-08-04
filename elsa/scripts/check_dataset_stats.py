@@ -2,13 +2,13 @@ import sys
 sys.path.insert(0, '/home1/doyoonkim/projects/elsa')
 import statistics
 from transformers import AutoTokenizer
-from lib.gkd_admm_trainer import MathCotKDDataset
+from lib.gkd_admm_trainer import MixedTextDataset
 
 MODEL = '/home1/doyoonkim/.cache/huggingface/hub/models--Qwen--Qwen3-0.6B/snapshots/c1899de289a04d12100db370d81485cdf75e47ca'
 DATA  = '/home1/doyoonkim/projects/elsa/data/math_220k_cot.jsonl'
 
 tokenizer = AutoTokenizer.from_pretrained(MODEL)
-ds = MathCotKDDataset(DATA, tokenizer, max_prompt_len=512, max_len=2048)
+ds = MixedTextDataset(DATA, tokenizer, max_prompt_len=512, max_len=2048)
 
 eos_id      = tokenizer.eos_token_id
 think_close = tokenizer.encode('</think>', add_special_tokens=False)

@@ -99,6 +99,7 @@ $TORCHRUN --nproc_per_node=4 --master_port=${MASTER_PORT} main.py \
     --do_offpolicy_kd_admm=true \
     --kd_lambda=1.0 \
     --kd_ntp_lambda=0.0 \
+    --kd_topk=0 \
     --kd_use_vllm=false \
     --save_model=true \
     --admm_save_path=/home1/doyoonkim/projects/elsa/models \

@@ -76,7 +76,7 @@ def cmd_add_run(args):
         logger.error(f"Unknown model '{args.model}'. Valid: {list(db.models.keys())}")
         sys.exit(1)
 
-    tier = f"S{int(args.sparsity * 100)}"
+    tier = args.tier or f"S{int(args.sparsity * 100)}"
     if tier not in TIERS:
         logger.error(f"Sparsity {args.sparsity} → tier '{tier}' not in {TIERS}")
         sys.exit(1)
@@ -156,7 +156,7 @@ def cmd_register(args):
     updated_any = False
 
     for sp in sparsities:
-        tier = f"S{int(sp * 100)}"
+        tier = args.tier or f"S{int(sp * 100)}"
         entries = getattr(model, tier, [])
 
         # Find existing entry with matching badge and name
@@ -236,6 +236,8 @@ def main():
     pa = sub.add_parser("add-run", help="Register a new pending run")
     pa.add_argument("--model", required=True, choices=MODELS)
     pa.add_argument("--sparsity", type=float, required=True, help="e.g. 0.5")
+    pa.add_argument("--tier", default=None, choices=TIERS,
+                    help="Override tier (default: derived from --sparsity). Use 'N24' for 2:4 semi-structured runs.")
     pa.add_argument("--badge", required=True,
                     help="badge key: dense/sgpt/wanda/gmp/opkd/tr/tropkd/tropkd_mag/tropkd_layer/elsa/safe/alps")
     pa.add_argument("--name", required=True, help="Display name")
@@ -264,6 +266,8 @@ def main():
     pr.add_argument("--model", required=True, choices=MODELS)
     pr.add_argument("--sparsities", required=True,
                     help="Comma-separated sparsity tiers, e.g. '0.5,0.6,0.7'")
+    pr.add_argument("--tier", default=None, choices=TIERS,
+                    help="Override tier (default: derived from --sparsities). Use 'N24' for 2:4 semi-structured runs.")
     pr.add_argument("--badge", required=True)
     pr.add_argument("--name", required=True, help="Display name (must match existing entry to update)")
     pr.add_argument("--sub", default="")

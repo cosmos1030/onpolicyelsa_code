@@ -53,8 +53,8 @@ TRAIN_LOG="$LOCAL_JOB_BASE/train_stdout.txt"
 # ── SAFE Pruning ──────────────────────────────────────────────────────────────
 $PYTHON main.py \
     --model="$MODEL" \
-    --dataset=math_cot \
-    --data_path="/home1/doyoonkim/projects/elsa/data/ot3_fineweb_20k.jsonl" \
+    --dataset=mixed_cot \
+    --data_path="/home1/doyoonkim/projects/elsa/data/ot3_fineweb_200k_qwen3.jsonl" \
     --nsamples=3840 \
     --sparsity_ratio=${SPARSITY} \
     --sparsity_type=unstructured \

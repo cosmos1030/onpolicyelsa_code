@@ -29,7 +29,7 @@ fi
 
 PYTHON=/home1/doyoonkim/miniconda3/envs/rac/bin/python
 MODEL="/home1/doyoonkim/.cache/huggingface/hub/models--Qwen--Qwen3-1.7B/snapshots/70d244cc86ccca08cf5af4e1e306ecf908b1ad5e"
-DATA_PATH="/home1/doyoonkim/projects/elsa/data/ot3_fineweb_20k.jsonl"
+DATA_PATH="/home1/doyoonkim/projects/elsa/data/ot3_fineweb_200k_qwen3.jsonl"
 SAVE_DIR="/home1/doyoonkim/projects/elsa/models"
 
 ADMM_STEPS=4096
@@ -66,7 +66,7 @@ TRAIN_LOG="$LOCAL_JOB_BASE/train_stdout.txt"
 # ── Training ──────────────────────────────────────────────────────────────────
 $PYTHON main.py \
     --model="${MODEL}" \
-    --dataset=math_cot \
+    --dataset=mixed_cot \
     --data_path="${DATA_PATH}" \
     --sparsity_ratio=${SPARSITY} \
     --sparsity_type=unstructured \

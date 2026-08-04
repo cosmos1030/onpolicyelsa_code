@@ -17,6 +17,9 @@ exec 2>&1
 # Algorithm 1 formula: sf - sf*(1-t/ks)**3, no KL check) instead of TR-z.
 # 2048 total steps, target sparsity 0.7 reached at step 1024 (ks=1024), then held
 # fixed for the remaining 1024 steps of fine-tuning.
+# Usage: sbatch slurm_elsa_cubic_ntp_s70_lr1e4_1.7b.sh <FINAL_LMDA (default 0.005)>
+
+FINAL_LMDA=${1:-0.005}
 
 PYTHON=/home1/doyoonkim/miniconda3/envs/rac/bin/python
 MODEL="/home1/doyoonkim/.cache/huggingface/hub/models--Qwen--Qwen3-1.7B/snapshots/70d244cc86ccca08cf5af4e1e306ecf908b1ad5e"
@@ -39,7 +42,7 @@ export HF_DATASETS_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 export TMPDIR=/tmp
 
-echo "=== Cubic-z NTP-ADMM Qwen3-1.7B s70, ks=1024/2048 steps ==="
+echo "=== Cubic-z NTP-ADMM Qwen3-1.7B s70, ks=1024/2048 steps, final_lmda=${FINAL_LMDA} ==="
 echo "NODE=$(hostname)  JOB=$SLURM_JOB_ID"
 nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader
 
@@ -53,19 +56,20 @@ cd /home1/doyoonkim/projects/elsa
 $PYTHON main.py \
     --model="$MODEL" \
     --data_path="$DATA_PATH" \
-    --dataset=math_cot \
+    --dataset=mixed_cot \
     --sparsity_ratio=0.7 \
     --admm_steps=2048 \
     --admm_batch_size=1 \
     --admm_gradient_accumulation_steps=8 \
-    --admm_lmda=0.005 \
+    --admm_lmda=${FINAL_LMDA} \
     --admm_init_lmda=0 \
-    --admm_final_lmda=0.005 \
-    --admm_lmda_schedule_mode=cosine \
+    --admm_final_lmda=${FINAL_LMDA} \
+    --admm_lmda_schedule_mode=constant \
     --admm_lr=1e-4 \
     --admm_base_optimizer=adamw \
     --admm_beta1=0.9 \
     --admm_beta2=0.999 \
+    --admm_projection_mode=momentum \
     --admm_interval=32 \
     --admm_precision=bf16 \
     --admm_dual_dtype=fp32 \

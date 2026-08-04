@@ -11,8 +11,8 @@
 #SBATCH --output=/home1/doyoonkim/projects/elsa/logs/eval_smoketest_%j.out
 exec 2>&1
 
-# Smoke test: runs all 5 benchmarks with --max-samples 1 to verify the pipeline works.
-# Usage: sbatch slurm_eval_5bench_smoketest.sh [MODEL_PATH]
+# Smoke test: runs all 6 benchmarks with --max-samples 1 to verify the pipeline works.
+# Usage: sbatch slurm_eval_bench_smoketest.sh [MODEL_PATH]
 
 MODEL_PATH=${1:-"/home1/doyoonkim/.cache/huggingface/hub/models--Qwen--Qwen3-0.6B/snapshots/c1899de289a04d12100db370d81485cdf75e47ca"}
 
@@ -29,7 +29,7 @@ export VLLM_HOST_IP=127.0.0.1
 LIGHTEVAL=/home1/doyoonkim/miniconda3/envs/rac/bin/lighteval
 PYTHON=/home1/doyoonkim/miniconda3/envs/rac/bin/python
 
-echo "=== eval_5bench_smoketest ==="
+echo "=== eval_bench_smoketest ==="
 echo "MODEL_PATH=$MODEL_PATH"
 echo "SLURM_JOB_ID=$SLURM_JOB_ID  NODE=$(hostname)"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader

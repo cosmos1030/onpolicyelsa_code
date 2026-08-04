@@ -1,14 +1,14 @@
 #!/bin/bash
 #SBATCH --job-name=sgpt_qwen3_4b
-#SBATCH --partition=A100-80GB
-#SBATCH --qos=hpgpu
+#SBATCH --partition=RTX6000ADA
+#SBATCH --qos=normal
 #SBATCH --gres=gpu:1
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=80G
 #SBATCH --time=12:00:00
-#SBATCH --exclude=n3,n51,n52,n54,n55,n58,n60,n76,n80
+#SBATCH --exclude=n3,n51,n52,n54,n55,n58,n60,n76,n80,n61,n64
 #SBATCH --output=/home1/doyoonkim/projects/elsa/logs/sgpt_qwen3_4b_%j.out
 exec 2>&1
 
@@ -28,6 +28,7 @@ mkdir -p "$LOCAL_JOB_BASE/wandb"
 mkdir -p /home1/doyoonkim/projects/elsa/logs
 
 export WANDB_DIR="$LOCAL_JOB_BASE/wandb"
+export WANDB_INIT_TIMEOUT=120
 export HF_TOKEN=$(cat ~/.hf_token 2>/dev/null || echo "")
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export TOKENIZERS_PARALLELISM=false
@@ -52,6 +53,7 @@ $PYTHON src/open_r1/prune_and_eval.py \
     --seqlen 2048 \
     --save_path "$SAVE_PATH" \
     --wandb_project reasoning_qwen3_4b \
-    --wandb_name "sgpt_s${SPARSITY_PCT}"
+    --wandb_name "sgpt_s${SPARSITY_PCT}" \
+    --push_to_hub
 
 echo "##### END #####"

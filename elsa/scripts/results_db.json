@@ -978,7 +978,8 @@
           "c4": 232.41,
           "wt2": 233.48
         }
-      ]
+      ],
+      "N24": []
     },
     "qwen3_1.7b": {
       "display": "Qwen3-1.7B",
@@ -2140,6 +2141,83 @@
           "pending": true,
           "wandb_project": "reasoning_qwen3_1.7b"
         }
+      ],
+      "N24": [
+        {
+          "badge": "dense",
+          "name": "Dense",
+          "sub": "Qwen3-1.7B",
+          "wbid": "wwom9h2p",
+          "hf": "Qwen/Qwen3-1.7B",
+          "isDense": true,
+          "math": 84.6,
+          "lcb": 18.7,
+          "gpqa": 36.4,
+          "ifeval": 69.7,
+          "wino": 61.8,
+          "rte": 70.4,
+          "race": 36.7,
+          "piqa": 72.1,
+          "ob": 37.2,
+          "hella": 60.4,
+          "boolq": 77.5,
+          "arce": 69.7,
+          "arcc": 43.1,
+          "c4": 22.36,
+          "wt2": 16.69
+        },
+        {
+          "badge": "sgpt",
+          "name": "SparseGPT 2:4",
+          "sub": "OT 80% + FW 20%, N:M semi-structured",
+          "wbid": "mzubh7iv",
+          "math": 10.4,
+          "lcb": 0.0,
+          "gpqa": 24.2,
+          "ifeval": 18.1,
+          "wino": 51.3,
+          "rte": 53.1,
+          "race": 29.7,
+          "piqa": 56.0,
+          "ob": 28.0,
+          "hella": 33.5,
+          "boolq": 64.6,
+          "arce": 34.8,
+          "arcc": 23.9,
+          "c4": 142.44,
+          "wt2": 98.22,
+          "wandb_project": "reasoning_qwen3_1.7b"
+        },
+        {
+          "badge": "alps",
+          "name": "ALPS 2:4",
+          "sub": "ADMM proximal, N:M semi-structured",
+          "wbid": "81386bih",
+          "math": 4.8,
+          "lcb": 0.0,
+          "gpqa": 7.6,
+          "ifeval": 15.2,
+          "wino": 51.1,
+          "rte": 57.0,
+          "race": 31.0,
+          "piqa": 58.5,
+          "ob": 27.2,
+          "hella": 34.8,
+          "boolq": 68.0,
+          "arce": 40.7,
+          "arcc": 23.7,
+          "c4": 77.08,
+          "wt2": 48.76,
+          "wandb_project": "reasoning_qwen3_1.7b"
+        },
+        {
+          "badge": "tropkd_24",
+          "name": "TR-GMP NTP+KD + OPKD (Dense, 2:4 + plain lasso, FSDPx4)",
+          "sub": "kl=0.02_l1=1e-4_constlr1e-4_lam1_tok256_8192steps",
+          "wbid": "5x76i4ek",
+          "pending": true,
+          "wandb_project": "reasoning_qwen3_1.7b"
+        }
       ]
     },
     "qwen3_4b": {
@@ -2538,6 +2616,15 @@
           "lcb": 19.4,
           "gpqa": 41.9,
           "ifeval": 66.9,
+          "wino": 62.8,
+          "rte": 73.3,
+          "race": 39.9,
+          "piqa": 72.1,
+          "ob": 33.0,
+          "hella": 59.0,
+          "boolq": 84.6,
+          "arce": 72.9,
+          "arcc": 47.0,
           "c4": 24.12,
           "wt2": 18.55,
           "wandb_project": "reasoning_qwen3_4b",
@@ -2553,6 +2640,15 @@
           "lcb": 22.8,
           "gpqa": 41.9,
           "ifeval": 70.1,
+          "wino": 63.0,
+          "rte": 71.5,
+          "race": 40.7,
+          "piqa": 72.8,
+          "ob": 38.0,
+          "hella": 62.5,
+          "boolq": 83.6,
+          "arce": 75.5,
+          "arcc": 48.6,
           "c4": 20.91,
           "wt2": 15.74,
           "wandb_project": "reasoning_qwen3_4b",
@@ -2964,6 +3060,15 @@
           "lcb": 11.9,
           "gpqa": 32.8,
           "ifeval": 45.1,
+          "wino": 59.2,
+          "rte": 69.0,
+          "race": 38.9,
+          "piqa": 69.8,
+          "ob": 34.0,
+          "hella": 55.2,
+          "boolq": 80.9,
+          "arce": 68.4,
+          "arcc": 42.2,
           "c4": 30.14,
           "wt2": 22.73,
           "wandb_project": "reasoning_qwen3_4b",
@@ -3350,6 +3455,75 @@
           "wandb_project": "reasoning_qwen3_4b",
           "train_wbid": "yzum7q9y"
         }
+      ],
+      "N24": [
+        {
+          "badge": "dense",
+          "name": "Dense",
+          "sub": "Qwen3-4B",
+          "wbid": "eer6rob2",
+          "hf": "Qwen/Qwen3-4B",
+          "isDense": true,
+          "math": 91.4,
+          "lcb": 27.6,
+          "gpqa": 57.1,
+          "ifeval": 82.3,
+          "wino": 65.7,
+          "rte": 75.8,
+          "race": 41.5,
+          "piqa": 75.0,
+          "ob": 40.4,
+          "hella": 68.4,
+          "boolq": 85.0,
+          "arce": 78.5,
+          "arcc": 53.7,
+          "c4": 19.83,
+          "wt2": 13.65
+        },
+        {
+          "badge": "sgpt",
+          "name": "SparseGPT 2:4",
+          "sub": "OT 80% + FW 20%, N:M semi-structured",
+          "wbid": "lct14xl7",
+          "math": 31.0,
+          "lcb": 0.0,
+          "gpqa": 23.7,
+          "ifeval": 18.1,
+          "wino": 54.7,
+          "rte": 53.1,
+          "race": 31.3,
+          "piqa": 61.8,
+          "ob": 30.6,
+          "hella": 41.7,
+          "boolq": 70.6,
+          "arce": 48.9,
+          "arcc": 33.4,
+          "c4": 67.23,
+          "wt2": 40.74,
+          "wandb_project": "reasoning_qwen3_4b"
+        },
+        {
+          "badge": "alps",
+          "name": "ALPS 2:4",
+          "sub": "ADMM proximal, N:M semi-structured",
+          "wbid": "1zbuc0dg",
+          "math": 65.0,
+          "lcb": 0.0,
+          "gpqa": 23.2,
+          "ifeval": 21.6,
+          "wino": 56.2,
+          "rte": 56.3,
+          "race": 36.3,
+          "piqa": 65.2,
+          "ob": 28.6,
+          "hella": 44.1,
+          "boolq": 78.2,
+          "arce": 54.9,
+          "arcc": 34.0,
+          "c4": 48.67,
+          "wt2": 33.74,
+          "wandb_project": "reasoning_qwen3_4b"
+        }
       ]
     },
     "qwen3_8b": {
@@ -3680,7 +3854,8 @@
           "c4": 73.05,
           "wt2": 47.96
         }
-      ]
+      ],
+      "N24": []
     }
   }
 }

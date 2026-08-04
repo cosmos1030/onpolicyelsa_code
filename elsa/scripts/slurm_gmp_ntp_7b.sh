@@ -71,7 +71,7 @@ cd ${SUBMIT_DIR}
     --master_port=\${MASTER_PORT} \\
     main.py \\
     --model=${MODEL} \\
-    --dataset=math_cot \\
+    --dataset=mixed_cot \\
     --data_path=${DATA_PATH} \\
     --sparsity_ratio=${SP} \\
     --do_gmp=true \\
