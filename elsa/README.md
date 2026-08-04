@@ -22,12 +22,26 @@ If you have any questions, please contact: kwanhee.lee@postech.ac.kr
 conda create -n rac python=3.10
 conda activate rac
 pip install -r requirements.txt
+pip install flash-attn==2.8.3 --no-build-isolation
 ```
 
-> **Note:** The conda environment name used in SLURM scripts is `rac`. `requirements.txt` reflects the actual environment (torch 2.7.1, transformers 4.56.2, vllm 0.10.0, trl 0.21.0). Flash Attention is installed separately:
-> ```bash
-> pip install flash-attn --no-build-isolation
-> ```
+> **Note:** The conda environment name used in every script in this repo is `rac` — keep the same name if you want to run the SLURM scripts under `scripts/` unmodified, otherwise update the hardcoded `TORCHRUN=`/`PYTHON=` paths at the top of each script. `requirements.txt` is a full `pip freeze` of the working environment (torch 2.7.1, transformers 4.56.2, vllm 0.10.0, trl 0.21.0, lighteval 0.12.0, flash_attn 2.8.3, Python 3.10.19). It over-specifies (includes everything actually installed, not a minimal set) but is guaranteed to reproduce a working environment.
+
+### Environment variables / secrets
+
+Training and eval scripts expect these to be set (see any script under `scripts/rerun_ot80fw20/` for the exact pattern):
+
+| Variable | Purpose |
+|---|---|
+| `HF_TOKEN` | HuggingFace token, needed for `--push_to_hub=true` and for downloading gated models. Scripts read it from `~/.hf_token` — put your token in that file, or export it directly. |
+| `WANDB_API_KEY` | W&B logging. Scripts `grep` it out of `~/.bashrc` — either add `export WANDB_API_KEY=...` to your `~/.bashrc` or export it directly before running. |
+| `HF_HOME` | HuggingFace cache dir (models/datasets). Point this at wherever you want large downloads to land. |
+| `HF_DATASETS_OFFLINE` / `TRANSFORMERS_OFFLINE` | Set to `1` once models/datasets are cached locally, to avoid hub lookups during training. Set to `0` when you actually need to download or push. |
+| `VLLM_HOST_IP` | Set to `127.0.0.1`. Needed because vLLM's IP auto-detection fails on some cluster nodes. |
+| `TOKENIZERS_PARALLELISM` | Set to `false` to silence tokenizer fork warnings under `torchrun`. |
+| `PYTORCH_CUDA_ALLOC_CONF` | Set to `expandable_segments:True` — helps avoid fragmentation-driven OOMs during long ADMM runs. |
+
+On a SLURM cluster, also set `--output`/local scratch paths (`/local-data/...` in the example scripts) to wherever your cluster's fast node-local storage lives, and adjust `--exclude=` node lists (those are specific to this cluster's known-bad nodes, not portable).
 
 
 ## Running ELSA
@@ -117,6 +131,49 @@ accelerate launch --config_file config/default.yaml main.py \
 | `--save_model` | `False` | Save the pruned model |
 | `--admm_save_path` | `None` | Directory to save the pruned model |
 | `--wandb` | `False` | Enable W&B logging |
+
+## Knowledge Distillation during ADMM
+
+`main.py` supports mixing a dense-teacher KD loss into ADMM training via `lib/gkd_admm.py` / `lib/gkd_admm_trainer.py`:
+
+| Argument | Default | Description |
+|---|---|---|
+| `--do_offpolicy_kd_admm` | `False` | Dataset-CoT KD: KL(student \|\| teacher) computed on the same input batch (teacher forward pass only, no generation, no vLLM). This is the one to use for standard KD. |
+| `--do_kd_admm` | `False` | On-policy KD (student generates its own rollout via vLLM, then distills against the teacher on that rollout). Different code path — don't confuse the two flags. |
+| `--kd_lambda` / `--kd_ntp_lambda` | `0.0` / `0.0` | Loss mix: `loss = kd_lambda * KD + kd_ntp_lambda * NTP` (offpolicy path ignores `kd_ntp_lambda` — it's KD-only regardless). |
+| `--kd_topk` | `50` | Restrict KD's KL divergence to the top-K vocab logits (student's own top-K for reverse KL). **Set to `0` for full-vocab KL** — the top-K path gathers logits from an already-full-vocab `log_softmax` without renormalizing over the truncated support, so the reported loss can go negative and isn't a proper divergence. Full vocab is mathematically correct and isn't meaningfully more expensive (the model's forward pass already materializes full-vocab logits either way). |
+| `--kd_temperature` | `1.0` | Softmax temperature for the KD loss. |
+
+Example (single GPU, dataset-CoT KD mixed 50/50 with NTP):
+```bash
+python main.py \
+    --model="Qwen/Qwen3-1.7B" \
+    --dataset=mixed_cot --data_path=<path/to/mixed_cot.jsonl> \
+    --sparsity_ratio=0.5 --admm_steps=2048 \
+    --do_offpolicy_kd_admm=true --kd_lambda=0.5 --kd_ntp_lambda=0.5 --kd_topk=0 \
+    --save_model=true --push_to_hub=true
+```
+
+## Standalone Evaluation
+
+Training scripts can (and, on multi-GPU/FSDP setups, should) skip evaluation entirely (`--eval_zero_shot=false --eval_full_bench=false`) and push the checkpoint to HF Hub; `scripts/eval_full.py` then re-evaluates it as a separate single-GPU job:
+
+```bash
+python scripts/eval_full.py \
+    --model_path <local path or HF repo id> \
+    --wandb_project <project> --wandb_run_id <existing run id to resume/append> \
+    --method elsa --sparsity 0.5 \
+    --tp_size 1 --gpu_util 0.85 \
+    [--skip_ppl] [--skip_zeroshot] [--skip_lighteval]
+```
+
+This separation matters on multi-GPU FSDP jobs specifically: sharding the 9 zero-shot tasks across ranks (`i % world_size == rank`) causes idle ranks to sit in `dist.all_gather_object` far longer than NCCL's ~2h watchdog timeout when task costs are wildly uneven (hellaswag/race have 10-40x more requests than boolq/rte) — this crashed multiple multi-day training runs during the eval phase in past runs. Doing zero-shot/reasoning eval in a separate, single-GPU job sidesteps that class of bug entirely.
+
+## Reference SLURM Scripts
+
+`scripts/rerun_ot80fw20/` has working, battle-tested SLURM scripts for training + eval on this cluster (SparseGPT/ALPS/SparseLLM baselines, ELSA plain, ELSA+KD, dependency-chained train→eval). They're the best starting point for adapting to a new cluster — copy one, swap the partition/QOS/exclude list/local-scratch paths for your cluster, and the `--model`/`--data_path`/hyperparameter flags stay the same.
+
+`scripts/build_ot3_fineweb_dataset.py` builds the mixed OpenThoughts3-CoT (80%) + FineWeb-Edu (20%) pretraining dataset (`ot3_fineweb_200k_qwen3.jsonl`) used by the `mixed_cot` dataset loader in these scripts.
 
 ---
 
