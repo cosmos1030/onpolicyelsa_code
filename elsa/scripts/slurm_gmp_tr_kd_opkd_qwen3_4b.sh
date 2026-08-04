@@ -1,6 +1,6 @@
 #!/bin/bash
-#SBATCH --job-name=tr_kd_opkd_1.7b
-#SBATCH --partition=A100-80GB
+#SBATCH --job-name=tr_kd_opkd_4b
+#SBATCH --partition=H200
 #SBATCH --qos=hpgpu
 #SBATCH --gres=gpu:1
 #SBATCH --nodes=1
@@ -8,33 +8,23 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=80G
 #SBATCH --time=3-00:00:00
-#SBATCH --exclude=n3,n42,n46,n51,n54,n60,n77,n80,n87,n91,n61,n64,n31,n19
-#SBATCH --output=/home1/doyoonkim/projects/elsa/logs/tr_kd_opkd_1.7b_%j.out
+#SBATCH --exclude=n87
+#SBATCH --output=/home1/doyoonkim/projects/elsa/logs/tr_kd_opkd_4b_%j.out
 exec 2>&1
 
-# TR-GMP KD+OPKD only (no NTP), Fisher saliency, Qwen3-1.7B, OT80/FW20 data.
-# gmp_ntp_lambda unused (gmp_kd_only=true skips NTP entirely), kd_lambda=0.5,
-# onpolicy_kd_lambda=0.5. TR-GMP no longer stops once target sparsity is
-# reached (fixed in gmp_trainer.py) -- it freezes the mask and keeps training
-# (sparse training) for the remaining steps instead.
-# Based on slurm_gmp_tr_kd_opkd_mag_qwen3_4b.sh (proven single-GPU on-policy
-# pattern, vLLM shares the training GPU via gmp_opkd_vllm_gpu_mem) ported to
-# 1.7B + this session's corrected dataset + updated TR delta_min/kl_threshold.
+# Same as slurm_gmp_tr_kd_opkd_qwen3_1.7b.sh (TR-GMP KD+OPKD only, no NTP,
+# Fisher saliency, kd_lambda=0.5/onpolicy_kd_lambda=0.5, disjoint KD-train
+# vs OPD-prompt splits of the OT80/FW20 corpus) ported to Qwen3-4B, 1xH200.
 #
-# --data_path (offline KD training text) and --gmp_prompt_path (OPD rollout
-# prompts) point at disjoint splits of the 200k-line corpus (train=first
-# 180k, opdprompts=last 20k) so OPD never rolls out on a prompt the offline
-# KD loss is also training on.
-#
-# Usage: sbatch slurm_gmp_tr_kd_opkd_qwen3_1.7b.sh <SPARSITY> <KL_THRESHOLD>
-# e.g.: sbatch slurm_gmp_tr_kd_opkd_qwen3_1.7b.sh 0.5 0.01
+# Usage: sbatch slurm_gmp_tr_kd_opkd_qwen3_4b.sh <SPARSITY> <KL_THRESHOLD>
+# e.g.: sbatch slurm_gmp_tr_kd_opkd_qwen3_4b.sh 0.5 0.01
 
-SPARSITY=${1:?"Usage: sbatch slurm_gmp_tr_kd_opkd_qwen3_1.7b.sh <SPARSITY> <KL_THRESHOLD>"}
+SPARSITY=${1:?"Usage: sbatch slurm_gmp_tr_kd_opkd_qwen3_4b.sh <SPARSITY> <KL_THRESHOLD>"}
 KL_THRESHOLD=${2:-0.01}
 SPARSITY_PCT=$(python3 -c "print(int(${SPARSITY}*100))")
 
 PYTHON=/home1/doyoonkim/miniconda3/envs/rac/bin/python
-MODEL="/home1/doyoonkim/.cache/huggingface/hub/models--Qwen--Qwen3-1.7B/snapshots/70d244cc86ccca08cf5af4e1e306ecf908b1ad5e"
+MODEL="/home1/doyoonkim/.cache/huggingface/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c"
 DATA_PATH="/home1/doyoonkim/projects/elsa/data/ot3_fineweb_200k_qwen3_train.jsonl"
 OPD_PROMPT_PATH="/home1/doyoonkim/projects/elsa/data/ot3_fineweb_200k_qwen3_opdprompts.jsonl"
 
@@ -57,7 +47,7 @@ export TRITON_CACHE_DIR=/tmp/triton_cache_${USER}
 export HF_DATASETS_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 
-echo "=== TR-GMP KD+OPKD(0.5/0.5, no NTP) Qwen3-1.7B s${SPARSITY_PCT} kl=${KL_THRESHOLD} (OT80/FW20) ==="
+echo "=== TR-GMP KD+OPKD(0.5/0.5, no NTP) Qwen3-4B s${SPARSITY_PCT} kl=${KL_THRESHOLD} (OT80/FW20) ==="
 echo "NODE=$(hostname)  JOB=$SLURM_JOB_ID"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 
@@ -103,7 +93,7 @@ $PYTHON main.py \
     --eval_full_bench=true \
     --eval_zero_shot=true \
     --wandb=true \
-    --wandb_project=reasoning_qwen3_1.7b \
+    --wandb_project=reasoning_qwen3_4b \
     --seed=42
 
 echo "##### END #####"
