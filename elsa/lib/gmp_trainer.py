@@ -19,7 +19,7 @@ from absl import logging
 from contextlib import nullcontext
 from datetime import datetime
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from transformers.optimization import get_cosine_schedule_with_warmup
+from transformers.optimization import get_cosine_schedule_with_warmup, get_constant_schedule, get_constant_schedule_with_warmup
 from torch.utils.data import DataLoader, Dataset, DistributedSampler
 
 try:
@@ -96,8 +96,31 @@ def _structured_l1_loss(named_params: dict, masks: dict, prune_n: int, prune_m: 
     return total / count
 
 
+def _open_group_mask(alive: torch.Tensor, prune_n: int, prune_m: int) -> torch.Tensor:
+    """For a 2D alive mask, return a same-shape bool mask marking weights that belong
+    to a group-of-prune_m which has NOT yet reached its 2:4 cap (i.e. still has more
+    than prune_n alive weights, so more pruning is still expected there).
+
+    Groups already at cap (alive_count <= prune_n) are excluded entirely — there's
+    nothing left to prune there, so regularizing them serves no purpose and only
+    dilutes the L1 signal on the groups that actually still need to shed weight.
+    """
+    n_rows, n_cols = alive.shape
+    n_full = n_cols // prune_m
+    n_nm_cols = n_full * prune_m
+    out = torch.zeros_like(alive)
+    if n_full == 0:
+        return out
+    alive_nm = alive[:, :n_nm_cols].reshape(n_rows * n_full, prune_m)
+    group_alive_count = alive_nm.sum(dim=1, keepdim=True)
+    group_open = (group_alive_count > prune_n).expand_as(alive_nm)
+    out[:, :n_nm_cols] = group_open.reshape(n_rows, n_nm_cols)
+    return out
+
+
 def _gmp_l1_regularizer(named_params, maskmgr, fisher, mode="plain",
-                        clip_min=0.1, clip_max=10.0):
+                        clip_min=0.1, clip_max=10.0,
+                        open_groups_only=False, prune_n=0, prune_m=0):
     """L1 regularization term for GMP training.
 
     mode="plain":
@@ -108,6 +131,13 @@ def _gmp_l1_regularizer(named_params, maskmgr, fisher, mode="plain",
         Weights with high Fisher (important) get lower penalty,
         weights with low Fisher (pruning candidates) get higher penalty.
         Falls back to plain L1 if Fisher state not yet available.
+
+    open_groups_only: restrict the alive set to weights in 2:4 groups that
+        haven't reached their prune_n cap yet (see _open_group_mask). Use this
+        to concentrate L1 pressure on the shrinking pool of still-prunable
+        weights instead of diluting it across already-finished groups —
+        intended to help the last few percent of a 2:4 schedule converge under
+        a tight TR-KL budget.
     """
     reg_terms = []
     for name, param in named_params.items():
@@ -117,6 +147,8 @@ def _gmp_l1_regularizer(named_params, maskmgr, fisher, mode="plain",
         if mask is None:
             continue
         alive = mask.bool()
+        if open_groups_only and prune_n > 0 and prune_m > 0:
+            alive = alive & _open_group_mask(alive, prune_n, prune_m)
         if alive.sum() == 0:
             continue
 
@@ -214,6 +246,81 @@ class FisherAccumulator:
         return imp
 
 
+class EmpiricalFisherAccumulator:
+    """Empirical Fisher diagonal computed from a calibration batch via grad².
+
+    Replaces Adam exp_avg_sq with F_ii = mean_n(g_i^2) over the cal_batch.
+    Call update_from_batch() before each TR mask update; importance() interface
+    is identical to FisherAccumulator so it plugs in without other changes.
+    """
+
+    def __init__(self, named_params, saliency='fisher'):
+        self.named_params = named_params  # {name: param}
+        self.saliency = saliency
+        self._fisher: dict = {}  # name -> Fisher diagonal tensor (float32, CPU)
+
+    def update_from_batch(self, model: 'nn.Module', cal_batch: dict, device: str):
+        """Compute empirical Fisher from cal_batch: F_ii = mean(g_i^2) over samples."""
+        input_ids = cal_batch['input_ids'].to(device)
+        attn_mask = cal_batch['attention_mask'].to(device)
+
+        model.eval()
+        saved_grads = {n: [] for n in self.named_params}
+
+        B = input_ids.shape[0]
+        for b in range(B):
+            ids_b = input_ids[b:b+1]
+            msk_b = attn_mask[b:b+1]
+            model.zero_grad()
+            with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+                out = model(input_ids=ids_b, attention_mask=msk_b)
+            logits = out.logits[:, :-1, :].float()
+            labels = ids_b[:, 1:]
+            valid  = (msk_b[:, 1:] == 1)
+            if not valid.any():
+                continue
+            loss = F.cross_entropy(
+                logits.reshape(-1, logits.size(-1)),
+                labels.reshape(-1),
+                ignore_index=-100 if 'labels' in cal_batch else -1,
+                reduction='none',
+            )
+            valid_loss = loss[valid.reshape(-1)].mean()
+            valid_loss.backward()
+            for n, p in self.named_params.items():
+                if p.grad is not None:
+                    saved_grads[n].append(p.grad.detach().float().cpu() ** 2)
+
+        model.zero_grad()
+        model.train()
+
+        self._fisher = {}
+        for n, grads in saved_grads.items():
+            if grads:
+                self._fisher[n] = torch.stack(grads).mean(0)
+
+    def fisher_factor(self, param):
+        for n, p in self.named_params.items():
+            if p is param:
+                return self._fisher.get(n, None)
+        return None
+
+    def importance(self, name, param):
+        if self.saliency == 'magnitude':
+            return param.data.float() ** 2
+        f = self._fisher.get(name, None)
+        if f is None:
+            return param.data.float() ** 2
+        f = f.to(param.device)
+        imp = f * param.data.float() ** 2
+        if imp.sum() == 0:
+            imp = param.data.float() ** 2
+        return imp
+
+    def update(self):
+        pass  # no-op; use update_from_batch() instead
+
+
 # ---------------------------------------------------------------------------
 # Mask manager
 # ---------------------------------------------------------------------------
@@ -247,6 +354,10 @@ class GradualMaskManager:
         positions to reach target sparsity (gradual schedule).
         """
         prune_n, prune_m = self.prune_n, self.prune_m
+        if imp.numel() == 0:
+            # FSDP shard-of-this-param is empty on this rank (param fully resides
+            # in another rank's shard) — nothing to mask, keep=True is a no-op.
+            return torch.ones_like(imp, dtype=torch.bool)
         if imp.dim() < 2:
             # 1-D param (bias etc.) — fall back to unstructured
             return imp > torch.kthvalue(imp.flatten(), max(1, int(imp.numel() * sparsity))).values
@@ -465,6 +576,16 @@ class GradualMaskManager:
     def current_sparsity(self):
         total = sum(m.numel() for m in self.masks.values())
         zeros = sum((~m).sum().item() for m in self.masks.values())
+        try:
+            import torch.distributed as _dist
+            if _dist.is_available() and _dist.is_initialized():
+                # NCCL requires CUDA tensor — get device from masks
+                _dev = next(iter(self.masks.values())).device if self.masks else 'cpu'
+                t = torch.tensor([total, zeros], dtype=torch.long, device=_dev)
+                _dist.all_reduce(t, op=_dist.ReduceOp.SUM)
+                total, zeros = t[0].item(), t[1].item()
+        except Exception:
+            pass
         return zeros / total if total > 0 else 0.0
 
 
@@ -764,7 +885,11 @@ def _pg_loss(s_logits, t_logits, gen_labels, is_log_w=None, old_s_logp=None,
 
 
 def _sync_opkd_weights_to_vllm(model: nn.Module, vllm_engine) -> None:
-    """Sync current student weights into the OPKD vLLM engine."""
+    """Sync current student weights into the OPKD vLLM engine.
+
+    Must be called while inside FSDP.summon_full_params context (or non-FSDP).
+    Only rank 0 needs to call this; other ranks just participate in summon_full_params.
+    """
     engine = vllm_engine.llm_engine
     # vLLM 0.10+ V1 engine: model_executor lives under engine_core
     executor = engine.engine_core.model_executor if hasattr(engine, 'engine_core') else engine.model_executor
@@ -773,6 +898,26 @@ def _sync_opkd_weights_to_vllm(model: nn.Module, vllm_engine) -> None:
     for name, param in model.named_parameters():
         if name in vllm_state:
             vllm_state[name].data.copy_(param.data.to(vllm_state[name].dtype))
+
+
+def _opkd_broadcast_pool(pool: list, is_distributed: bool, device) -> list:
+    """Broadcast OPKD rollout pool from rank 0 to all ranks.
+
+    pool items: {"full_seq": LongTensor[1,T], "prompt_len": int}
+    Non-distributed: returns pool unchanged.
+    """
+    if not is_distributed:
+        return pool
+    import torch.distributed as _dist
+    obj = [pool]
+    _dist.broadcast_object_list(obj, src=0)
+    result = []
+    for item in obj[0]:
+        result.append({
+            "full_seq": item["full_seq"].to(device),
+            "prompt_len": item["prompt_len"],
+        })
+    return result
 
 
 @torch.no_grad()
@@ -813,7 +958,7 @@ def _compute_tr_kl(model: nn.Module, cal_batch: dict, cand_masks: dict,
         valid  = (attn_mask[:, 1:] == 1)  # [B, T-1]
 
     with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-        old_logits = model(input_ids=input_ids, attention_mask=attn_mask).logits.detach().float()
+        old_logits = model(input_ids=input_ids, attention_mask=attn_mask).logits.detach()
 
     # Temporarily zero newly-pruned weights (old_mask=True & cand_mask=False)
     saved = {}
@@ -824,7 +969,7 @@ def _compute_tr_kl(model: nn.Module, cal_batch: dict, cand_masks: dict,
             param.data[newly_pruned] = 0.0
 
     with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-        cand_logits = model(input_ids=input_ids, attention_mask=attn_mask).logits.detach().float()
+        cand_logits = model(input_ids=input_ids, attention_mask=attn_mask).logits.detach()
 
     # Restore
     for name, (mask_idx, vals) in saved.items():
@@ -833,11 +978,16 @@ def _compute_tr_kl(model: nn.Module, cal_batch: dict, cand_masks: dict,
     if not valid.any():
         return 0.0, None
 
-    old_lp   = F.log_softmax(old_logits[:, :-1, :], dim=-1)   # [B, T-1, V]
-    cand_lp  = F.log_softmax(cand_logits[:, :-1, :], dim=-1)  # [B, T-1, V]
-    old_p    = old_lp.exp()
-    kl_tok   = (old_p * (old_lp - cand_lp)).sum(dim=-1)       # [B, T-1]
-    kl_vals  = kl_tok[valid].float()
+    # Keep in bfloat16 and delete logits immediately after log_softmax to avoid
+    # materializing 5 × [B,T,V] float32 tensors simultaneously (~1.86 GB peak).
+    old_lp  = F.log_softmax(old_logits[:, :-1, :], dim=-1)   # [B, T-1, V] bf16
+    del old_logits
+    cand_lp = F.log_softmax(cand_logits[:, :-1, :], dim=-1)  # [B, T-1, V] bf16
+    del cand_logits
+    old_p   = old_lp.exp()
+    kl_tok  = (old_p * (old_lp - cand_lp)).sum(dim=-1)       # [B, T-1]
+    del old_p, cand_lp, old_lp
+    kl_vals = kl_tok[valid].float()
     if kl_reduce == 'quantile':
         result = torch.quantile(kl_vals, kl_quantile).item()
     else:
@@ -856,12 +1006,31 @@ def _tr_mask_update(maskmgr: 'GradualMaskManager', fisher: 'FisherAccumulator',
 
     Finds the largest delta s.t. KL(old||cand) <= kl_threshold.
     Returns (new_sparsity, new_tr_delta, reached_target).
+
+    FSDP note: current_sparsity() is LOCAL (per-shard), so break conditions are
+    all_reduced across ranks to keep all ranks executing the same NCCL collectives.
     """
+    # Init dist early — needed before any all_reduce / early-return.
+    _tr_dist = None
+    try:
+        import torch.distributed as _td
+        if _td.is_available() and _td.is_initialized():
+            _tr_dist = _td
+    except Exception:
+        pass
+    _tr_rank = _tr_dist.get_rank() if _tr_dist else 0
+
     current_sp = maskmgr.current_sparsity()
 
-    if current_sp >= final_sparsity - 1e-4:
+    # Early return: all_reduce so all ranks agree (local shard sparsity can differ).
+    _early = int(current_sp >= final_sparsity - 1e-4)
+    if _tr_dist:
+        _et = torch.tensor([_early], dtype=torch.int32, device=device)
+        _tr_dist.all_reduce(_et, op=_tr_dist.ReduceOp.MAX)
+        _early = _et.item()
+    if _early:
         maskmgr.apply(fsdp_model)
-        return current_sp, tr_delta, True
+        return current_sp, tr_delta, True, {}
 
     delta               = tr_delta
     last_accepted_masks = None
@@ -871,11 +1040,20 @@ def _tr_mask_update(maskmgr: 'GradualMaskManager', fisher: 'FisherAccumulator',
     prev_accepted       = False  # True if the previous iter was accepted
 
     for i in range(max_iters):
+        if _tr_dist:
+            _tr_dist.barrier()
+            logging.info(f"  [BARRIER] TR-GMP iter {i} start (rank={_tr_rank})")
         try_sp   = min(current_sp + delta, final_sparsity)
         cand     = maskmgr.candidate_masks(fisher, try_sp, fsdp_model)
+        if _tr_dist:
+            _tr_dist.barrier()
+            logging.info(f"  [BARRIER] after candidate_masks iter {i} (rank={_tr_rank})")
         kl, kl_vals = _compute_tr_kl(model, cal_batch, cand, maskmgr, device,
                                       kl_reduce=kl_reduce, kl_quantile=kl_quantile)
-        accepted = kl <= kl_threshold
+        if _tr_dist:
+            _tr_dist.barrier()
+            logging.info(f"  [BARRIER] after _compute_tr_kl iter {i} (rank={_tr_rank})")
+        accepted = kl <= kl_threshold  # kl is globally reduced → same on all ranks
 
         logging.info(f"  TR-GMP iter {i}: try_sp={try_sp:.4f} delta={delta:.5f} "
                      f"KL={kl:.5f} {'✓' if accepted else '✗'}")
@@ -896,22 +1074,36 @@ def _tr_mask_update(maskmgr: 'GradualMaskManager', fisher: 'FisherAccumulator',
                 "tr/iter":       i,
             }, step=global_step)
 
+        # Compute local break signal, then all_reduce so all ranks break together.
+        # try_sp is per-rank (local shard sparsity differs) so "target reached" can
+        # fire on some ranks before others without this synchronization.
+        _break_now = 0
         if accepted:
             last_accepted_masks = cand
             last_accepted_sp    = try_sp
             last_accepted_delta = delta
             last_kl             = kl
             if try_sp >= final_sparsity - 1e-4:
-                break  # target reached, done
-            prev_accepted = True
-            delta = min(delta * 2.0, final_sparsity - current_sp)
+                _break_now = 1  # target reached on this rank
+            else:
+                prev_accepted = True
+                delta = min(delta * 2.0, final_sparsity - current_sp)
         else:
             if prev_accepted:
-                break  # ✓ → ✗: found boundary, use last accepted
-            prev_accepted = False
-            delta /= 2.0
-            if delta < delta_min:
-                break
+                _break_now = 1  # ✓ → ✗ boundary found
+            else:
+                prev_accepted = False
+                delta /= 2.0
+                if delta < delta_min:
+                    _break_now = 1  # delta exhausted
+
+        if _tr_dist:
+            _bt = torch.tensor([_break_now], dtype=torch.int32, device=device)
+            _tr_dist.all_reduce(_bt, op=_tr_dist.ReduceOp.MAX)
+            _break_now = _bt.item()
+
+        if _break_now:
+            break
 
     if last_accepted_masks is not None:
         # Compute delta BEFORE applying — old values still intact at newly-pruned positions.
@@ -940,6 +1132,13 @@ def _tr_mask_update(maskmgr: 'GradualMaskManager', fisher: 'FisherAccumulator',
         logging.info(f"  TR-GMP: no accepted delta (current_sp={current_sp:.4f}), "
                      f"shrinking delta to {new_delta:.5f}")
 
+    # All_reduce `reached` so all ranks agree on whether to stop the training loop.
+    # new_sp / last_accepted_sp are local shard values → can differ per rank.
+    if _tr_dist:
+        _rt = torch.tensor([int(reached)], dtype=torch.int32, device=device)
+        _tr_dist.all_reduce(_rt, op=_tr_dist.ReduceOp.MAX)
+        reached = bool(_rt.item())
+
     return new_sp, new_delta, reached, _mask_delta
 
 
@@ -951,15 +1150,17 @@ def globalprune_gmp(
     teacher_model: AutoModelForCausalLM = None,
     dpo_dense_model: AutoModelForCausalLM = None,
     eval_fn=None,        # optional callable(model) → dict of metrics
+    prebuilt_vllm_engine=None,   # pre-initialized vLLM engine (FSDP+OPKD: built before dist.init)
+    prebuilt_vllm_params=None,   # corresponding SamplingParams
 ):
     """
     BEST-style GMP training loop with optional token-level KD.
 
     FLAGS expected attributes:
-      gmp_steps               int    total training steps
+      steps               int    total training steps
       gmp_batch_size          int    per-device batch size
       gmp_grad_accum          int    gradient accumulation steps
-      gmp_lr                  float  peak learning rate
+      lr                  float  peak learning rate
       gmp_warmup_ratio        float  fraction of steps for LR warmup
       gmp_mask_interval       int    steps between mask updates
       gmp_fisher_beta         float  EMA beta for Fisher accumulation (0.999)
@@ -971,6 +1172,8 @@ def globalprune_gmp(
       save_model              bool
       wandb                   bool
     """
+    import os as _os_dbg
+    print(f"[DBG gmp_train ENTER] pid={_os_dbg.getpid()}", flush=True)
     device = next(model.parameters()).device
     named_params = _find_linear_weights(model)
 
@@ -991,18 +1194,35 @@ def globalprune_gmp(
     world_size = _dist.get_world_size() if is_distributed else 1
     is_main_process = (local_rank == 0)
 
-    total_steps    = FLAGS.gmp_steps
+    total_steps    = FLAGS.steps
     batch_size     = getattr(FLAGS, 'gmp_batch_size', 1)
     grad_accum     = getattr(FLAGS, 'gmp_grad_accum', 8)
-    lr             = getattr(FLAGS, 'gmp_lr', 1e-5)
+    lr             = getattr(FLAGS, 'lr', 1e-5)
     warmup_ratio        = getattr(FLAGS, 'gmp_warmup_ratio', 0.05)
+    lr_schedule         = getattr(FLAGS, 'lr_scheduler', 'cosine')
     mask_interval       = getattr(FLAGS, 'gmp_mask_interval', 32)
     log_interval        = getattr(FLAGS, 'gmp_log_interval', 1)
     fisher_beta         = getattr(FLAGS, 'gmp_fisher_beta', 0.999)
     final_sparsity      = FLAGS.sparsity_ratio
-    warmup_steps        = int(total_steps * warmup_ratio)
-    pruning_end_ratio   = getattr(FLAGS, 'gmp_pruning_end_ratio', 1.0)
-    pruning_end_steps   = int(total_steps * pruning_end_ratio)
+    # Step-based warmup takes priority over the ratio (applies to both the
+    # cosine and constant LR schedules); lr_warmup_steps=0 falls back to
+    # gmp_warmup_ratio * steps.
+    lr_warmup_steps_override = getattr(FLAGS, 'lr_warmup_steps', 0)
+    warmup_steps        = lr_warmup_steps_override if lr_warmup_steps_override > 0 else int(total_steps * warmup_ratio)
+    constant_warmup_steps    = warmup_steps
+    # Step-based takes priority: reserve the last `gmp_sparse_train_steps` steps
+    # for fixed-mask sparse training (pruning/cubic ramp already done by then),
+    # instead of deriving the cutoff from gmp_pruning_end_ratio.
+    sparse_train_steps  = getattr(FLAGS, 'gmp_sparse_train_steps', 0)
+    if sparse_train_steps > 0:
+        pruning_end_steps = max(0, total_steps - sparse_train_steps)
+    else:
+        pruning_end_ratio = getattr(FLAGS, 'gmp_pruning_end_ratio', 1.0)
+        pruning_end_steps = int(total_steps * pruning_end_ratio)
+    # Gates mask application, TR-GMP growth, the cubic sparsity ramp, PGD, and
+    # DPO-queue refill alike (was previously coupled to the LR warmup_steps
+    # variable at the _cubic_sparsity call sites instead, and only checked in
+    # one of the two call sites — now unified on this single flag everywhere).
     dense_warmup_steps  = getattr(FLAGS, 'gmp_dense_warmup_steps', 0)
     # TR-GMP flags
     tr_enabled      = getattr(FLAGS, 'gmp_tr_enabled', False)
@@ -1011,7 +1231,7 @@ def globalprune_gmp(
     tr_delta_min    = getattr(FLAGS, 'gmp_tr_delta_min', 0.005)
     tr_kl_reduce    = getattr(FLAGS, 'gmp_tr_kl_reduce', 'mean')
     tr_kl_quantile  = getattr(FLAGS, 'gmp_tr_kl_quantile', 0.95)
-    use_wandb      = getattr(FLAGS, 'wandb', False)
+    use_wandb      = getattr(FLAGS, 'wandb', False) and is_main_process
     ntp_lambda     = getattr(FLAGS, 'gmp_ntp_lambda', 1.0)
     kd_lambda      = getattr(FLAGS, 'gmp_kd_lambda', 0.0)
     kd_temperature = getattr(FLAGS, 'gmp_kd_temperature', 2.0)
@@ -1054,6 +1274,8 @@ def globalprune_gmp(
     teacher_seqkd      = getattr(FLAGS, 'gmp_teacher_seqkd', False)
     teacher_seqkd_temp = getattr(FLAGS, 'gmp_onpolicy_temperature', 1.0)
     teacher_seqkd_max_new = getattr(FLAGS, 'gmp_onpolicy_max_new_tokens', 512)
+    pgd_enabled    = getattr(FLAGS, 'gmp_pgd', False)
+
     use_kd         = (teacher_model is not None) and (kd_lambda > 0.0)
     use_hidden     = (teacher_model is not None) and (hidden_lambda > 0.0)
     use_teacher_gen_kd_flag = getattr(FLAGS, 'gmp_teacher_gen_kd', False)
@@ -1140,10 +1362,10 @@ def globalprune_gmp(
     # Prompt dataset for on-policy generation or teacher SeqKD
     prompt_iter = None
     if use_onpolicy or use_teacher_seqkd or tr_enabled:
-        from lib.gkd_admm_trainer import MathPromptDataset
+        from lib.gkd_admm_trainer import MixedPromptDataset
         prompt_path = getattr(FLAGS, 'gmp_prompt_path', None) or getattr(FLAGS, 'data_path', None)
         prompt_max_len = getattr(FLAGS, 'gmp_max_prompt_len', 512)
-        _prompt_ds = MathPromptDataset(
+        _prompt_ds = MixedPromptDataset(
             jsonl_path=prompt_path,
             tokenizer=tokenizer,
             max_prompt_len=prompt_max_len,
@@ -1166,42 +1388,75 @@ def globalprune_gmp(
     _opkd_prev_delta = None  # {name: (positions, old_values)} — prev-mask weight delta for OPKD teacher
     if use_onpolicy:
         import os as _os
-        _os.environ['VLLM_USE_V1'] = '0'  # V1 uses SyncMPClient; V0 allows direct weight access
-        from vllm import LLM, SamplingParams as _VLLMSamplingParams
+        _os.environ['VLLM_USE_V1'] = '0'
+        print(f"[DBG use_onpolicy] rank={local_rank} pid={_os.getpid()} before vllm import", flush=True)
         from vllm.inputs import TokensPrompt as _TokensPrompt
-        _model_path_for_opkd = getattr(FLAGS, 'model', None)
-        logging.info(f"  OPKD vLLM: initializing engine gpu_mem={opkd_vllm_gpu_mem} ...")
-        _opkd_vllm_enforce_eager = getattr(FLAGS, 'gmp_opkd_vllm_enforce_eager', False)
-        _opkd_vllm_engine = LLM(
-            _model_path_for_opkd,
-            dtype="bfloat16",
-            gpu_memory_utilization=opkd_vllm_gpu_mem,
-            trust_remote_code=True,
-            max_model_len=onpolicy_max_new + getattr(FLAGS, 'gmp_max_prompt_len', 512),
-            enforce_eager=_opkd_vllm_enforce_eager,
-        )
-        _opkd_vllm_params = _VLLMSamplingParams(
-            max_tokens=onpolicy_max_new,
-            temperature=onpolicy_temp,
-            top_p=0.95,
-        )
-        logging.info(f"  OPKD vLLM: engine ready")
-        # Pre-fill pool before training loop starts so step 1 has rollouts available
-        _sync_opkd_weights_to_vllm(model, _opkd_vllm_engine)
-        _n_pool = mask_interval * grad_accum
-        _pool_batches = [next(prompt_iter) for _ in range(_n_pool)]
-        _vllm_inputs = [
-            _TokensPrompt(prompt_token_ids=b['input_ids'][0][:int(b['prompt_len'].item())].tolist())
-            for b in _pool_batches
-        ]
-        _vllm_outs = _opkd_vllm_engine.generate(_vllm_inputs, _opkd_vllm_params)
-        for _pb, _vo in zip(_pool_batches, _vllm_outs):
-            _plen = int(_pb['prompt_len'].item())
-            _p_ids = _pb['input_ids'][:, :_plen].cpu()
-            _gen_ids = torch.tensor([_vo.outputs[0].token_ids], dtype=torch.long)
-            _full_seq = torch.cat([_p_ids, _gen_ids], dim=1)
-            _opkd_standalone_pool.append({"full_seq": _full_seq, "prompt_len": _plen})
-        logging.info(f"  OPKD vLLM: initial pool filled with {len(_opkd_standalone_pool)} rollouts")
+        print(f"[DBG use_onpolicy] rank={local_rank} after vllm import, prebuilt={prebuilt_vllm_engine is not None}", flush=True)
+        if prebuilt_vllm_engine is not None:
+            # vLLM was pre-initialized in main.py BEFORE dist.init_process_group (FSDP path).
+            # vLLM calls torch.distributed.new_group() internally — a global collective that
+            # requires ALL world ranks. Pre-init avoids the deadlock by running vLLM before
+            # dist is initialized, so new_group() is a no-op.
+            if is_main_process:
+                _opkd_vllm_engine = prebuilt_vllm_engine
+                _opkd_vllm_params = prebuilt_vllm_params
+                logging.info("  OPKD vLLM: using pre-built engine (standalone init before dist.init_process_group)")
+        elif not is_distributed:
+            # Single-GPU path: no FSDP, no dist conflict — init vLLM normally here.
+            from vllm import LLM, SamplingParams as _VLLMSamplingParams
+            _opkd_vllm_enforce_eager = getattr(FLAGS, 'gmp_opkd_vllm_enforce_eager', False)
+            logging.info(f"  OPKD vLLM: initializing engine (single-GPU, enforce_eager={_opkd_vllm_enforce_eager}) gpu_mem={opkd_vllm_gpu_mem} ...")
+            _opkd_vllm_engine = LLM(
+                getattr(FLAGS, 'model', None),
+                dtype="bfloat16",
+                gpu_memory_utilization=opkd_vllm_gpu_mem,
+                trust_remote_code=True,
+                max_model_len=onpolicy_max_new + getattr(FLAGS, 'gmp_max_prompt_len', 512),
+                enforce_eager=_opkd_vllm_enforce_eager,
+            )
+            _opkd_vllm_params = _VLLMSamplingParams(
+                max_tokens=onpolicy_max_new,
+                temperature=onpolicy_temp,
+                top_p=0.95,
+            )
+            logging.info("  OPKD vLLM: engine ready")
+        else:
+            # FSDP multi-GPU but no pre-built engine — should not happen (main.py always pre-inits).
+            logging.warning("  OPKD vLLM: no pre-built engine in FSDP mode — disabling on-policy KD.")
+
+        # Pre-fill pool: sync weights to vLLM, then rank 0 generates rollouts.
+        # FSDP: summon_full_params is a collective — all ranks must enter together.
+        # Rank 0 then sends the gathered CPU state_dict to the vLLM subprocess.
+        _in_fsdp = (fsdp_model is not None and _FSDP_AVAILABLE)
+        _fsdp_ctx = (FSDP.summon_full_params(fsdp_model, writeback=False, offload_to_cpu=True, rank0_only=True)
+                     if _in_fsdp else nullcontext())
+        with _fsdp_ctx:
+            if is_main_process and _opkd_vllm_engine is not None:
+                if _in_fsdp and hasattr(_opkd_vllm_engine, 'sync_weights'):
+                    _sd = {n: p.data.cpu() for n, p in model.named_parameters()}
+                    logging.info("  OPKD vLLM: syncing weights (initial pool, FSDP→subprocess)")
+                    _opkd_vllm_engine.sync_weights(_sd)
+                    del _sd
+                elif not _in_fsdp:
+                    _sync_opkd_weights_to_vllm(model, _opkd_vllm_engine)
+        if is_main_process:
+            _n_pool = mask_interval * grad_accum
+            _pool_batches = [next(prompt_iter) for _ in range(_n_pool)]
+            _vllm_inputs = [
+                _TokensPrompt(prompt_token_ids=b['input_ids'][0][:int(b['prompt_len'].item())].tolist())
+                for b in _pool_batches
+            ]
+            _vllm_outs = _opkd_vllm_engine.generate(_vllm_inputs, _opkd_vllm_params)
+            for _pb, _vo in zip(_pool_batches, _vllm_outs):
+                _plen = int(_pb['prompt_len'].item())
+                _p_ids = _pb['input_ids'][:, :_plen].cpu()
+                _gen_ids = torch.tensor([_vo.outputs[0].token_ids], dtype=torch.long)
+                _full_seq = torch.cat([_p_ids, _gen_ids], dim=1)
+                _opkd_standalone_pool.append({"full_seq": _full_seq, "prompt_len": _plen})
+            logging.info(f"  OPKD vLLM: initial pool filled with {len(_opkd_standalone_pool)} rollouts")
+        logging.info(f"[rank {local_rank}] pre-broadcast: pool={len(_opkd_standalone_pool)}")
+        _opkd_standalone_pool = _opkd_broadcast_pool(_opkd_standalone_pool, is_distributed, device)
+        logging.info(f"[rank {local_rank}] post-broadcast: pool={len(_opkd_standalone_pool)}")
 
     rollout_buffer = RolloutBuffer() if use_rollout else None
 
@@ -1211,6 +1466,7 @@ def globalprune_gmp(
     l1_mode          = getattr(FLAGS, 'gmp_l1_mode', 'plain')
     l1_fisher_cmin   = getattr(FLAGS, 'gmp_l1_fisher_clip_min', 0.1)
     l1_fisher_cmax   = getattr(FLAGS, 'gmp_l1_fisher_clip_max', 10.0)
+    l1_open_only     = getattr(FLAGS, 'gmp_l1_open_groups_only', False)
 
     # N:M semi-structured sparsity support (e.g. "2:4")
     sparsity_type = getattr(FLAGS, 'sparsity_type', 'unstructured')
@@ -1224,24 +1480,41 @@ def globalprune_gmp(
         if use_structured_l1:
             logging.info(f"  Bottom-2 structured L1: lambda={l1_lambda}")
         else:
-            logging.info(f"  L1 mode={l1_mode}: lambda={l1_lambda}")
+            logging.info(f"  L1 mode={l1_mode}: lambda={l1_lambda}"
+                         f"{' (open-groups-only)' if l1_open_only else ''}")
 
     if getattr(FLAGS, 'gmp_gradient_checkpointing', False):
         model.gradient_checkpointing_enable()
         logging.info("  Gradient checkpointing ENABLED (reduces activation memory)")
 
+    logging.info(f"[rank {local_rank}] creating optimizer")
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.0)
-    fisher  = FisherAccumulator(named_params, optimizer, saliency=FLAGS.gmp_saliency)
+    logging.info(f"[rank {local_rank}] optimizer created")
+    _fisher_source = getattr(FLAGS, 'gmp_fisher_source', 'adam')
+    if _fisher_source == 'opd_empirical':
+        fisher = EmpiricalFisherAccumulator(named_params, saliency=FLAGS.gmp_saliency)
+        logging.info("Fisher source: opd_empirical (grad^2 on OPD cal_batch)")
+    else:
+        fisher = FisherAccumulator(named_params, optimizer, saliency=FLAGS.gmp_saliency)
+        logging.info("Fisher source: adam (exp_avg_sq)")
     maskmgr = GradualMaskManager(named_params, fsdp_model, prune_n=prune_n, prune_m=prune_m,
                                   pruning_scope=getattr(FLAGS, 'gmp_pruning_scope', 'global'))
     if fixed_mask:
         maskmgr.init_from_weights()
         maskmgr.apply(fsdp_model)
-    scheduler = get_cosine_schedule_with_warmup(
-        optimizer,
-        num_warmup_steps=warmup_steps,
-        num_training_steps=total_steps,
-    )
+    if lr_schedule in ('constant', 'constant_with_warmup'):
+        if constant_warmup_steps > 0:
+            scheduler = get_constant_schedule_with_warmup(optimizer, num_warmup_steps=constant_warmup_steps)
+            logging.info(f"  LR schedule: constant with {constant_warmup_steps}-step linear warmup, no decay")
+        else:
+            scheduler = get_constant_schedule(optimizer)
+            logging.info("  LR schedule: constant (no warmup, no decay)")
+    else:
+        scheduler = get_cosine_schedule_with_warmup(
+            optimizer,
+            num_warmup_steps=warmup_steps,
+            num_training_steps=total_steps,
+        )
 
     _pad_tok = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
     _collate_fn = lambda b: _collate(b, pad_token_id=_pad_tok)
@@ -1450,7 +1723,7 @@ def globalprune_gmp(
     logging.info("***** Running GMP Training *****")
     logging.info(f"  Total steps = {total_steps}")
     logging.info(f"  Batch size  = {batch_size}, grad_accum = {grad_accum}")
-    logging.info(f"  LR = {lr}, warmup = {warmup_steps} steps")
+    logging.info(f"  LR = {lr}, warmup = {constant_warmup_steps if lr_schedule in ('constant', 'constant_with_warmup') else warmup_steps} steps ({lr_schedule})")
     logging.info(f"  Target sparsity = {final_sparsity}, mask_interval = {mask_interval}")
     if use_kd:
         logging.info(f"  KD: lambda={kd_lambda}, temperature={kd_temperature}, topk={kd_topk}")
@@ -1598,7 +1871,9 @@ def globalprune_gmp(
                     l1 = _gmp_l1_regularizer(named_params, maskmgr, fisher,
                                              mode=l1_mode,
                                              clip_min=l1_fisher_cmin,
-                                             clip_max=l1_fisher_cmax)
+                                             clip_max=l1_fisher_cmax,
+                                             open_groups_only=l1_open_only,
+                                             prune_n=prune_n, prune_m=prune_m)
                 if l1 is not None:
                     l1_term = l1_lambda * l1 / grad_accum
                     loss = loss + l1_term
@@ -1678,30 +1953,41 @@ def globalprune_gmp(
             # so rollouts (generated with pre-mask weights) serve as TR calibration.
             # When TR-GMP is off, refill happens after mask update as before.
             _opkd_refilled_pre_mask = False
-            if (use_onpolicy and _opkd_vllm_engine is not None
-                    and is_main_process and tr_enabled and not tr_reached):
-                _sync_opkd_weights_to_vllm(model, _opkd_vllm_engine)
-                _n_pool = mask_interval * grad_accum
-                _pool_batches = [next(prompt_iter) for _ in range(_n_pool)]
-                _vllm_inputs = [
-                    _TokensPrompt(prompt_token_ids=b['input_ids'][0][:int(b['prompt_len'].item())].tolist())
-                    for b in _pool_batches
-                ]
-                _vllm_outs = _opkd_vllm_engine.generate(_vllm_inputs, _opkd_vllm_params)
-                _opkd_standalone_pool = []
-                for _pb, _vo in zip(_pool_batches, _vllm_outs):
-                    _plen = int(_pb['prompt_len'].item())
-                    _p_ids = _pb['input_ids'][:, :_plen].cpu()
-                    _gen_ids = torch.tensor([_vo.outputs[0].token_ids], dtype=torch.long)
-                    _full_seq = torch.cat([_p_ids, _gen_ids], dim=1)
-                    _opkd_standalone_pool.append({"full_seq": _full_seq, "prompt_len": _plen})
+            if use_onpolicy and fsdp_model is not None and tr_enabled and not tr_reached:
+                # Sync current student weights to vLLM subprocess (FSDP collective).
+                _fsdp_sync_ctx = (FSDP.summon_full_params(fsdp_model, writeback=False, offload_to_cpu=True, rank0_only=True)
+                                  if fsdp_model is not None and _FSDP_AVAILABLE else nullcontext())
+                with _fsdp_sync_ctx:
+                    if is_main_process and _opkd_vllm_engine is not None and hasattr(_opkd_vllm_engine, 'sync_weights'):
+                        _sd = {n: p.data.cpu() for n, p in model.named_parameters()}
+                        _opkd_vllm_engine.sync_weights(_sd)
+                        del _sd
+                if is_main_process and _opkd_vllm_engine is not None:
+                    _n_pool = mask_interval * grad_accum
+                    _pool_batches = [next(prompt_iter) for _ in range(_n_pool)]
+                    _vllm_inputs = [
+                        _TokensPrompt(prompt_token_ids=b['input_ids'][0][:int(b['prompt_len'].item())].tolist())
+                        for b in _pool_batches
+                    ]
+                    _vllm_outs = _opkd_vllm_engine.generate(_vllm_inputs, _opkd_vllm_params)
+                    _opkd_standalone_pool = []
+                    for _pb, _vo in zip(_pool_batches, _vllm_outs):
+                        _plen = int(_pb['prompt_len'].item())
+                        _p_ids = _pb['input_ids'][:, :_plen].cpu()
+                        _gen_ids = torch.tensor([_vo.outputs[0].token_ids], dtype=torch.long)
+                        _full_seq = torch.cat([_p_ids, _gen_ids], dim=1)
+                        _opkd_standalone_pool.append({"full_seq": _full_seq, "prompt_len": _plen})
+                    logging.info(f"  OPKD vLLM pool refilled (pre-mask): {len(_opkd_standalone_pool)} rollouts (step={step})")
+                _opkd_standalone_pool = _opkd_broadcast_pool(_opkd_standalone_pool, is_distributed, device)
                 _opkd_standalone_pool_ptr = 0
                 _opkd_refilled_pre_mask = True
-                logging.info(f"  OPKD vLLM pool refilled (pre-mask): {len(_opkd_standalone_pool)} rollouts (step={step})")
 
             if step <= dense_warmup_steps:
                 pass  # dense warmup: no mask update or apply
-            elif fixed_mask:
+            elif fixed_mask or (tr_enabled and tr_reached):
+                # TR-GMP already hit target sparsity (or a fixed pre-pruned mask
+                # was loaded): keep the mask frozen and just continue training
+                # (sparse training) for the remaining steps instead of stopping.
                 maskmgr.apply(fsdp_model)
             elif tr_enabled and not tr_reached:
                 # Use OPKD rollouts as calibration if available, else fall back to prompt_iter
@@ -1710,6 +1996,8 @@ def globalprune_gmp(
                     _cal_batch = _opkd_pool_to_batch(_opkd_standalone_pool[:_n_cal], str(device))
                 else:
                     _cal_batch = next(prompt_iter)
+                if getattr(FLAGS, 'gmp_fisher_source', 'adam') == 'opd_empirical':
+                    fisher.update_from_batch(fsdp_model if fsdp_model is not None else model, _cal_batch, str(device))
                 current_sparsity, tr_delta, tr_reached, _tr_mask_delta = _tr_mask_update(
                     maskmgr, fisher, fsdp_model, model, _cal_batch,
                     final_sparsity=final_sparsity,
@@ -1722,16 +2010,21 @@ def globalprune_gmp(
                     use_wandb=use_wandb,
                     global_step=step,
                 )
+                if is_distributed:
+                    import torch.distributed as _td2
+                    _td2.barrier()
+                    logging.info(f"  [BARRIER] after _tr_mask_update step={step} (rank={_td2.get_rank()})")
                 if (opkd_prev_mask_teacher or prevmask_opkd_lambda > 0) and use_onpolicy:
                     _opkd_prev_delta = _tr_mask_delta
                 if use_wandb:
                     wandb.log({"train/sparsity": current_sparsity,
                                "train/tr_delta": tr_delta, "step": step})
                 if tr_reached:
-                    logging.info(f"TR-GMP: target sparsity {final_sparsity} reached at step {step}, stopping.")
-                    break
+                    logging.info(f"TR-GMP: target sparsity {final_sparsity} reached at step {step}, "
+                                 f"switching to sparse training (mask frozen) for remaining steps.")
             else:
-                current_sparsity = _cubic_sparsity(min(step, pruning_end_steps), pruning_end_steps, final_sparsity, warmup_steps)
+                current_sparsity = 0.0 if step <= dense_warmup_steps else _cubic_sparsity(
+                    min(step, pruning_end_steps), pruning_end_steps, final_sparsity, dense_warmup_steps)
                 if step <= pruning_end_steps:
                     maskmgr.update(fisher, current_sparsity, fsdp_model)
                 else:
@@ -1762,25 +2055,32 @@ def globalprune_gmp(
                                     "step": step})
 
             # OPKD vLLM pool refill AFTER mask update (only when TR-GMP is off)
-            if (use_onpolicy and _opkd_vllm_engine is not None
-                    and is_main_process and not _opkd_refilled_pre_mask):
-                _sync_opkd_weights_to_vllm(model, _opkd_vllm_engine)
-                _n_pool = mask_interval * grad_accum
-                _pool_batches = [next(prompt_iter) for _ in range(_n_pool)]
-                _vllm_inputs = [
-                    _TokensPrompt(prompt_token_ids=b['input_ids'][0][:int(b['prompt_len'].item())].tolist())
-                    for b in _pool_batches
-                ]
-                _vllm_outs = _opkd_vllm_engine.generate(_vllm_inputs, _opkd_vllm_params)
-                _opkd_standalone_pool = []
-                for _pb, _vo in zip(_pool_batches, _vllm_outs):
-                    _plen = int(_pb['prompt_len'].item())
-                    _p_ids = _pb['input_ids'][:, :_plen].cpu()
-                    _gen_ids = torch.tensor([_vo.outputs[0].token_ids], dtype=torch.long)
-                    _full_seq = torch.cat([_p_ids, _gen_ids], dim=1)
-                    _opkd_standalone_pool.append({"full_seq": _full_seq, "prompt_len": _plen})
+            if use_onpolicy and fsdp_model is not None and not _opkd_refilled_pre_mask:
+                _fsdp_sync_ctx2 = (FSDP.summon_full_params(fsdp_model, writeback=False, offload_to_cpu=True, rank0_only=True)
+                                   if fsdp_model is not None and _FSDP_AVAILABLE else nullcontext())
+                with _fsdp_sync_ctx2:
+                    if is_main_process and _opkd_vllm_engine is not None and hasattr(_opkd_vllm_engine, 'sync_weights'):
+                        _sd = {n: p.data.cpu() for n, p in model.named_parameters()}
+                        _opkd_vllm_engine.sync_weights(_sd)
+                        del _sd
+                if is_main_process and _opkd_vllm_engine is not None:
+                    _n_pool = mask_interval * grad_accum
+                    _pool_batches = [next(prompt_iter) for _ in range(_n_pool)]
+                    _vllm_inputs = [
+                        _TokensPrompt(prompt_token_ids=b['input_ids'][0][:int(b['prompt_len'].item())].tolist())
+                        for b in _pool_batches
+                    ]
+                    _vllm_outs = _opkd_vllm_engine.generate(_vllm_inputs, _opkd_vllm_params)
+                    _opkd_standalone_pool = []
+                    for _pb, _vo in zip(_pool_batches, _vllm_outs):
+                        _plen = int(_pb['prompt_len'].item())
+                        _p_ids = _pb['input_ids'][:, :_plen].cpu()
+                        _gen_ids = torch.tensor([_vo.outputs[0].token_ids], dtype=torch.long)
+                        _full_seq = torch.cat([_p_ids, _gen_ids], dim=1)
+                        _opkd_standalone_pool.append({"full_seq": _full_seq, "prompt_len": _plen})
+                    logging.info(f"  OPKD vLLM pool refilled: {len(_opkd_standalone_pool)} rollouts (step={step})")
+                _opkd_standalone_pool = _opkd_broadcast_pool(_opkd_standalone_pool, is_distributed, device)
                 _opkd_standalone_pool_ptr = 0
-                logging.info(f"  OPKD vLLM pool refilled: {len(_opkd_standalone_pool)} rollouts (step={step})")
 
             # Milestone checkpoint: save model after `mask_interval` recovery steps past milestone.
             # Two-phase: (1) record step when sparsity first crosses milestone,
@@ -1824,6 +2124,10 @@ def globalprune_gmp(
             step % onpolicy_interval == 0
             or bool(_opkd_standalone_pool)
         )
+        if is_distributed and _opkd_fires:
+            import torch.distributed as _td3
+            _td3.barrier()
+            logging.info(f"  [BARRIER] before OPKD training step={step} (rank={_td3.get_rank()})")
         if _opkd_fires:
             _pad_id = tokenizer.pad_token_id or tokenizer.eos_token_id
             _eos_id = tokenizer.eos_token_id or _pad_id
@@ -2289,7 +2593,15 @@ def globalprune_gmp(
             _g_opkd_filter = _g_ntp_snap = None
 
         # ── Combined optimizer step (NTP + RL grads) ─────────────────────────
-        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0).item()
+        # Use FSDP-aware clip_grad_norm_ so all ranks get the same global norm.
+        # torch.nn.utils.clip_grad_norm_ on sharded params returns a LOCAL norm
+        # which can differ across ranks → the PGD skip condition (NaN/Inf check)
+        # would then diverge and cause a NCCL collective mismatch deadlock.
+        _in_fsdp_pgd = _FSDP_AVAILABLE and fsdp_model is not None
+        if _in_fsdp_pgd:
+            grad_norm = fsdp_model.clip_grad_norm_(1.0).item()
+        else:
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0).item()
         if math.isnan(grad_norm) or math.isinf(grad_norm):
             logging.warning(f"NaN/Inf grad_norm at step {step}, skipping optimizer step")
             optimizer.zero_grad()
@@ -2299,6 +2611,80 @@ def globalprune_gmp(
             optimizer.step()
             scheduler.step()
         optimizer.zero_grad()
+
+        # ── PGD projection (fisher-saliency, FSDP-aware) ─────────────────────
+        if pgd_enabled and step > dense_warmup_steps and not math.isnan(grad_norm) and not math.isinf(grad_norm):
+            _pgd_revivals = 0
+            _pgd_prunings = 0
+            _pgd_use_fsdp = _FSDP_AVAILABLE and fsdp_model is not None
+            if _pgd_use_fsdp:
+                import torch.distributed as _dist
+
+            # importance scores (v_t * w^2), skip empty FSDP shards
+            _pgd_imps = {}
+            for _n, _p in maskmgr.named_params.items():
+                _t = fisher.importance(_n, _p)
+                if _t.numel() > 0:
+                    _pgd_imps[_n] = _t
+
+            if _pgd_imps:
+                _pgd_dev = next(iter(_pgd_imps.values())).device
+
+                # n_keep / n_total — one all_reduce for FSDP
+                _pgd_stats = torch.tensor(
+                    [sum(maskmgr.masks[n].sum().item() for n in _pgd_imps),
+                     sum(v.numel() for v in _pgd_imps.values())],
+                    dtype=torch.long, device=_pgd_dev)
+                if _pgd_use_fsdp:
+                    _dist.all_reduce(_pgd_stats, op=_dist.ReduceOp.SUM)
+                _pgd_k_prune = int(_pgd_stats[1].item() - _pgd_stats[0].item())
+
+                # global min/max — two all_reduces for FSDP
+                _pgd_lo_t = torch.tensor(
+                    min(v.min().item() for v in _pgd_imps.values()),
+                    dtype=torch.float32, device=_pgd_dev)
+                _pgd_hi_t = torch.tensor(
+                    max(v.max().item() for v in _pgd_imps.values()),
+                    dtype=torch.float32, device=_pgd_dev)
+                if _pgd_use_fsdp:
+                    _dist.all_reduce(_pgd_lo_t, op=_dist.ReduceOp.MIN)
+                    _dist.all_reduce(_pgd_hi_t, op=_dist.ReduceOp.MAX)
+                _pgd_lo, _pgd_hi = _pgd_lo_t.item(), _pgd_hi_t.item()
+
+                # binary search — _pgd_cnt_t reused in-place, one all_reduce/iter for FSDP
+                _pgd_cnt_t = torch.zeros(1, dtype=torch.long, device=_pgd_dev)
+                for _ in range(48):
+                    _pgd_mid = (_pgd_lo + _pgd_hi) / 2.0
+                    _pgd_cnt_t.zero_()
+                    for _v in _pgd_imps.values():
+                        _pgd_cnt_t += (_v <= _pgd_mid).sum(dtype=torch.long)
+                    if _pgd_use_fsdp:
+                        _dist.all_reduce(_pgd_cnt_t, op=_dist.ReduceOp.SUM)
+                    if _pgd_cnt_t.item() < _pgd_k_prune:
+                        _pgd_lo = _pgd_mid
+                    else:
+                        _pgd_hi = _pgd_mid
+                _pgd_thr = _pgd_hi
+
+                # apply new mask, count revivals/prunings
+                for _n in maskmgr.named_params:
+                    _old = maskmgr.masks[_n]
+                    _new = (_pgd_imps[_n] > _pgd_thr) if _n in _pgd_imps else _old.clone()
+                    _pgd_revivals += int((_new & ~_old).sum().item())
+                    _pgd_prunings += int((~_new & _old).sum().item())
+                    maskmgr.masks[_n] = _new
+                maskmgr.apply(fsdp_model)
+
+                # sum revival/pruning counts across ranks (FSDP only)
+                if _pgd_use_fsdp:
+                    _pgd_rv_t = torch.tensor([_pgd_revivals, _pgd_prunings],
+                                             dtype=torch.long, device=_pgd_dev)
+                    _dist.all_reduce(_pgd_rv_t, op=_dist.ReduceOp.SUM)
+                    _pgd_revivals, _pgd_prunings = int(_pgd_rv_t[0].item()), int(_pgd_rv_t[1].item())
+
+            if use_wandb and is_main_process:
+                wandb.log({"pgd/revivals": _pgd_revivals, "pgd/prunings": _pgd_prunings,
+                           "step": step})
 
         # ── Gradient conflict measurement (OPKD vs IPO on same sequence) ──────
         if (measure_grad_conflict and not filter_grad_conflict
@@ -2368,7 +2754,8 @@ def globalprune_gmp(
         # periodic logging
         if step % log_interval == 0:
             real_sparsity = maskmgr.current_sparsity()
-            current_sparsity = 0.0 if step <= dense_warmup_steps else _cubic_sparsity(min(step, pruning_end_steps), pruning_end_steps, final_sparsity, warmup_steps)
+            current_sparsity = 0.0 if step <= dense_warmup_steps else _cubic_sparsity(
+                min(step, pruning_end_steps), pruning_end_steps, final_sparsity, dense_warmup_steps)
             log_dict = {
                 "train/loss": accum_loss,
                 "train/ntp_loss": accum_ntp,
@@ -2429,6 +2816,17 @@ def globalprune_gmp(
     # final mask at full sparsity
     maskmgr.update(fisher, final_sparsity, fsdp_model)
     logging.info(f"Final sparsity: {maskmgr.current_sparsity():.4f}")
+
+    if is_main_process:
+        # Gradient fine-tuning: ~6*N*tokens (forward+backward+update), vs ~2*N*tokens
+        # for forward-only one-shot calibration (ALPS/SparseGPT/Wanda/SparseLLM).
+        n_params = sum(p.numel() for p in model.parameters())
+        global_batch = batch_size * grad_accum * world_size
+        n_tokens = step * global_batch * FLAGS.seqlen
+        flops = 6 * n_params * n_tokens
+        logging.info(f"Training FLOPs: {flops:.3e} ({n_params} params x {n_tokens} tokens)")
+        if use_wandb and wandb.run is not None:
+            wandb.log({"flops": flops})
 
     # save model
     # FSDP: summon_full_params is a collective — ALL ranks must enter it together.
@@ -2516,7 +2914,7 @@ def _infinite(loader):
 
 
 def _run_tag(FLAGS):
-    lr  = getattr(FLAGS, 'gmp_lr', 0)
+    lr  = getattr(FLAGS, 'lr', 0)
     sp  = getattr(FLAGS, 'sparsity_ratio', 0)
     tag = f"gmp_s{int(sp*100)}pct_lr{lr}"
     if getattr(FLAGS, 'gmp_anchor_kd_lambda', 0.0) > 0:
