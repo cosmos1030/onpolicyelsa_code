@@ -1463,4 +1463,17 @@ class GKDADMMTrainer(ADMMTrainer):
                 kl = (s_logp.exp() * (s_logp - t_logp)).sum(dim=-1)
             loss = (kl * gen_mask).sum() / gen_mask.sum().clamp(min=1)
 
+            # Diagnostic-only top-100 overlap ratio (independent of kd_topk=0's
+            # full-vocab loss above -- purely for logging, no gradient, fixed
+            # K=100 regardless of what kd_topk the actual loss uses).
+            with torch.no_grad():
+                _diag_k = min(100, s_logits_gen.size(-1))
+                s_topk_idx = s_logits_gen.topk(_diag_k, dim=-1).indices
+                t_topk_idx = t_logits_gen.topk(_diag_k, dim=-1).indices
+                overlap_mask = (s_topk_idx.unsqueeze(-1) == t_topk_idx.unsqueeze(-2)).any(dim=-1)
+                overlap_ratio = overlap_mask.float().mean(dim=-1)
+                opd_metrics["kd/overlap_ratio_top100"] = (
+                    (overlap_ratio * gen_mask).sum() / gen_mask.sum().clamp(min=1)
+                )
+
         return loss, opd_metrics
