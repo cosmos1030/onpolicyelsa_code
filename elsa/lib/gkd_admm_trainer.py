@@ -20,6 +20,10 @@ from absl import logging
 import json
 
 
+_DEFAULT_DATASET_CACHE_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".cache", "datasets")
+
+
 def _tokenizer_identity(tokenizer):
     """Content-based tokenizer fingerprint instead of the checkpoint path —
     Qwen3-1.7B/4B/8B ship byte-identical tokenizers under different snapshot
@@ -58,7 +62,7 @@ class MathPromptWithAnswerDataset(Dataset):
     THINK_TAG = "<think>\n"
 
     def __init__(self, jsonl_path, tokenizer, max_prompt_len=512,
-                 nsamples=None, seed=42, cache_dir="/home1/doyoonkim/projects/elsa/.cache/datasets",
+                 nsamples=None, seed=42, cache_dir=_DEFAULT_DATASET_CACHE_DIR,
                  hf_dataset_name=None):  # hf_dataset_name kept for API compat, ignored
 
         cache_path = _dataset_cache_path(
@@ -199,7 +203,7 @@ class MixedPromptDataset(Dataset):
     Returns tokenized prompt tensors for on-policy generation.
     """
     def __init__(self, jsonl_path, tokenizer, max_prompt_len=512, nsamples=None, seed=42,
-                 cache_dir="/home1/doyoonkim/projects/elsa/.cache/datasets"):
+                 cache_dir=_DEFAULT_DATASET_CACHE_DIR):
         cache_path = _dataset_cache_path(cache_dir, jsonl_path, _tokenizer_identity(tokenizer),
                                          cls="MathPrompt", max_prompt_len=max_prompt_len,
                                          nsamples=nsamples, seed=seed)
@@ -316,7 +320,7 @@ class MixedTextDataset(Dataset):
     MIN_SAMPLE_LEN = 128  # drop shorter samples (see skip check in __init__)
 
     def __init__(self, jsonl_path, tokenizer, max_len=2048, max_prompt_len=512,
-                 nsamples=None, seed=42, cache_dir="/home1/doyoonkim/projects/elsa/.cache/datasets",
+                 nsamples=None, seed=42, cache_dir=_DEFAULT_DATASET_CACHE_DIR,
                  append_eos=False):
         cache_path = _dataset_cache_path(cache_dir, jsonl_path, _tokenizer_identity(tokenizer),
                                          cls="MathCotKD" if not append_eos else "MathCotKD_eos",
