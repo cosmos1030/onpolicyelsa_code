@@ -12,10 +12,10 @@
 #SBATCH --output=/home1/doyoonkim/projects/elsa/logs/alps_sft_ntpkd_opkd_1.7b_%j.out
 exec 2>&1
 
-# ALPS (one-shot pruned) -> fixed-mask sparse SFT with NTP+KD+OPD, Qwen3-1.7B,
+# ALPS (one-shot pruned) -> fixed-mask NTP+KD+OPD recovery training, Qwen3-1.7B,
 # OT80/FW20. Loads the already-pruned ALPS checkpoint, freezes its zero
 # pattern (gmp_fixed_mask=true skips Fisher-based/TR-GMP mask updates
-# entirely -- pure sparse fine-tuning, no further pruning), and trains with
+# entirely -- no further pruning), and trains with
 # the same NTP+KD+OPKD (0.33/0.33/0.33) loss mix used by the TR-GMP runs
 # (702346 etc.), for direct comparison against both ALPS-alone (74.6 math500)
 # and TR-GMP-from-dense (which tops out around 63-65 math500 on this sparsity
