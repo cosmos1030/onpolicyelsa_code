@@ -1,6 +1,6 @@
-# On-Policy ELSA: Reasoning-Aware LLM Pruning with ADMM
+# On-Policy TR-GMP: Reasoning-Aware LLM Pruning
 
-Joint pruning and training of LLMs via ADMM, with on-policy knowledge distillation and CoT-aware NTP. Evaluated on MATH-500.
+Joint pruning and training of LLMs, combining CoT-aware NTP, dataset-CoT KD, and on-policy knowledge distillation (student rollouts vs. a dense teacher). The current main method is **TR-GMP** (trust-region gradual magnitude pruning, with optional N:M structured sparsity and PCG reconstruction correction) — see the "Current Active Workflow" section below; the original ADMM-based ELSA pruning (paper baseline) still lives in the same codebase. Evaluated on a full reasoning/instruction-following suite (MATH-500, GPQA-Diamond, LiveCodeBench, IFEval, GSM8K) plus zero-shot commonsense tasks and perplexity — not MATH-500 alone.
 
 ---
 
@@ -8,24 +8,24 @@ Joint pruning and training of LLMs via ADMM, with on-policy knowledge distillati
 
 ```
 projects/
-├── elsa/                         # ELSA: ADMM-based pruning + training
+├── elsa/                         # main codebase: TR-GMP (current) + ELSA ADMM (baseline)
 │   ├── main.py                   # Entry point (all flags defined here)
 │   ├── lib/
-│   │   ├── gkd_admm.py           # Hybrid KD+NTP ADMM trainer setup
-│   │   ├── gkd_admm_trainer.py   # GKDADMMTrainer (NTP-CoT + on-policy KD)
-│   │   ├── prune.py              # Standard ADMM pruning (NTP on c4/math_trace)
-│   │   ├── trainer.py            # Base ADMMTrainer (ADMM z/u updates)
-│   │   ├── data.py               # Dataset loaders (c4, math_cot, math_trace, ...)
-│   │   ├── lighteval_math500.py  # MATH-500 eval via lighteval + vLLM subprocess
+│   │   ├── gmp_trainer.py        # TR-GMP: trust-region mask growth, OPKD rollout pool, PCG correction (CURRENT MAIN METHOD)
+│   │   ├── gkd_admm.py           # ADMM baseline: hybrid KD+NTP trainer setup
+│   │   ├── gkd_admm_trainer.py   # ADMM baseline: GKDADMMTrainer (NTP-CoT + on-policy KD)
+│   │   ├── prune.py              # ADMM baseline: standard ADMM pruning
+│   │   ├── trainer.py            # ADMM baseline: base ADMMTrainer (ADMM z/u updates, N:M mask growing)
+│   │   ├── optimizers.py         # ADMM baseline: dual update incl. Dynamic Barrier lambda
+│   │   ├── data.py               # Dataset loaders (c4, mixed_cot, math_trace, ...)
+│   │   ├── lighteval_bench.py    # Full eval suite via lighteval + vLLM (math500, gpqa, lcb, ifeval, gsm8k)
 │   │   └── eval.py               # Zero-shot eval (lm-eval)
-│   ├── config/                   # Accelerate configs + wandb sweep yamls
-│   │   ├── sweep_qwen_ntp_cot_{30,40,50,60,70}pct.yaml
-│   │   └── sweep_qwen_hybrid_cot_kd_{30,40,50,60,70}pct.yaml
 │   ├── scripts/                  # SLURM job scripts
-│   │   ├── slurm_sweep_agent_qwen_ntp_cot.sh
-│   │   └── slurm_sweep_agent_hybrid_cot_kd.sh
+│   │   ├── slurm_gmp_tr_*.sh          # TR-GMP launchers (current experiments — see elsa/README.md)
+│   │   ├── eval_full.py               # Standalone eval (PPL + zero-shot + full reasoning suite)
+│   │   └── rerun_ot80fw20/            # ADMM-baseline / other-method launchers (SparseGPT, ALPS, plain ELSA)
 │   └── data/
-│       └── math_220k_cot.jsonl   # Pre-extracted CoT traces (see Data Prep)
+│       └── ot3_fineweb_200k_qwen3_train.jsonl   # OT80/FW20 mixed CoT+pretraining corpus (current dataset)
 │
 └── RAC/open-r1-main/             # SparseGPT pruning + GRPO baseline
     ├── src/open_r1/grpo.py       # SparseGPT pruning + math500 eval pipeline
