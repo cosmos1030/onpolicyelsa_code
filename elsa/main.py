@@ -154,6 +154,8 @@ def main(argv):
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
     is_distributed = world_size > 1
 
+    _teacher_model_path = getattr(FLAGS, 'gmp_teacher_model', None) or FLAGS.model
+
     _prebuilt_vllm_engine = None
     _prebuilt_vllm_params = None
     _prebuilt_opd_vllm_engine = None
@@ -380,7 +382,7 @@ def main(argv):
                 tokenizer=tokenizer,
                 max_prompt_len=getattr(FLAGS, 'gmp_max_prompt_len', 512),
             )
-            grpo_teacher = get_llm(FLAGS.model, FLAGS.seqlen)
+            grpo_teacher = get_llm(_teacher_model_path, FLAGS.seqlen)
             grpo_teacher.to(device)
             grpo_teacher.eval()
             for p in grpo_teacher.parameters():
@@ -416,7 +418,7 @@ def main(argv):
                     tokenizer=tokenizer,
                     max_prompt_len=getattr(FLAGS, 'gmp_max_prompt_len', 512),
                 )
-                grpo_teacher = get_llm(FLAGS.model, FLAGS.seqlen)
+                grpo_teacher = get_llm(_teacher_model_path, FLAGS.seqlen)
                 grpo_teacher.to(device)
                 grpo_teacher.eval()
                 for p in grpo_teacher.parameters():
@@ -485,7 +487,7 @@ def main(argv):
             gmp_teacher = None
             if getattr(FLAGS, 'gmp_kd_lambda', 0.0) > 0 or getattr(FLAGS, 'gmp_hidden_lambda', 0.0) > 0 or getattr(FLAGS, 'gmp_onpolicy_kd_lambda', 0.0) > 0 or getattr(FLAGS, 'gmp_anchor_kd_lambda', 0.0) > 0 or getattr(FLAGS, 'gmp_teacher_seqkd', False):
                 print(f"[DBG main] rank={local_rank} get_llm teacher start", flush=True)
-                gmp_teacher = get_llm(FLAGS.model, FLAGS.seqlen)
+                gmp_teacher = get_llm(_teacher_model_path, FLAGS.seqlen)
                 print(f"[DBG main] rank={local_rank} get_llm teacher done, .to(device)", flush=True)
                 gmp_teacher.to(device)
                 print(f"[DBG main] rank={local_rank} teacher to(device) done", flush=True)
@@ -502,7 +504,7 @@ def main(argv):
                 if gmp_teacher is not None:
                     gmp_dpo_dense = gmp_teacher  # reuse
                 else:
-                    gmp_dpo_dense = get_llm(FLAGS.model, FLAGS.seqlen)
+                    gmp_dpo_dense = get_llm(_teacher_model_path, FLAGS.seqlen)
                     gmp_dpo_dense.to(device)
                     gmp_dpo_dense.eval()
                     for p in gmp_dpo_dense.parameters():
@@ -519,7 +521,7 @@ def main(argv):
                 _prebuilt_vllm_engine = None
             torch.cuda.empty_cache()
         elif FLAGS.do_kd_admm:
-            teacher_model = get_llm(FLAGS.model, FLAGS.seqlen)
+            teacher_model = get_llm(_teacher_model_path, FLAGS.seqlen)
             teacher_model.to(device)
             saved_pruned_model_path = globalprune_admm_kd(
                 FLAGS, model, teacher_model, tokenizer, device,
@@ -530,7 +532,7 @@ def main(argv):
             del teacher_model
             torch.cuda.empty_cache()
         elif getattr(FLAGS, 'do_offpolicy_kd_admm', False):
-            teacher_model = get_llm(FLAGS.model, FLAGS.seqlen)
+            teacher_model = get_llm(_teacher_model_path, FLAGS.seqlen)
             teacher_model.to(device)
             saved_pruned_model_path = globalprune_admm_kd(
                 FLAGS, model, teacher_model, tokenizer, device, offpolicy_kd=True,
@@ -648,7 +650,7 @@ def main(argv):
             logging.info("--- Starting On-Policy Distillation Phase ---")
         # 1. 여기서 티처 모델을 직접 로드합니다. (원본 Dense 모델)
         # 메모리 효율을 위해 bfloat16을 권장하며, GPU 장치(device)로 이동시킵니다.
-        teacher_model = get_llm(FLAGS.model, FLAGS.seqlen)
+        teacher_model = get_llm(_teacher_model_path, FLAGS.seqlen)
         teacher_model.to(device)
         teacher_model.eval()
 
@@ -921,6 +923,7 @@ def main(argv):
 
 if __name__ == '__main__':
     flags.DEFINE_string('model', 'facebook/opt-125m', 'model to prune. model name (hf repo) or local path to model snapshot')
+    flags.DEFINE_string('gmp_teacher_model', None, 'GMP KD/OPKD teacher model path (hf repo or local snapshot). Defaults to --model when unset -- MUST be overridden to the original dense model when --model points at an already-pruned checkpoint (e.g. ALPS sparse-SFT: fixed-mask fine-tuning from an ALPS checkpoint), otherwise the "teacher" is just a frozen copy of the pruned starting point, not a real dense reference.')
     flags.DEFINE_integer('seqlen', 2048, 'Sequence length for the model (shared by ADMM/ELSA and GMP NTP dataset construction).')
     flags.DEFINE_integer('seed', 0, 'Seed for sampling the calibration data.')
     flags.DEFINE_integer('nsamples', 128, 'Number of calibration samples.')

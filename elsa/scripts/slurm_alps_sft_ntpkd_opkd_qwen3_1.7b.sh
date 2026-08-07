@@ -43,6 +43,12 @@ else
     ALPS_MODEL="/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_alps_s${SPARSITY_PCT}pct"
     SPARSITY_TAG="s${SPARSITY_PCT}pct"
 fi
+# --model points at the already-pruned ALPS checkpoint (the student's starting
+# point); the KD/OPKD teacher must be the ORIGINAL DENSE model instead, or it
+# silently becomes a frozen copy of this same pruned checkpoint (main.py's
+# gmp_teacher load used to default to FLAGS.model unconditionally -- fixed to
+# respect --gmp_teacher_model, see main.py `_teacher_model_path`).
+DENSE_MODEL="/home1/doyoonkim/.cache/huggingface/hub/models--Qwen--Qwen3-1.7B/snapshots/70d244cc86ccca08cf5af4e1e306ecf908b1ad5e"
 
 PYTHON=/home1/doyoonkim/miniconda3/envs/rac/bin/python
 DATA_PATH="/home1/doyoonkim/projects/elsa/data/ot3_fineweb_200k_qwen3_train.jsonl"
@@ -80,6 +86,7 @@ cd /home1/doyoonkim/projects/elsa
 
 $PYTHON main.py \
     --model="$ALPS_MODEL" \
+    --gmp_teacher_model="$DENSE_MODEL" \
     --dataset=mixed_cot \
     --data_path="$DATA_PATH" \
     --sparsity_ratio=${SPARSITY} \
