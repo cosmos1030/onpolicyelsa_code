@@ -154,6 +154,62 @@ python main.py \
     --save_model=true --push_to_hub=true
 ```
 
+## TR-GMP: Trust-Region Gradual Magnitude Pruning (current active experiments)
+
+The actively-running experiments (`scripts/slurm_gmp_tr_*.sh`) use a different pruning loop than plain ELSA ADMM above: **TR-GMP** grows the mask gradually during training instead of solving an ADMM projection. It supports N:M structured sparsity, on-policy KD (OPKD) via a vLLM rollout pool, and an optional PCG reconstruction correction after each mask update.
+
+```bash
+python main.py \
+    --model="Qwen/Qwen3-1.7B" \
+    --dataset=mixed_cot --data_path=data/ot3_fineweb_200k_qwen3_train.jsonl \
+    --sparsity_ratio=0.5 \
+    --sparsity_type=unstructured \
+    --do_gmp=true \
+    --steps=2048 \
+    --gmp_batch_size=1 --gmp_grad_accum=8 --lr=1e-4 \
+    --gmp_warmup_ratio=0.05 --gmp_mask_interval=32 \
+    --gmp_fisher_beta=0.999 --gmp_saliency=fisher \
+    --seqlen=2048 --gmp_max_prompt_len=512 \
+    --gmp_kd_only=false --gmp_ntp_lambda=0.33 --gmp_kd_lambda=0.33 \
+    --gmp_onpolicy_kd_lambda=0.33 --gmp_onpolicy_max_new_tokens=256 \
+    --gmp_prompt_path=data/ot3_fineweb_200k_qwen3_opdprompts.jsonl \
+    --gmp_tr_enabled=true --gmp_tr_delta_init=0.05 --gmp_tr_delta_min=0.001 \
+    --gmp_tr_kl_threshold=0.01 --gmp_tr_kl_reduce=mean \
+    --gmp_save_path=models/ --save_model=true --push_to_hub=true \
+    --eval_zero_shot=true --eval_full_bench=true \
+    --wandb=true --wandb_project=reasoning_qwen3_1.7b
+```
+
+The working reference launchers for this exact recipe (and its variants) live directly under `scripts/`, not `scripts/rerun_ot80fw20/`:
+
+| Script | Recipe |
+|---|---|
+| `scripts/slurm_gmp_tr_ntpkd_opkd_qwen3_1.7b.sh` | NTP+KD+OPKD (0.33/0.33/0.33), no PCG |
+| `scripts/slurm_gmp_tr_kd_opkd_pcg_qwen3_1.7b.sh` | KD+OPKD only (`--gmp_kd_only=true`) + PCG |
+| `scripts/slurm_gmp_tr_ntpkd_opkd_pcg_qwen3_1.7b.sh` | NTP+KD+OPKD + PCG (accepts a 5th arg for sequential-PCG mode) |
+| `scripts/slurm_gmp_tr_ntpkd_qwen3_4b.sh` | 4B NTP+KD, no OPD, single GPU (needs H200 — see comment in script) |
+| `scripts/slurm_gmp_tr_ntpkd_qwen3_4b_fsdp2gpu.sh` | Same, but 2xA100-80GB FSDP (works around the H200-only OOM) |
+
+Usage pattern for all of them: `sbatch <script> <SPARSITY> <KL_THRESHOLD> [OPD_GEN_LEN] [PCG_MAXITER] [PCG_SEQUENTIAL]`, e.g. `sbatch scripts/slurm_gmp_tr_ntpkd_opkd_pcg_qwen3_1.7b.sh 0.5 0.01 256 5 true`.
+
+### Key TR-GMP flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `--do_gmp` | `False` | Enable TR-GMP / GMP training loop instead of ADMM. |
+| `--sparsity_type` | `unstructured` | `unstructured`, `2:4`, `4:8`. N:M mode uses a global-threshold search with a per-block cap (`prune_m - prune_n`) so no block is ever over-pruned. |
+| `--gmp_tr_enabled` | `False` | Use trust-region KL-constrained mask growth instead of a fixed cubic/cosine sparsity ramp. |
+| `--gmp_tr_kl_threshold` | `0.01` | Max per-token KL(old‖candidate) allowed to accept a mask update (line-searched via `gmp_tr_delta_init`/`gmp_tr_delta_min`). |
+| `--gmp_mask_interval` | `32` | Steps between mask updates. |
+| `--gmp_ntp_lambda` / `--gmp_kd_lambda` / `--gmp_onpolicy_kd_lambda` | `1.0` / `0.0` / `0.0` | Loss mix: NTP (CoT tokens) + dataset-CoT KD (dense teacher, no generation) + on-policy KD (student rollout vs. dense teacher, via vLLM). All three together (e.g. 0.33 each) is the current recipe — NTP-only ablations were found to cap the achievable ceiling. |
+| `--gmp_kd_only` | `False` | Zero out NTP loss, KD+OPKD only. |
+| `--gmp_prompt_path` | `data_path` | Prompts JSONL used to seed the OPKD rollout pool (`gmp_onpolicy_kd_lambda > 0`). The pool is refilled from live vLLM rollouts at every `gmp_mask_interval`, both pre- and post-mask-update, for FSDP and non-FSDP alike — don't reuse a stale pool checkpoint. |
+| `--gmp_pcg_correct` | `False` | After each mask update, backsolve surviving weights toward the dense teacher's output via a masked conjugate-gradient correction (ALPS-style). Non-FSDP only, stops once the mask is frozen (TR reached target sparsity). |
+| `--gmp_pcg_maxiter` | `5` | CG iterations per layer per correction. |
+| `--gmp_pcg_damp` | `0.01` | Ridge damping (relative to mean diag of X^TX). |
+| `--gmp_pcg_sequential` | `False` | ALPS-style sequential per-layer correction (re-forward with corrected weights before capturing the next layer's input) instead of one single-snapshot forward. Costs ~num_layers extra forwards per mask update; use for higher-fidelity correction when layer-order effects matter. |
+| `--admm_dynamic_barrier` | `False` | (Plain-ADMM path only, not TR-GMP.) Replace the fixed/scheduled ADMM λ with a per-step Dynamic Barrier coefficient (`admm_barrier_alpha`/`admm_barrier_beta`/`admm_barrier_lambda_max` tune it). |
+
 ## Standalone Evaluation
 
 Training scripts can (and, on multi-GPU/FSDP setups, should) skip evaluation entirely (`--eval_zero_shot=false --eval_full_bench=false`) and push the checkpoint to HF Hub; `scripts/eval_full.py` then re-evaluates it as a separate single-GPU job:

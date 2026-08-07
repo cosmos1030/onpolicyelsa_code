@@ -235,10 +235,13 @@ Sweep grid: `admm_lr ∈ {5e-6, 1e-5, 5e-5}` × `admm_lmda ∈ {1e-3, 5e-3, 1e-2
 
 The sections above describe the original paper setup (`math_220k_cot.jsonl`, single-GPU 0.6B sweeps). The actively-maintained scripts for larger models (Qwen3-1.7B/4B/8B) and the corrected mixed dataset live elsewhere:
 
-- **`elsa/scripts/rerun_ot80fw20/`** — reference SLURM scripts (train, KD, dependency-chained train→eval) for SparseGPT/ALPS/SparseLLM/ELSA on Qwen3-1.7B/4B/8B, using `elsa/data/ot3_fineweb_200k_qwen3.jsonl` (`--dataset=mixed_cot`) instead of `math_220k_cot.jsonl`.
-- **`elsa/scripts/build_ot3_fineweb_dataset.py`** — builds that mixed dataset (OpenThoughts3 CoT 80% + FineWeb-Edu 20%).
+- **`elsa/scripts/rerun_ot80fw20/`** — reference SLURM scripts (train, KD, dependency-chained train→eval) for SparseGPT/ALPS/SparseLLM/plain-ELSA on Qwen3-1.7B/4B/8B, using `elsa/data/ot3_fineweb_200k_qwen3_train.jsonl` (`--dataset=mixed_cot`, renamed from `math_cot`) instead of `math_220k_cot.jsonl`.
+- **`elsa/scripts/slurm_gmp_tr_*.sh`** — **the current main experiment line**: TR-GMP (trust-region gradual magnitude pruning) with NTP+KD+on-policy-KD, optional N:M structured sparsity (`--sparsity_type=2:4`) and optional PCG reconstruction correction after each mask update. See "TR-GMP" section in `elsa/README.md` for the full flag reference, exact command, and which script maps to which recipe (plain vs. PCG vs. sequential-PCG vs. 4B FSDP).
+- **`elsa/scripts/build_ot3_fineweb_dataset.py`** — builds the mixed dataset (OpenThoughts3 CoT 80% + FineWeb-Edu 20%).
 - **`elsa/scripts/eval_full.py`** — standalone single-GPU eval (PPL + zero-shot + 5-benchmark reasoning suite), meant to run as a separate job from training (see `elsa/README.md` for why).
-- **KD flags**: use `--do_offpolicy_kd_admm=true` (dataset-CoT KD, no generation) for standard KD, **not** `--do_kd_admm` (that's a different, on-policy/generation-based path). Set `--kd_topk=0` (full vocab) — the top-k path has a known bug where it doesn't renormalize over the truncated support, producing an invalid (sometimes negative) loss.
+- **KD flags (plain-ADMM path)**: use `--do_offpolicy_kd_admm=true` (dataset-CoT KD, no generation) for standard KD, **not** `--do_kd_admm` (that's a different, on-policy/generation-based path). Set `--kd_topk=0` (full vocab) — the top-k path has a known bug where it doesn't renormalize over the truncated support, producing an invalid (sometimes negative) loss. TR-GMP has its own separate loss-mix flags (`--gmp_kd_lambda`, `--gmp_onpolicy_kd_lambda`) — see `elsa/README.md`.
+
+To reproduce a currently-running TR-GMP job on another machine: copy the matching `elsa/scripts/slurm_gmp_tr_*.sh`, update the hardcoded `PYTHON=`/`MODEL=` paths, SLURM `--partition`/`--exclude`/local-scratch (`/local-data/...`) paths for the new cluster, then `sbatch <script> <SPARSITY> <KL_THRESHOLD> [OPD_GEN_LEN] [PCG_MAXITER] [PCG_SEQUENTIAL]`.
 
 See `elsa/README.md` for the full flag reference and env var setup used by these scripts.
 
