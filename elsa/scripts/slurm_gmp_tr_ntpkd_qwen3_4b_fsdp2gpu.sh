@@ -26,11 +26,21 @@ exec 2>&1
 # of needing H200's single-card 141GB (H200 is also fully allocated/draining
 # right now anyway).
 #
-# Usage: sbatch slurm_gmp_tr_ntpkd_qwen3_4b_fsdp2gpu.sh <SPARSITY> <KL_THRESHOLD>
+# Usage: sbatch slurm_gmp_tr_ntpkd_qwen3_4b_fsdp2gpu.sh <SPARSITY> <KL_THRESHOLD> [LR_SCHEDULER]
 # e.g.: sbatch slurm_gmp_tr_ntpkd_qwen3_4b_fsdp2gpu.sh 0.7 0.01
+#       sbatch slurm_gmp_tr_ntpkd_qwen3_4b_fsdp2gpu.sh 0.7 0.01 cosine
+#
+# LR_SCHEDULER default is constant_with_warmup (main.py's flag default) --
+# 256-step warmup then FLAT lr for the rest of training, no decay. Runs from
+# before 2026-08-04 (commit 208b1bb) hardcoded cosine-with-warmup (decays to
+# ~0 by the last step) -- pass LR_SCHEDULER=cosine here to reproduce that
+# older behavior and check whether the lack of LR decay explains the
+# math500 regression vs those old runs (e.g. jm3e1jy9/4ncquht4 at s70, which
+# scored 0.53/0.48 vs this script's constant-schedule 702463 at 0.39).
 
-SPARSITY=${1:?"Usage: sbatch slurm_gmp_tr_ntpkd_qwen3_4b_fsdp2gpu.sh <SPARSITY> <KL_THRESHOLD>"}
+SPARSITY=${1:?"Usage: sbatch slurm_gmp_tr_ntpkd_qwen3_4b_fsdp2gpu.sh <SPARSITY> <KL_THRESHOLD> [LR_SCHEDULER]"}
 KL_THRESHOLD=${2:-0.01}
+LR_SCHEDULER=${3:-constant_with_warmup}
 SPARSITY_PCT=$(python3 -c "print(int(${SPARSITY}*100))")
 
 TORCHRUN=/home1/doyoonkim/miniconda3/envs/rac/bin/torchrun
@@ -57,7 +67,7 @@ export NCCL_DEBUG=WARN
 
 MASTER_PORT=$(python -c "import socket; s=socket.socket(); s.bind(('',0)); p=s.getsockname()[1]; s.close(); print(p)")
 
-echo "=== TR-GMP NTP+KD (no OPD) Qwen3-4B s${SPARSITY_PCT} kl=${KL_THRESHOLD}, 2xA100-80GB FSDP (OT80/FW20) ==="
+echo "=== TR-GMP NTP+KD (no OPD) Qwen3-4B s${SPARSITY_PCT} kl=${KL_THRESHOLD} lr_scheduler=${LR_SCHEDULER}, 2xA100-80GB FSDP (OT80/FW20) ==="
 echo "NODE=$(hostname)  JOB=$SLURM_JOB_ID"
 nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader
 
@@ -79,6 +89,8 @@ $TORCHRUN --nproc_per_node=2 --master_port=${MASTER_PORT} main.py \
     --gmp_batch_size=1 \
     --gmp_grad_accum=4 \
     --lr=1e-4 \
+    --lr_scheduler=${LR_SCHEDULER} \
+    --lr_warmup_steps=256 \
     --gmp_warmup_ratio=0.05 \
     --gmp_mask_interval=32 \
     --gmp_fisher_beta=0.999 \
