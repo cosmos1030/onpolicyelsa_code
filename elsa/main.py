@@ -952,7 +952,7 @@ if __name__ == '__main__':
     flags.DEFINE_integer('admm_gradient_accumulation_steps', 1, 'Gradient accumulation steps for ADMM.')
     flags.DEFINE_bool('admm_gradient_checkpointing', False, 'Use gradient checkpointing for ADMM training. Set False when using FSDP')
     flags.DEFINE_float('lr', 1e-4, 'Learning rate (ADMM base optimizer / GMP peak LR).')
-    flags.DEFINE_string('lr_scheduler', 'constant_with_warmup', 'LR scheduler type. HF get_scheduler name for ADMM; GMP checks for "cosine" vs "constant"/"constant_with_warmup". "constant" alone ignores warmup_steps entirely (HF quirk) — use constant_with_warmup to keep the step-based warmup.')
+    flags.DEFINE_string('lr_scheduler', 'cosine', 'LR scheduler type. HF get_scheduler name for ADMM; GMP checks for "cosine" vs "constant"/"constant_with_warmup". "constant" alone ignores warmup_steps entirely (HF quirk) — use constant_with_warmup to keep the step-based warmup. Default is cosine-with-warmup (decays to ~0 by the last step) -- constant_with_warmup (flat LR, no decay) was the default from 2026-08-04 to 2026-08-08 and was found to make TR-GMP\'s final forced mask-to-target jump (gmp_trainer.py "final mask at full sparsity") land on a noisier, undertrained checkpoint, hurting eval scores (e.g. job 702463 vs cosine-scheduled 703120).')
     flags.DEFINE_integer('lr_warmup_steps', 256, 'LR warmup steps (ADMM scheduler warmup; GMP overrides gmp_warmup_ratio when > 0).')
     flags.DEFINE_float('admm_weight_decay', 0.0, 'Weight decay for ADMM base optimizer.')
     flags.DEFINE_enum('admm_precision', 'bf16', ['fp32', 'fp16', 'bf16'], 'Precision for ADMM training (fp16/bf16 enables Trainer autocast).')
