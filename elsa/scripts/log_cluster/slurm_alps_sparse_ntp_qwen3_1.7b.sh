@@ -38,7 +38,13 @@ ALPS_MODEL="cosmos1030/alps-s50pct_20260802_055049"
 REPO_ROOT="/home/doyoonkim/projects/onpolicyelsa_code/elsa"
 DATA_PATH="${REPO_ROOT}/data/ot3_fineweb_200k_qwen3_train.jsonl"
 
-PYTHON=/home/doyoonkim/.conda/envs/rac/bin/python
+# Must go through `conda activate` (not just invoke the env's python binary by
+# absolute path) -- flash_attn's compiled CUDA extension resolves against
+# whatever glibc LD_LIBRARY_PATH exposes first, and without activation this
+# node picks up a system glibc that's missing symbol version GLIBC_2.32,
+# crashing with "undefined symbol: __libc_single_threaded" on model load.
+source /opt/anaconda3/2022.05/etc/profile.d/conda.sh
+conda activate rac
 
 LOCAL_JOB_BASE="/tmp/${USER}/job_${SLURM_JOB_ID}"
 mkdir -p "$LOCAL_JOB_BASE/wandb"
@@ -67,7 +73,7 @@ fi
 
 cd "$REPO_ROOT"
 
-$PYTHON main.py \
+python main.py \
     --model="$ALPS_MODEL" \
     --dataset=mixed_cot \
     --data_path="$DATA_PATH" \
