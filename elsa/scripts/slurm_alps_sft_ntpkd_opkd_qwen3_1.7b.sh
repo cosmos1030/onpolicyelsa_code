@@ -25,13 +25,15 @@ exec 2>&1
 #
 # Single A100-80GB (1.7B fits without FSDP, same as slurm_gmp_tr_ntpkd_opkd_qwen3_1.7b.sh).
 #
-# Usage: sbatch slurm_alps_sft_ntpkd_opkd_qwen3_1.7b.sh <SPARSITY> [SPARSITY_TYPE] [OPD_GEN_LEN]
+# Usage: sbatch slurm_alps_sft_ntpkd_opkd_qwen3_1.7b.sh <SPARSITY> [SPARSITY_TYPE] [OPD_GEN_LEN] [LR_SCHEDULER]
 # e.g.: sbatch slurm_alps_sft_ntpkd_opkd_qwen3_1.7b.sh 0.5
 #       sbatch slurm_alps_sft_ntpkd_opkd_qwen3_1.7b.sh 0.5 2:4
+#       sbatch slurm_alps_sft_ntpkd_opkd_qwen3_1.7b.sh 0.6 unstructured 256 cosine
 
-SPARSITY=${1:?"Usage: sbatch slurm_alps_sft_ntpkd_opkd_qwen3_1.7b.sh <SPARSITY> [SPARSITY_TYPE] [OPD_GEN_LEN]"}
+SPARSITY=${1:?"Usage: sbatch slurm_alps_sft_ntpkd_opkd_qwen3_1.7b.sh <SPARSITY> [SPARSITY_TYPE] [OPD_GEN_LEN] [LR_SCHEDULER]"}
 SPARSITY_TYPE=${2:-unstructured}
 OPD_GEN_LEN=${3:-256}
+LR_SCHEDULER=${4:-constant_with_warmup}
 
 if [ "$SPARSITY_TYPE" = "2:4" ]; then
     ALPS_MODEL="/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_alps_s24"
@@ -65,7 +67,7 @@ export TRITON_CACHE_DIR=/tmp/triton_cache_${USER}
 export HF_DATASETS_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 
-echo "=== ALPS -> Sparse SFT NTP+KD+OPKD(0.33/0.33/0.33) Qwen3-1.7B ${SPARSITY_TAG} (${SPARSITY_TYPE}) opd_gen_len=${OPD_GEN_LEN} (OT80/FW20) ==="
+echo "=== ALPS -> Sparse SFT NTP+KD+OPKD(0.33/0.33/0.33) Qwen3-1.7B ${SPARSITY_TAG} (${SPARSITY_TYPE}) opd_gen_len=${OPD_GEN_LEN} lr_scheduler=${LR_SCHEDULER} (OT80/FW20) ==="
 echo "NODE=$(hostname)  JOB=$SLURM_JOB_ID  MODEL=$ALPS_MODEL"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 
@@ -88,6 +90,8 @@ $PYTHON main.py \
     --gmp_batch_size=1 \
     --gmp_grad_accum=8 \
     --lr=1e-4 \
+    --lr_scheduler=${LR_SCHEDULER} \
+    --lr_warmup_steps=256 \
     --gmp_warmup_ratio=0.05 \
     --seqlen=2048 \
     --gmp_max_prompt_len=512 \
