@@ -350,7 +350,7 @@ def main(argv):
 
     model = get_llm(FLAGS.model, FLAGS.seqlen)
     model.eval()
-    tokenizer = AutoTokenizer.from_pretrained(FLAGS.model, use_fast=False)
+    tokenizer = AutoTokenizer.from_pretrained(FLAGS.model, use_fast=True)
 
     device = torch.device(f"cuda:{local_rank}")
     torch.cuda.set_device(device)
