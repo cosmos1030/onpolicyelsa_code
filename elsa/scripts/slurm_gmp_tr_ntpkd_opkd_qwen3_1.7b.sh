@@ -21,12 +21,15 @@ exec 2>&1
 # grounds the model on real CoT data directly, which reverse-KL-only KD/OPKD
 # doesn't replace.
 #
-# Usage: sbatch slurm_gmp_tr_ntpkd_opkd_qwen3_1.7b.sh <SPARSITY> <KL_THRESHOLD> [OPD_GEN_LEN]
+# Usage: sbatch slurm_gmp_tr_ntpkd_opkd_qwen3_1.7b.sh <SPARSITY> <KL_THRESHOLD> [OPD_GEN_LEN] [MASK_INTERVAL] [LR_SCHEDULER]
 # e.g.: sbatch slurm_gmp_tr_ntpkd_opkd_qwen3_1.7b.sh 0.5 0.01 256
+#       sbatch slurm_gmp_tr_ntpkd_opkd_qwen3_1.7b.sh 0.5 0.01 256 16 cosine
 
-SPARSITY=${1:?"Usage: sbatch slurm_gmp_tr_ntpkd_opkd_qwen3_1.7b.sh <SPARSITY> <KL_THRESHOLD> [OPD_GEN_LEN]"}
+SPARSITY=${1:?"Usage: sbatch slurm_gmp_tr_ntpkd_opkd_qwen3_1.7b.sh <SPARSITY> <KL_THRESHOLD> [OPD_GEN_LEN] [MASK_INTERVAL] [LR_SCHEDULER]"}
 KL_THRESHOLD=${2:-0.01}
 OPD_GEN_LEN=${3:-256}
+MASK_INTERVAL=${4:-32}
+LR_SCHEDULER=${5:-constant_with_warmup}
 SPARSITY_PCT=$(python3 -c "print(int(${SPARSITY}*100))")
 
 PYTHON=/home1/doyoonkim/miniconda3/envs/rac/bin/python
@@ -53,7 +56,7 @@ export TRITON_CACHE_DIR=/tmp/triton_cache_${USER}
 export HF_DATASETS_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 
-echo "=== TR-GMP NTP+KD+OPKD(0.33/0.33/0.33) Qwen3-1.7B s${SPARSITY_PCT} kl=${KL_THRESHOLD} opd_gen_len=${OPD_GEN_LEN} (OT80/FW20) ==="
+echo "=== TR-GMP NTP+KD+OPKD(0.33/0.33/0.33) Qwen3-1.7B s${SPARSITY_PCT} kl=${KL_THRESHOLD} opd_gen_len=${OPD_GEN_LEN} mask_interval=${MASK_INTERVAL} lr_scheduler=${LR_SCHEDULER} (OT80/FW20) ==="
 echo "NODE=$(hostname)  JOB=$SLURM_JOB_ID"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 
@@ -74,8 +77,10 @@ $PYTHON main.py \
     --gmp_batch_size=1 \
     --gmp_grad_accum=8 \
     --lr=1e-4 \
+    --lr_scheduler=${LR_SCHEDULER} \
+    --lr_warmup_steps=256 \
     --gmp_warmup_ratio=0.05 \
-    --gmp_mask_interval=32 \
+    --gmp_mask_interval=${MASK_INTERVAL} \
     --gmp_fisher_beta=0.999 \
     --gmp_saliency=fisher \
     --seqlen=2048 \
