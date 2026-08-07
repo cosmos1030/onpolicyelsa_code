@@ -1027,6 +1027,15 @@ if __name__ == '__main__':
     flags.DEFINE_enum('gmp_pruning_scope', 'global', ['global', 'layer'],
                       'Pruning scope: global=single threshold across all layers, layer=per-layer threshold (each layer hits target sparsity exactly).')
     flags.DEFINE_string('gmp_save_path', '/home1/doyoonkim/projects/elsa/models', 'Directory to save GMP pruned model.')
+    flags.DEFINE_enum('gmp_base_optimizer', 'adamw', ['adamw', 'activation_metric_pgd'],
+                      'Base optimizer for GMP training. activation_metric_pgd projects the gradient step onto the '
+                      'active (non-pruned) coordinates using a running per-group activation-covariance metric '
+                      '(see lib/activation_metric_projected_sgd.py) -- an online per-step analogue of PCG\'s '
+                      'post-hoc reconstruction correction.')
+    flags.DEFINE_float('gmp_pgd_lam', 1e-3, 'activation_metric_pgd: relative damping on the active-block covariance solve.')
+    flags.DEFINE_integer('gmp_pgd_group_size', 4, 'activation_metric_pgd: input-dim column block size for the activation-covariance metric.')
+    flags.DEFINE_float('gmp_pgd_trust_ratio', 5.0, 'activation_metric_pgd: cap the preconditioned step at this multiple of the plain-SGD step.')
+    flags.DEFINE_float('gmp_pgd_momentum', 0.0, 'activation_metric_pgd: classical momentum on the gradient before projection (0 = none).')
     flags.DEFINE_integer('gmp_max_prompt_len', 512, 'Max prompt length for GMP NTP dataset.')
     flags.DEFINE_float('gmp_ntp_lambda', 1.0, 'NTP loss weight for GMP (default 1.0).')
     flags.DEFINE_float('gmp_kd_lambda', 0.0, 'KD loss weight for GMP (0 = NTP only).')
