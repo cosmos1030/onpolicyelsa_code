@@ -94,8 +94,8 @@ python main.py \
     --save_model=true \
     --push_to_hub=true \
     --eval_math500=false \
-    --eval_full_bench=false \
-    --eval_zero_shot=false \
+    --eval_full_bench=true \
+    --eval_zero_shot=true \
     --wandb=true \
     --wandb_project=reasoning_qwen3_1.7b \
     --seed=42
