@@ -104,10 +104,10 @@ python main.py \
     --dataset=math_cot \
     --data_path=data/math_220k_cot.jsonl \
     --sparsity_ratio=0.5 \
-    --admm_steps=4096 \
+    --steps=4096 \
     --admm_batch_size=1 \
     --admm_gradient_accumulation_steps=8 \
-    --admm_lr=1e-5 \
+    --lr=1e-5 \
     --admm_lmda=5e-3 \
     --admm_lmda_schedule_mode=cosine \
     --admm_interval=32 \
@@ -132,10 +132,10 @@ python main.py \
     --dataset=math_cot \
     --data_path=data/math_220k_cot.jsonl \
     --sparsity_ratio=0.5 \
-    --admm_steps=4096 \
+    --steps=4096 \
     --admm_batch_size=1 \
     --admm_gradient_accumulation_steps=8 \
-    --admm_lr=1e-5 \
+    --lr=1e-5 \
     --admm_lmda=5e-3 \
     --admm_lmda_schedule_mode=cosine \
     --admm_interval=32 \
@@ -168,7 +168,7 @@ python main.py \
     --dataset=math_trace \
     --data_path=data/math_220k_cot.jsonl \
     --sparsity_ratio=0.3 \
-    --admm_steps=4096 \
+    --steps=4096 \
     ...
 ```
 
@@ -272,8 +272,8 @@ To enable upload, add to your run:
 | `--sparsity_ratio` | `0.6` | Target sparsity (0.3–0.9) |
 | `--dataset` | `c4` | Calibration data: `c4`, `wikitext2`, `math_cot`, `math_trace`, `math_prompt` |
 | `--data_path` | `None` | Path to local JSONL |
-| `--admm_steps` | `10` | Training steps |
-| `--admm_lr` | `2e-4` | Learning rate |
+| `--steps` | `10` | Training steps |
+| `--lr` | `2e-4` | Learning rate |
 | `--admm_lmda` | `0.01` | ADMM penalty λ |
 | `--admm_lmda_schedule_mode` | `constant` | λ schedule: `constant`, `linear`, `cosine` |
 | `--admm_interval` | `2` | Steps between z/u ADMM updates |

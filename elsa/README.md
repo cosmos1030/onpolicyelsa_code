@@ -53,10 +53,10 @@ python main.py \
     --model="meta-llama/Llama-2-7b-hf" \
     --sparsity_ratio=0.5 \
     --sparsity_type="unstructured" \
-    --admm_steps=4096 \
+    --steps=4096 \
     --admm_batch_size=2 \
     --admm_gradient_accumulation_steps=4 \
-    --admm_lr=2e-4 \
+    --lr=2e-4 \
     --admm_lmda=0.01 \
     --admm_interval=32 \
     --eval_zero_shot=True \
@@ -75,10 +75,10 @@ Then launch:
 accelerate launch --config_file config/default.yaml main.py \
     --model="meta-llama/Llama-2-7b-hf" \
     --sparsity_ratio=0.5 \
-    --admm_steps=4096 \
+    --steps=4096 \
     --admm_batch_size=2 \
     --admm_gradient_accumulation_steps=4 \
-    --admm_lr=2e-4 \
+    --lr=2e-4 \
     --admm_lmda=0.01 \
     --admm_interval=32 \
     --eval_zero_shot=True \
@@ -106,8 +106,8 @@ accelerate launch --config_file config/default.yaml main.py \
 #### ADMM Training
 | Argument | Default | Description |
 |---|---|---|
-| `--admm_steps` | `10` | Total training steps (overrides `--admm_epochs` if > 0) |
-| `--admm_lr` | `2e-4` | Learning rate |
+| `--steps` | `10` | Total training steps (overrides `--admm_epochs` if > 0) |
+| `--lr` | `2e-4` | Learning rate |
 | `--admm_batch_size` | `2` | Per-device batch size |
 | `--admm_gradient_accumulation_steps` | `1` | Gradient accumulation steps |
 | `--admm_lmda` | `0.01` | Penalty parameter λ (constant schedule) |
@@ -149,7 +149,7 @@ Example (single GPU, dataset-CoT KD mixed 50/50 with NTP):
 python main.py \
     --model="Qwen/Qwen3-1.7B" \
     --dataset=mixed_cot --data_path=<path/to/mixed_cot.jsonl> \
-    --sparsity_ratio=0.5 --admm_steps=2048 \
+    --sparsity_ratio=0.5 --steps=2048 \
     --do_offpolicy_kd_admm=true --kd_lambda=0.5 --kd_ntp_lambda=0.5 --kd_topk=0 \
     --save_model=true --push_to_hub=true
 ```
