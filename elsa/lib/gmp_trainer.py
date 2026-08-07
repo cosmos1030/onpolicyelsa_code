@@ -1772,7 +1772,21 @@ def globalprune_gmp(
         logging.info("  Gradient checkpointing ENABLED (reduces activation memory)")
 
     logging.info(f"[rank {local_rank}] creating optimizer")
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.0)
+    base_optimizer = getattr(FLAGS, 'gmp_base_optimizer', 'adamw')
+    if base_optimizer == 'activation_metric_pgd':
+        from .activation_metric_projected_sgd import ActivationMetricProjectedSGD
+        optimizer = ActivationMetricProjectedSGD(
+            model.parameters(), lr=lr,
+            lam=getattr(FLAGS, 'gmp_pgd_lam', 1e-3),
+            group_size=getattr(FLAGS, 'gmp_pgd_group_size', 4),
+            trust_ratio=getattr(FLAGS, 'gmp_pgd_trust_ratio', 5.0),
+            momentum=getattr(FLAGS, 'gmp_pgd_momentum', 0.0),
+        )
+        logging.info(f"  Base optimizer: ActivationMetricProjectedSGD (lr={lr}, lam={FLAGS.gmp_pgd_lam}, "
+                     f"group_size={FLAGS.gmp_pgd_group_size}, trust_ratio={FLAGS.gmp_pgd_trust_ratio}, "
+                     f"momentum={FLAGS.gmp_pgd_momentum})")
+    else:
+        optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.0)
     logging.info(f"[rank {local_rank}] optimizer created")
     _fisher_source = getattr(FLAGS, 'gmp_fisher_source', 'adam')
     if _fisher_source == 'opd_empirical':
@@ -1780,7 +1794,11 @@ def globalprune_gmp(
         logging.info("Fisher source: opd_empirical (grad^2 on OPD cal_batch)")
     else:
         fisher = FisherAccumulator(named_params, optimizer, saliency=FLAGS.gmp_saliency)
-        logging.info("Fisher source: adam (exp_avg_sq)")
+        if base_optimizer == 'activation_metric_pgd':
+            logging.info("Fisher source: adam (exp_avg_sq) -- no-op with activation_metric_pgd "
+                         "(no such state), fine for gmp_fixed_mask=true where it's never consulted")
+        else:
+            logging.info("Fisher source: adam (exp_avg_sq)")
     maskmgr = GradualMaskManager(named_params, fsdp_model, prune_n=prune_n, prune_m=prune_m,
                                   pruning_scope=getattr(FLAGS, 'gmp_pruning_scope', 'global'))
     if fixed_mask:
