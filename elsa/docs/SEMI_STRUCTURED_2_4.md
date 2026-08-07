@@ -49,7 +49,7 @@
 
 ### 2. SparseGPT 2:4 one-shot (sweep `ee91pxth`)
 
-calibration: math_cot 1M tokens
+calibration: mixed_cot 1M tokens
 
 | MATH-500 | PPL (wikitext2) | PPL (c4) |
 |----------|-----------------|----------|

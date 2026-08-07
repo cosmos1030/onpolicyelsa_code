@@ -29,7 +29,7 @@ parameters:
   model:
     value: "/home1/doyoonkim/.cache/huggingface/hub/models--deepseek-ai--DeepSeek-R1-Distill-Qwen-7B/snapshots/916b56a44061fd5cd7d6a8fb632557ed4f724f60"
   dataset:
-    value: "math_cot"
+    value: "mixed_cot"
   data_path:
     value: "/home1/doyoonkim/projects/elsa/data/math_220k_cot.jsonl"
   do_gmp:

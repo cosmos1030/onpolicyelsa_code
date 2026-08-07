@@ -2,7 +2,7 @@
 #
 # Usage:
 #   cd /home1/doyoonkim/projects/elsa
-#   wandb sweep sweep_configs/qwen3_0.6_math_cot_eval.yaml
+#   wandb sweep sweep_configs/qwen3_0.6_mixed_cot_eval.yaml
 #   sbatch scripts/slurm_sweep_agent.sh <SWEEP_ID>
 
 program: scripts/prune_and_eval.sh
@@ -33,7 +33,7 @@ command:
   - --wandb_project=elsa_qwen3_0.6
   - ${args}
 
-name: qwen3_0.6b_math_cot_trace_30pct
+name: qwen3_0.6b_mixed_cot_trace_30pct
 method: grid
 project: elsa_qwen3_0.6
 entity: dyk6208-gwangju-institute-of-science-and-technology

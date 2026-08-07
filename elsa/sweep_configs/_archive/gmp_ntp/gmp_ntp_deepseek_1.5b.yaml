@@ -12,7 +12,7 @@ command:
   - /home1/doyoonkim/miniconda3/envs/rac/bin/python
   - ${program}
   - --model=/home1/doyoonkim/.cache/huggingface/hub/models--deepseek-ai--DeepSeek-R1-Distill-Qwen-1.5B/snapshots/ad9f0ae0864d7fbcd1cd905e3c6c5b069cc8b562
-  - --dataset=math_cot
+  - --dataset=mixed_cot
   - --data_path=/home1/doyoonkim/projects/elsa/data/math_220k_cot.jsonl
   - --do_gmp=true
   - --gmp_steps=1024

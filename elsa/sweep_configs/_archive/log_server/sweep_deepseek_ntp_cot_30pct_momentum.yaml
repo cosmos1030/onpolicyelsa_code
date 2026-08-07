@@ -21,7 +21,7 @@ parameters:
   model:
     value: "/home/shared/huggingface/hub/models--deepseek-ai--DeepSeek-R1-Distill-Qwen-1.5B"
   dataset:
-    value: "math_cot"
+    value: "mixed_cot"
   data_path:
     value: "/home/shared/dataset/math_220k_cot.jsonl"
   sparsity_ratio:

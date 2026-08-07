@@ -31,7 +31,7 @@ torchrun \
     --master_port=29500 \
     main.py \
     --model=/home1/doyoonkim/.cache/huggingface/hub/models--deepseek-ai--DeepSeek-R1-Distill-Qwen-7B/snapshots/916b56a44061fd5cd7d6a8fb632557ed4f724f60 \
-    --dataset=math_cot \
+    --dataset=mixed_cot \
     --data_path=/home1/doyoonkim/projects/elsa/data/math_220k_cot.jsonl \
     --sparsity_ratio=0.7 \
     --do_gmp=true \

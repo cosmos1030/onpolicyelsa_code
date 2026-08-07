@@ -96,7 +96,7 @@ def _get_raw_dataset(dataset_name, data_type="train", data_path=None):
         if local_rank == 0:
             logging.info(f"Loading math prompts from: {data_path}")
         return load_dataset('json', data_files=data_path, split='train')
-    elif "math_cot" in dataset_name.lower():
+    elif "mixed_cot" in dataset_name.lower():
         # CoT-only JSONL: reads 'text' field (= problem\n\ncot), strips the problem part.
         assert data_path is not None, f"--data_path must be provided for dataset '{dataset_name}'"
         if local_rank == 0:
@@ -148,7 +148,7 @@ def _process_and_tokenize(raw_dataset, dataset_name, tokenizer, nsamples, seqlen
         # Concatenate all prompts into one token stream, then slice seqlen windows
         full_text = "\n\n".join(s['prompt'] for s in raw_dataset if s.get('prompt'))
         all_tokens.append(tokenizer(full_text, return_tensors='pt').input_ids)
-    elif "math_cot" in dataset_name.lower():
+    elif "mixed_cot" in dataset_name.lower():
         # CoT-only: strip the problem, keep from <think> onward
         # text format: "problem\n\n<think>CoT</think>answer"
         # Split at <think> — fallback to \n\n only if <think> not found
@@ -167,7 +167,7 @@ def _process_and_tokenize(raw_dataset, dataset_name, tokenizer, nsamples, seqlen
             tokens = tokenizer(cot, return_tensors='pt').input_ids
             if tokens.shape[1] > seqlen:
                 all_tokens.append(tokens)
-        assert len(all_tokens) > 0, f"No valid math_cot samples found longer than seqlen={seqlen}"
+        assert len(all_tokens) > 0, f"No valid mixed_cot samples found longer than seqlen={seqlen}"
     else: # wikitext2, ptb
         text_column = "text" if "wikitext" in dataset_name.lower() else "sentence"
         full_text = "\n\n".join(raw_dataset[text_column])

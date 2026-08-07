@@ -35,7 +35,7 @@ parameters:
   data_path:
     value: /home1/doyoonkim/projects/elsa/data/math_220k_cot.jsonl
   dataset:
-    value: math_cot
+    value: mixed_cot
   eval_math500:
     value: true
   eval_zero_shot:
