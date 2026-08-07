@@ -23,14 +23,21 @@ exec 2>&1
 # Teacher is the ORIGINAL DENSE model (--gmp_teacher_model), not the ALPS
 # checkpoint -- see main.py `_teacher_model_path` fix.
 #
-# Single A100-80GB (1.7B fits without FSDP).
+# Single GPU (1.7B fits without FSDP). BATCH_SIZE x GRAD_ACCUM is fixed at a
+# global batch of 8 regardless of BATCH_SIZE (GRAD_ACCUM = 8 / BATCH_SIZE) --
+# raising BATCH_SIZE just trades gradient-accumulation steps for larger
+# per-step forward/backward batches (same effective gradient, faster
+# wall-clock on GPUs with headroom, e.g. H200's 141GB vs A100's 80GB).
 #
-# Usage: sbatch slurm_alps_sft_ntpkd_qwen3_1.7b.sh <SPARSITY> [SPARSITY_TYPE] [LR_SCHEDULER]
+# Usage: sbatch slurm_alps_sft_ntpkd_qwen3_1.7b.sh <SPARSITY> [SPARSITY_TYPE] [LR_SCHEDULER] [BATCH_SIZE]
 # e.g.: sbatch slurm_alps_sft_ntpkd_qwen3_1.7b.sh 0.5
+#       sbatch --partition=H200 --gres=gpu:H200:1 slurm_alps_sft_ntpkd_qwen3_1.7b.sh 0.6 unstructured cosine 8
 
-SPARSITY=${1:?"Usage: sbatch slurm_alps_sft_ntpkd_qwen3_1.7b.sh <SPARSITY> [SPARSITY_TYPE] [LR_SCHEDULER]"}
+SPARSITY=${1:?"Usage: sbatch slurm_alps_sft_ntpkd_qwen3_1.7b.sh <SPARSITY> [SPARSITY_TYPE] [LR_SCHEDULER] [BATCH_SIZE]"}
 SPARSITY_TYPE=${2:-unstructured}
 LR_SCHEDULER=${3:-cosine}
+BATCH_SIZE=${4:-1}
+GRAD_ACCUM=$(python3 -c "print(8 // ${BATCH_SIZE})")
 
 if [ "$SPARSITY_TYPE" = "2:4" ]; then
     ALPS_MODEL="/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_alps_s24"
@@ -62,7 +69,7 @@ export TRITON_CACHE_DIR=/tmp/triton_cache_${USER}
 export HF_DATASETS_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 
-echo "=== ALPS -> NTP+KD(0.5/0.5, no OPD) recovery training Qwen3-1.7B ${SPARSITY_TAG} (${SPARSITY_TYPE}) lr_scheduler=${LR_SCHEDULER} (OT80/FW20) ==="
+echo "=== ALPS -> NTP+KD(0.5/0.5, no OPD) recovery training Qwen3-1.7B ${SPARSITY_TAG} (${SPARSITY_TYPE}) lr_scheduler=${LR_SCHEDULER} batch_size=${BATCH_SIZE} grad_accum=${GRAD_ACCUM} (OT80/FW20) ==="
 echo "NODE=$(hostname)  JOB=$SLURM_JOB_ID  MODEL=$ALPS_MODEL"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 
@@ -83,8 +90,8 @@ $PYTHON main.py \
     --do_gmp=true \
     --gmp_fixed_mask=true \
     --steps=2048 \
-    --gmp_batch_size=1 \
-    --gmp_grad_accum=8 \
+    --gmp_batch_size=${BATCH_SIZE} \
+    --gmp_grad_accum=${GRAD_ACCUM} \
     --lr=1e-4 \
     --lr_scheduler=${LR_SCHEDULER} \
     --lr_warmup_steps=256 \
