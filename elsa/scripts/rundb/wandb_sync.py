@@ -9,28 +9,33 @@ logger = logging.getLogger(__name__)
 ENTITY = "dyk6208-gwangju-institute-of-science-and-technology"
 
 # wandb summary key candidates → DB field
+# NOTE: different training code paths (main.py's FSDP eval vs. the older ELSA
+# ADMM path vs. standalone eval_full.py recovery) log the same metric under
+# different key prefixes -- keep adding observed variants here rather than
+# falling back to manual run.summary/scan_history digging per run.
 LIGHTEVAL_KEYS = {
     "math":   ["lighteval/math500", "math500/pass_at_1", "eval/math500"],
     "lcb":    ["lighteval/lcb", "eval/lcb"],
     "gpqa":   ["lighteval/gpqa_diamond", "eval/gpqa_diamond"],
     "ifeval": ["lighteval/ifeval_prompt", "eval/ifeval"],
+    "gsm8k":  ["lighteval/gsm8k", "eval/gsm8k"],
 }
 
 ZEROSHOT_KEYS = {
-    "wino":  ["eval/winogrande_acc", "winogrande/acc,none", "zeroshot/winogrande", "zero_shot/winogrande"],
-    "rte":   ["eval/rte_acc", "rte/acc,none", "zeroshot/rte", "zero_shot/rte"],
-    "race":  ["eval/race_acc", "race/acc,none", "zeroshot/race", "zero_shot/race"],
-    "piqa":  ["eval/piqa_acc_norm", "piqa/acc_norm,none", "zeroshot/piqa", "zero_shot/piqa"],
-    "ob":    ["eval/openbookqa_acc_norm", "openbookqa/acc_norm,none", "zeroshot/openbookqa", "zero_shot/openbookqa"],
-    "hella": ["eval/hellaswag_acc_norm", "hellaswag/acc_norm,none", "zeroshot/hellaswag", "zero_shot/hellaswag"],
-    "boolq": ["eval/boolq_acc", "boolq/acc,none", "zeroshot/boolq", "zero_shot/boolq"],
-    "arce":  ["eval/arc_easy_acc_norm", "arc_easy/acc_norm,none", "zeroshot/arc_easy", "zero_shot/arc_easy"],
-    "arcc":  ["eval/arc_challenge_acc_norm", "arc_challenge/acc_norm,none", "zeroshot/arc_challenge", "zero_shot/arc_challenge"],
+    "wino":  ["eval/winogrande_acc", "winogrande/acc,none", "zeroshot/winogrande", "zero_shot/winogrande", "global_admm/winogrande_acc"],
+    "rte":   ["eval/rte_acc", "rte/acc,none", "zeroshot/rte", "zero_shot/rte", "global_admm/rte_acc"],
+    "race":  ["eval/race_acc", "race/acc,none", "zeroshot/race", "zero_shot/race", "global_admm/race_acc"],
+    "piqa":  ["eval/piqa_acc_norm", "piqa/acc_norm,none", "zeroshot/piqa", "zero_shot/piqa", "global_admm/piqa_acc"],
+    "ob":    ["eval/openbookqa_acc_norm", "openbookqa/acc_norm,none", "zeroshot/openbookqa", "zero_shot/openbookqa", "global_admm/openbookqa_acc"],
+    "hella": ["eval/hellaswag_acc_norm", "hellaswag/acc_norm,none", "zeroshot/hellaswag", "zero_shot/hellaswag", "global_admm/hellaswag_acc"],
+    "boolq": ["eval/boolq_acc", "boolq/acc,none", "zeroshot/boolq", "zero_shot/boolq", "global_admm/boolq_acc"],
+    "arce":  ["eval/arc_easy_acc_norm", "arc_easy/acc_norm,none", "zeroshot/arc_easy", "zero_shot/arc_easy", "global_admm/arc_easy_acc"],
+    "arcc":  ["eval/arc_challenge_acc_norm", "arc_challenge/acc_norm,none", "zeroshot/arc_challenge", "zero_shot/arc_challenge", "global_admm/arc_challenge_acc"],
 }
 
 PPL_KEYS = {
-    "c4":  ["ppl/c4"],
-    "wt2": ["ppl/wikitext2"],
+    "c4":  ["ppl/c4", "ppl_test(c4)"],
+    "wt2": ["ppl/wikitext2", "ppl_test(wikitext2)"],
 }
 
 

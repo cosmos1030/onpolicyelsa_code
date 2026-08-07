@@ -3095,6 +3095,18 @@
           "arcc": 36.6,
           "wt2": 22.22,
           "wandb_project": "reasoning_qwen3_4b"
+        },
+        {
+          "badge": "tropkd",
+          "name": "TR-GMP KD+OPKD (Dense, no NTP)",
+          "sub": "",
+          "wbid": "q2xlvti9",
+          "hf": "cosmos1030/gmp-kd5e-1-s60pct-lr1e-4_20260805_190033",
+          "math": 73.8,
+          "lcb": 14.2,
+          "gpqa": 34.3,
+          "ifeval": 44.5,
+          "wandb_project": "reasoning_qwen3_4b"
         }
       ],
       "S70": [
@@ -3454,6 +3466,18 @@
           "arcc": 40.9,
           "wandb_project": "reasoning_qwen3_4b",
           "train_wbid": "yzum7q9y"
+        },
+        {
+          "badge": "tropkd",
+          "name": "TR-GMP KD+OPKD (Dense, no NTP)",
+          "sub": "",
+          "wbid": "lrwf1ytg",
+          "hf": "cosmos1030/gmp-kd5e-1-s70pct-lr1e-4_20260805_223842",
+          "math": 38.4,
+          "lcb": 0.0,
+          "gpqa": 27.3,
+          "ifeval": 23.5,
+          "wandb_project": "reasoning_qwen3_4b"
         }
       ],
       "N24": [
