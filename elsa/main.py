@@ -92,6 +92,11 @@ def _build_run_name(FLAGS):
         if lr_sched in ('constant', 'constant_with_warmup'):
             name += "_constlr"
 
+        if getattr(F, 'gmp_pcg_correct', False):
+            name += f"_pcg{getattr(F, 'gmp_pcg_maxiter', 5)}"
+            if getattr(F, 'gmp_pcg_sequential', False):
+                name += "seq"
+
         return name
 
     elif getattr(F, 'do_kd_admm', False):
@@ -315,6 +320,8 @@ def main(argv):
 
         # Build run name after FLAGS is updated with sweep config
         run_name = _build_run_name(FLAGS)
+        if getattr(FLAGS, 'run_name_suffix', ''):
+            run_name += f"_{FLAGS.run_name_suffix}"
         wandb.run.name = run_name
     else:
         if local_rank == 0:
@@ -518,6 +525,7 @@ def main(argv):
                 FLAGS, model, teacher_model, tokenizer, device,
                 prebuilt_opd_vllm_engine=_prebuilt_opd_vllm_engine,
                 prebuilt_opd_vllm_params=_prebuilt_opd_vllm_params,
+                prune_n=prune_n, prune_m=prune_m,
             )
             del teacher_model
             torch.cuda.empty_cache()
@@ -528,6 +536,7 @@ def main(argv):
                 FLAGS, model, teacher_model, tokenizer, device, offpolicy_kd=True,
                 prebuilt_opd_vllm_engine=_prebuilt_opd_vllm_engine,
                 prebuilt_opd_vllm_params=_prebuilt_opd_vllm_params,
+                prune_n=prune_n, prune_m=prune_m,
             )
             del teacher_model
             torch.cuda.empty_cache()
@@ -547,7 +556,7 @@ def main(argv):
                 saved_pruned_model_path = str(_sdir)
         elif getattr(FLAGS, 'dataset', '') == 'mixed_cot':
             # NTP with full problem context: no teacher, no KD, uses MixedTextDataset
-            saved_pruned_model_path = globalprune_admm_kd(FLAGS, model, None, tokenizer, device)
+            saved_pruned_model_path = globalprune_admm_kd(FLAGS, model, None, tokenizer, device, prune_n=prune_n, prune_m=prune_m)
         else:
             saved_pruned_model_path = globalprune_admm(FLAGS, model, tokenizer, device, prune_n=prune_n, prune_m=prune_m)
         _train_time_sec = time.time() - _t_train_start
@@ -971,6 +980,15 @@ if __name__ == '__main__':
     flags.DEFINE_enum('admm_split_dtype', 'fp32', ['fp32','bf16', 'float8_e4m3fn', 'float8_e5m2'], 'Dtype for ADMM split variable (fp32 or bf16).')
     flags.DEFINE_bool('admm_nonuniform_sparsity', False, 'Whether to use non-uniform sparsity based on sensitivity scores in ADMM.')
     flags.DEFINE_string('admm_nonuniform_sparsity_config_file', None, 'Path to non-uniform sparsity configuration file (JSON format).')
+    # Dynamic Barrier: replaces the fixed/scheduled admm_lmda penalty coefficient
+    # with a per-step closed-form lambda_k that guarantees the ADMM residual
+    # ||w - z + u||^2 makes progress toward a shrinking target while otherwise
+    # staying as close as possible to the raw KD gradient. See lib/optimizers.py
+    # ADMMOptimizer._compute_barrier_lambda / _dual_update.
+    flags.DEFINE_bool('admm_dynamic_barrier', False, 'Replace the fixed/scheduled ADMM lambda with a per-step Dynamic Barrier coefficient (overrides admm_lmda_schedule_mode).')
+    flags.DEFINE_float('admm_barrier_alpha', 0.5, 'Dynamic Barrier: how aggressively phi_k demands residual progress toward the target each step (0=no progress required, 1=full progress in one step).')
+    flags.DEFINE_float('admm_barrier_beta', 0.8, 'Dynamic Barrier: shrink factor for the per-interval residual target c_t = beta * g_start (g_start = 0.5*||r||^2 right after the interval z/u refresh).')
+    flags.DEFINE_float('admm_barrier_lambda_max', 100.0, 'Dynamic Barrier: safety clamp on the computed lambda_k.')
     # GMP (BEST-style)
     flags.DEFINE_bool('do_gmp', False, 'Use BEST-style gradual magnitude pruning with Fisher importance.')
     flags.DEFINE_bool('gmp_fixed_mask', False, 'Fix mask from pre-pruned model weights (for sparse SFT). Skips Fisher-based mask updates.')
@@ -1040,6 +1058,10 @@ if __name__ == '__main__':
     flags.DEFINE_string('gmp_tr_kl_reduce', 'mean', "TR-GMP: KL aggregation over tokens — 'mean' or 'quantile'.")
     flags.DEFINE_float('gmp_tr_kl_quantile', 0.95, 'TR-GMP: quantile level when gmp_tr_kl_reduce=quantile.')
     flags.DEFINE_string('gmp_milestone_sparsities', '', 'Comma-separated sparsity checkpoints (e.g. "0.5,0.6,0.7"). Saves model at each level; post-hoc eval runs after training.')
+    flags.DEFINE_boolean('gmp_pcg_correct', False, 'TR-GMP: after every mask update, apply an ALPS-style PCG backsolve (mask fixed, no ADMM search) using the dense teacher as reconstruction target -- lib/gmp_trainer.py _pcg_correct_masked_weights. Non-FSDP only.')
+    flags.DEFINE_integer('gmp_pcg_maxiter', 5, 'Max conjugate-gradient iterations per layer for gmp_pcg_correct (kept small since this runs every mask update).')
+    flags.DEFINE_float('gmp_pcg_damp', 0.01, 'Ridge damping coefficient (relative to mean diagonal of X^TX) for gmp_pcg_correct.')
+    flags.DEFINE_boolean('gmp_pcg_sequential', False, 'gmp_pcg_correct: use the ALPS-style sequential per-layer variant (re-forward after each layer so later layers see the actual post-correction input) instead of the single-snapshot-forward default. Costs ~num_layers extra forward passes per mask update.')
     flags.DEFINE_boolean('gmp_measure_grad_conflict', False, 'If True, measure cosine similarity between OPKD and IPO gradients at every OPKD step and log to wandb.')
     flags.DEFINE_boolean('gmp_filter_grad_conflict', False, 'If True, filter OPKD gradient when cos_sim(g_opkd, g_ntp+g_ipo) < 0.')
     flags.DEFINE_boolean('gmp_opkd_project_onto_combined', False, 'If True, project g_OPKD onto (g_NTP+g_DPO) direction: g̃_OPKD = scalar*(g_NTP+g_DPO).')
@@ -1157,6 +1179,7 @@ if __name__ == '__main__':
     flags.DEFINE_integer('math500_max_samples', 0, 'Max samples for MATH-500 eval (0 = all 500).')
     flags.DEFINE_bool('wandb', False, 'Whether to use wandb for logging.')
     flags.DEFINE_string('wandb_project', None, 'wandb project name.')
+    flags.DEFINE_string('run_name_suffix', '', 'Appended verbatim to the auto-built wandb run_name -- for disambiguating runs that share identical FLAGS but differ in code (e.g. a bugfix between two otherwise-identical launches).')
     flags.DEFINE_bool('push_to_hub', False, 'Whether to push the pruned model to HuggingFace Hub after eval.')
     flags.DEFINE_string('hub_model_id', None, 'HuggingFace Hub repo id (e.g. username/model-name) to push pruned model.')
 

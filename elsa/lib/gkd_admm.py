@@ -32,7 +32,7 @@ except ImportError:
 
 def globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device,
                         offpolicy_kd=False, prebuilt_opd_vllm_engine=None,
-                        prebuilt_opd_vllm_params=None):
+                        prebuilt_opd_vllm_params=None, prune_n=0, prune_m=0):
     """
     ADMM pruning with on-policy KD loss.
     Uses GKDADMMTrainer instead of ADMMTrainer.
@@ -113,6 +113,12 @@ def globalprune_admm_kd(FLAGS, model, teacher_model, tokenizer, device,
         admm_z_layerwise=getattr(FLAGS, 'admm_z_layerwise', False),
         admm_cubic_steps=getattr(FLAGS, 'admm_cubic_steps', 15),
         admm_tr_gate_at_target=getattr(FLAGS, 'admm_tr_gate_at_target', True),
+        admm_dynamic_barrier=getattr(FLAGS, 'admm_dynamic_barrier', False),
+        admm_barrier_alpha=getattr(FLAGS, 'admm_barrier_alpha', 0.5),
+        admm_barrier_beta=getattr(FLAGS, 'admm_barrier_beta', 0.8),
+        admm_barrier_lambda_max=getattr(FLAGS, 'admm_barrier_lambda_max', 100.0),
+        prune_n=prune_n,
+        prune_m=prune_m,
     )
 
     if tokenizer.pad_token is None:

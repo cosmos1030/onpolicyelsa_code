@@ -183,6 +183,55 @@ class ADMMTrainer(Trainer):
                          f"kl_threshold={self.args.admm_tr_kl_threshold}, "
                          f"init_delta={self._tr_delta}")
 
+    def _assert_nm_wiring(self, is_nm: bool):
+        """Fail fast (at the very first z-projection call) if --sparsity_type
+        requested N:M but prune_n/prune_m never made it through to self.args --
+        the actual bug found in 699281/699154 (globalprune_admm_kd silently
+        dropped prune_n/prune_m, so is_nm was always False despite
+        sparsity_type=2:4). Without this check that bug is invisible until
+        someone loads the finished checkpoint and inspects per-block nnz
+        counts by hand -- this makes it die in the first few seconds instead."""
+        requested = getattr(self.args, 'sparsity_type', 'unstructured')
+        if requested != 'unstructured' and not is_nm:
+            raise RuntimeError(
+                f"sparsity_type={requested!r} was requested but prune_n/prune_m "
+                f"never reached AdmmTrainingArguments (prune_n={getattr(self.args, 'prune_n', 0)}, "
+                f"prune_m={getattr(self.args, 'prune_m', 0)}) -- z-projection would silently run "
+                f"plain unstructured pruning instead of N:M. Check that whichever "
+                f"globalprune_admm_* function is on the call path in main.py actually "
+                f"forwards prune_n/prune_m into AdmmTrainingArguments."
+            )
+
+    @staticmethod
+    def _log_nm_block_check(z_new: dict, prune_m: int, prune_n: int, step: int):
+        """Verify (and log) that no column-block actually exceeds the N:M cap in
+        the z mask just produced, directly on the real tensors -- not inferred
+        from the overall sparsity ratio, which looks identical whether the cap
+        was enforced or not. Logs once per z-projection call so a wiring bug
+        shows up within the first admm_interval instead of only being caught by
+        auditing the final saved checkpoint."""
+        cap = prune_m - prune_n
+        worst = 0
+        for w in z_new.values():
+            if w.dim() != 2:
+                continue
+            rows, cols = w.shape
+            n_full = (cols // prune_m) * prune_m
+            if n_full == 0:
+                continue
+            blocks = w[:, :n_full].reshape(rows, n_full // prune_m, prune_m)
+            block_max = (blocks != 0).sum(dim=-1).max().item()
+            pruned_max = prune_m - block_max
+            worst = max(worst, pruned_max)
+        if worst > cap:
+            logging.error(
+                f"  N:M cap VIOLATED at step {step}: worst block has {worst} pruned "
+                f"(cap={cap}, i.e. {prune_n}:{prune_m}) -- z-projection is not actually "
+                f"respecting the N:M structure."
+            )
+        else:
+            logging.info(f"  N:M block check step {step}: worst block {worst}/{cap} pruned (OK)")
+
     def _compute_cubic_z(self, model, cal_batch):
         """Fixed cubic sparsity schedule, matching admm-pruning (Boza et al.)
         lib/admm.py fasterprune(): cur_sparsity = sf - sf*(1 - (itt+1)/ks)**3, ramped
@@ -194,7 +243,11 @@ class ADMMTrainer(Trainer):
         admm_state = self._collect_admm_projection_centers()
         if not admm_state:
             return {}
-        final_sp = self.args.sparsity_ratio
+        prune_n = getattr(self.args, 'prune_n', 0)
+        prune_m = getattr(self.args, 'prune_m', 0)
+        is_nm = prune_n > 0 and prune_m > 0
+        self._assert_nm_wiring(is_nm)
+        final_sp = (prune_n / prune_m) if is_nm else self.args.sparsity_ratio
         opt = self._get_admm_optimizer()
         ks = max(1, getattr(self.args, 'admm_cubic_steps', 2048))  # training step at which sf is reached
         t = opt.current_step
@@ -204,7 +257,9 @@ class ADMMTrainer(Trainer):
             cur_sp = final_sp
         self._cubic_iter += 1
 
-        z_new = self._select_z(admm_state, cur_sp)
+        z_new = self._select_z_nm(admm_state, cur_sp, prune_n, prune_m) if is_nm else self._select_z(admm_state, cur_sp)
+        if is_nm:
+            self._log_nm_block_check(z_new, prune_m, prune_n, t)
         self._tr_z_sp = cur_sp
 
         mask_nnz = sum((v != 0).sum().item() for v in z_new.values())
@@ -232,7 +287,11 @@ class ADMMTrainer(Trainer):
         admm_state = self._collect_admm_projection_centers()
         if not admm_state:
             return {}
-        final_sp = self.args.sparsity_ratio
+        prune_n = getattr(self.args, 'prune_n', 0)
+        prune_m = getattr(self.args, 'prune_m', 0)
+        is_nm = prune_n > 0 and prune_m > 0
+        self._assert_nm_wiring(is_nm)
+        final_sp = (prune_n / prune_m) if is_nm else self.args.sparsity_ratio
         opt = self._get_admm_optimizer()
         ks = max(1, getattr(self.args, 'admm_cubic_steps', 2048))
         t = opt.current_step
@@ -242,7 +301,9 @@ class ADMMTrainer(Trainer):
             cur_sp = final_sp
         self._cubic_iter += 1
 
-        z_new = self._select_z(admm_state, cur_sp)
+        z_new = self._select_z_nm(admm_state, cur_sp, prune_n, prune_m) if is_nm else self._select_z(admm_state, cur_sp)
+        if is_nm:
+            self._log_nm_block_check(z_new, prune_m, prune_n, t)
         self._tr_z_sp = cur_sp
 
         mask_nnz = sum((v != 0).sum().item() for v in z_new.values())
@@ -380,6 +441,126 @@ class ADMMTrainer(Trainer):
                 mask = sal > threshold
             z_override[param_id] = (info['a'] * mask.float()).to(info['w'].dtype)
         return z_override
+
+    @staticmethod
+    def _blockwise_capped_count(sal: torch.Tensor, threshold: float, prune_m: int, cap: int) -> torch.Tensor:
+        """Count elements <= threshold, capped at `cap` per column-block of size
+        prune_m (same block convention as lib/utils.py _proj_impl_dense: blocks
+        run along dim=1, in row-major groups of prune_m columns; any remainder
+        columns form one final, smaller block). Used by _find_global_threshold_nm's
+        bisection so the search converges on a threshold whose actual sparsity
+        (after capping) matches the target, rather than the uncapped count."""
+        rows, cols = sal.shape
+        n_full = (cols // prune_m) * prune_m
+        total = torch.zeros((), device=sal.device, dtype=torch.long)
+        if n_full > 0:
+            blocks = sal[:, :n_full].reshape(rows, n_full // prune_m, prune_m)
+            counts = (blocks <= threshold).sum(dim=-1).clamp(max=cap)
+            total = total + counts.sum()
+        if cols > n_full:
+            tail = sal[:, n_full:]
+            counts_tail = (tail <= threshold).sum(dim=-1).clamp(max=cap)
+            total = total + counts_tail.sum()
+        return total
+
+    def _find_global_threshold_nm(self, admm_state, sparsity, prune_m, cap):
+        """Like _find_global_threshold, but the bisection counts prunings with a
+        per-column-block cap: within every group of prune_m columns, at most
+        `cap` elements ever count toward the target, so the resulting threshold
+        respects the N:M structural budget everywhere instead of just the
+        global ratio. Early in a growth schedule (cur_sp well below
+        prune_n/prune_m) almost no block hits the cap, so this behaves like
+        plain global-threshold unstructured growth; as cur_sp approaches the
+        final N:M ratio, more blocks saturate at the cap and the mask converges
+        to an exact N:M pattern (also hard-enforced separately by
+        ADMMOptimizer.final_projection at save time).
+        """
+        local_sals = [v['saliency'] for v in admm_state.values() if v['saliency'].numel() > 0]
+        if not local_sals:
+            return float('inf')
+        _dev = local_sals[0].device
+
+        total_elems = sum(s.numel() for s in local_sals)
+        if dist.is_initialized():
+            n_total_t = torch.tensor([total_elems], dtype=torch.long, device=_dev)
+            dist.all_reduce(n_total_t, op=dist.ReduceOp.SUM)
+            n_total = n_total_t.item()
+        else:
+            n_total = total_elems
+        k = int(n_total * sparsity)
+        if k == 0:
+            return -float('inf')
+
+        lo_t = torch.tensor(min(s.min().item() for s in local_sals), dtype=torch.float32, device=_dev)
+        hi_t = torch.tensor(max(s.max().item() for s in local_sals), dtype=torch.float32, device=_dev)
+        if dist.is_initialized():
+            dist.all_reduce(lo_t, op=dist.ReduceOp.MIN)
+            dist.all_reduce(hi_t, op=dist.ReduceOp.MAX)
+        lo, hi = lo_t.item(), hi_t.item()
+
+        for _ in range(64):
+            mid = (lo + hi) / 2.0
+            cnt = torch.zeros((), device=_dev, dtype=torch.long)
+            for sal in local_sals:
+                cnt = cnt + self._blockwise_capped_count(sal, mid, prune_m, cap)
+            if dist.is_initialized():
+                dist.all_reduce(cnt, op=dist.ReduceOp.SUM)
+            if cnt.item() < k:
+                lo = mid
+            else:
+                hi = mid
+        return hi
+
+    def _make_z_from_threshold_nm(self, admm_state, threshold, prune_m, cap):
+        """Build a z_override dict from a threshold found by
+        _find_global_threshold_nm: within each column-block, prune the
+        `min(count_below_threshold, cap)` lowest-saliency elements per row
+        (matching lib/utils.py _proj_impl_dense's per-row-per-block topk
+        convention) rather than a plain boolean cutoff, so blocks that would
+        otherwise exceed the N:M budget are clipped to their least-salient
+        `cap` members instead of all of their below-threshold members."""
+        z_override = {}
+        for param_id, info in admm_state.items():
+            sal = info['saliency']
+            a = info['a']
+            w = info['w']
+            rows, cols = sal.shape
+            mask = torch.zeros_like(sal, dtype=torch.bool)
+            n_full = (cols // prune_m) * prune_m
+            if n_full > 0:
+                blocks = sal[:, :n_full].reshape(rows, n_full // prune_m, prune_m)
+                below = blocks <= threshold
+                k = min(cap, prune_m)
+                if k > 0:
+                    _, idx = torch.topk(blocks.float(), k=k, dim=-1, largest=False)
+                    cand = torch.zeros_like(blocks, dtype=torch.bool).scatter_(-1, idx, True)
+                    cand &= below
+                    mask[:, :n_full] = cand.reshape(rows, n_full)
+            if cols > n_full:
+                tail = sal[:, n_full:]
+                below_tail = tail <= threshold
+                k = min(cap, tail.shape[1])
+                if k > 0:
+                    _, idx = torch.topk(tail.float(), k=k, dim=1, largest=False)
+                    cand_tail = torch.zeros_like(tail, dtype=torch.bool).scatter_(1, idx, True)
+                    cand_tail &= below_tail
+                    mask[:, n_full:] = cand_tail
+            z_new = a * (~mask).float()
+            z_override[param_id] = z_new.to(w.dtype)
+        return z_override
+
+    def _select_z_nm(self, admm_state, cur_sp, prune_n, prune_m):
+        """N:M-aware counterpart to _select_z, used when growing toward a
+        structured target (e.g. 2:4) instead of a plain unstructured ratio.
+        Saliency is still compared GLOBALLY across the whole model (same as
+        unstructured growth, preserving its cross-layer reallocation
+        behavior) rather than independently per block -- only the per-block
+        prune COUNT is capped at prune_m - prune_n, so the structural budget
+        is never exceeded mid-schedule while the global comparison still
+        decides WHICH elements within that budget get pruned first."""
+        cap = prune_m - prune_n
+        threshold = self._find_global_threshold_nm(admm_state, cur_sp, prune_m, cap)
+        return self._make_z_from_threshold_nm(admm_state, threshold, prune_m, cap)
 
     @torch.no_grad()
     def _forward_with_z(self, model, input_ids, attn_mask, z_dict, admm_state):
@@ -985,6 +1166,10 @@ class ADMMTrainer(Trainer):
                 split_dtype=self.args.admm_split_dtype,
                 lasso_lmda=getattr(self.args, 'admm_lasso_lmda', 0.0),
                 accelerator=self.accelerator,
+                dynamic_barrier=getattr(self.args, 'admm_dynamic_barrier', False),
+                barrier_alpha=getattr(self.args, 'admm_barrier_alpha', 0.5),
+                barrier_beta=getattr(self.args, 'admm_barrier_beta', 0.8),
+                barrier_lambda_max=getattr(self.args, 'admm_barrier_lambda_max', 100.0),
                 **base_optimizer_kwargs,
             )
             if self.is_world_process_zero():
@@ -1941,6 +2126,8 @@ class ADMMTrainer(Trainer):
                         self._tr_z_metrics_pending = None
                     if hasattr(unwrapped_optimizer, 'get_grad_norm_breakdown') and self.is_world_process_zero():
                         self.log(unwrapped_optimizer.get_grad_norm_breakdown())
+                    if getattr(unwrapped_optimizer, 'dynamic_barrier', False) and self.is_world_process_zero():
+                        self.log(unwrapped_optimizer.get_barrier_diagnostics())
                     self.control = self.callback_handler.on_optimizer_step(args, self.state, self.control)
 
                     optimizer_was_run = not self.accelerator.optimizer_step_was_skipped

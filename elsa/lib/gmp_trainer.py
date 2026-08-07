@@ -995,6 +995,285 @@ def _compute_tr_kl(model: nn.Module, cal_batch: dict, cand_masks: dict,
     return max(result, 0.0), kl_vals  # (scalar, per-token KL tensor)
 
 
+@torch.no_grad()
+def _cg_batch(A: torch.Tensor, B: torch.Tensor, A_supp: torch.Tensor,
+              X0: torch.Tensor, rtol: float = 1e-3, atol: float = 0.,
+              maxiter: int = 10) -> torch.Tensor:
+    """Solve A X = B via identity-preconditioned conjugate gradient, with the
+    residual masked by A_supp every iteration so entries outside the support
+    never move off X0 -- i.e. the pruning mask is preserved exactly, only the
+    already-nonzero entries get updated. Ported/simplified from ALPS's
+    cg_batch (mazumder-lab/ALPS, alps.py) with the verbose/error-tracking
+    scaffolding stripped out; validated to reproduce that implementation's
+    numerics in an offline post-hoc test (math500 64.8 -> 73.8 on the TR-GMP
+    KD+OPD 1.7B s50 checkpoint, job 700758).
+    """
+    X_k = X0
+    R_k = (B - A @ X_k) * A_supp
+    P_k = torch.zeros_like(R_k)
+    R_k1 = R_k
+    B_norm = torch.norm(B, dim=1)
+    stopping = torch.max(rtol * B_norm, atol * torch.ones_like(B_norm))
+    for k in range(1, maxiter + 1):
+        if k == 1:
+            P_k = R_k
+            R_k1 = R_k
+        else:
+            R_k2 = R_k1
+            P_k1 = P_k
+            R_k1 = R_k
+            denom = (R_k2 * R_k2).sum(0)
+            denom = torch.where(denom == 0, torch.full_like(denom, 1e-8), denom)
+            beta = (R_k1 * R_k1).sum(0) / denom
+            P_k = R_k1 + beta.unsqueeze(0) * P_k1
+        AP = A @ P_k
+        denom = (P_k * AP).sum(0)
+        denom = torch.where(denom == 0, torch.full_like(denom, 1e-8), denom)
+        alpha = (R_k1 * R_k1).sum(0) / denom
+        X_k = X_k + alpha.unsqueeze(0) * P_k
+        R_k = (R_k1 - alpha.unsqueeze(0) * AP) * A_supp
+        resid = torch.norm(A @ X_k - B, dim=1)
+        if (resid <= stopping).all():
+            break
+    return X_k
+
+
+@torch.no_grad()
+def _pcg_correct_masked_weights(model: nn.Module, teacher_model: nn.Module,
+                                 maskmgr: 'GradualMaskManager', cal_batch: dict,
+                                 device: str, maxiter: int = 5, damp_coef: float = 0.01,
+                                 global_step: int = 0, use_wandb: bool = False):
+    """ALPS-style PCG backsolve applied to the CURRENT mask, right after a TR-GMP
+    mask update, using the already-loaded dense `teacher_model` as the
+    reconstruction target -- no extra model load needed.
+
+    Unlike ALPS's own one-shot pipeline (sequential layer-by-layer, each
+    layer's calibration input re-derived from the previous layer's
+    just-corrected output -- see pcg_correct_gmp_checkpoint.py), this hooks
+    ALL target Linear layers at once and captures every layer's input from a
+    SINGLE forward pass on the current (pre-correction) weights, then solves
+    every layer's correction from that one snapshot. This trades the
+    sequential/exact-input-propagation precision for O(1) forward passes
+    instead of O(num_layers) -- necessary to make this cheap enough to run
+    every mask_interval steps instead of a several-hour one-shot job.
+
+    Only entries maskmgr already kept nonzero are touched (support is fixed
+    from the CURRENT mask, not re-derived) -- this never changes sparsity or
+    which positions are pruned, only what the surviving weights are worth.
+    """
+    named_params = maskmgr.named_params
+    teacher_params = dict(teacher_model.named_parameters())
+    name_to_module = dict(model.named_modules())
+
+    captured = {}
+    handles = []
+
+    def _make_hook(pname):
+        def hook(module, inp, out):
+            x = inp[0]
+            if x.dim() == 3:
+                x = x.reshape(-1, x.shape[-1])
+            captured[pname] = x.detach().float()
+        return hook
+
+    for name in named_params:
+        mod_name = name[:-len('.weight')] if name.endswith('.weight') else None
+        module = name_to_module.get(mod_name) if mod_name else None
+        if not isinstance(module, nn.Linear):
+            continue
+        handles.append(module.register_forward_hook(_make_hook(name)))
+
+    if not handles:
+        return
+
+    was_training = model.training
+    model.eval()
+    input_ids = cal_batch['input_ids'].to(device)
+    attn_mask = cal_batch.get('attention_mask')
+    attn_mask = attn_mask.to(device) if attn_mask is not None else None
+    model(input_ids=input_ids, attention_mask=attn_mask)
+    if was_training:
+        model.train()
+    for h in handles:
+        h.remove()
+
+    n_corrected, worst_resid_ratio = 0, 0.0
+    for name, W in named_params.items():
+        if name not in captured or name not in teacher_params:
+            continue
+        X = captured[name]
+        if X.shape[0] < 2 or W.dim() != 2:
+            continue
+        W_dense = teacher_params[name].detach().float().to(W.device)
+        W_cur = W.data.detach().float()
+
+        XtX = X.t() @ X
+        damp = damp_coef * torch.mean(torch.diag(XtX)).item()
+        diag_idx = torch.arange(XtX.shape[0], device=XtX.device)
+        XtX[diag_idx, diag_idx] += damp
+        X_norm = torch.diag(XtX).sqrt() + 1e-8
+        XtX = XtX / X_norm
+        XtX = (XtX.T / X_norm).T
+
+        YtX = torch.matmul(W_dense * X_norm, XtX)
+        B0 = (W_cur * X_norm).t().contiguous()
+        A_supp = (B0 != 0).float()
+
+        B = _cg_batch(XtX, YtX.t(), A_supp, X0=B0, maxiter=maxiter)
+        new_w = (B.t() / X_norm).reshape(W.shape).to(W.dtype)
+
+        resid_before = torch.norm(B0)
+        resid_after = torch.norm(B - B0)
+        if resid_before > 0:
+            worst_resid_ratio = max(worst_resid_ratio, (resid_after / resid_before).item())
+        W.data.copy_(new_w)
+        n_corrected += 1
+
+    captured.clear()
+    logging.info(f"  PCG mask correction @ step {global_step}: {n_corrected} layers, "
+                 f"max relative weight shift {worst_resid_ratio:.4f}")
+    if use_wandb:
+        wandb.log({"train/pcg_layers_corrected": n_corrected,
+                   "train/pcg_max_relative_shift": worst_resid_ratio, "step": global_step})
+
+
+@torch.no_grad()
+def _pcg_correct_one_weight(W: torch.Tensor, X: torch.Tensor, W_dense: torch.Tensor,
+                             maxiter: int, damp_coef: float) -> tuple:
+    """Shared per-weight CG backsolve: given captured input activations X and
+    the dense reference weight, re-solve W's nonzero entries via _cg_batch.
+    Returns (new_weight, relative_shift) or (None, 0.0) if X is degenerate."""
+    if X.shape[0] < 2 or W.dim() != 2:
+        return None, 0.0
+    W_cur = W.data.detach().float()
+
+    XtX = X.t() @ X
+    damp = damp_coef * torch.mean(torch.diag(XtX)).item()
+    diag_idx = torch.arange(XtX.shape[0], device=XtX.device)
+    XtX[diag_idx, diag_idx] += damp
+    X_norm = torch.diag(XtX).sqrt() + 1e-8
+    XtX = XtX / X_norm
+    XtX = (XtX.T / X_norm).T
+
+    YtX = torch.matmul(W_dense.float() * X_norm, XtX)
+    B0 = (W_cur * X_norm).t().contiguous()
+    A_supp = (B0 != 0).float()
+
+    B = _cg_batch(XtX, YtX.t(), A_supp, X0=B0, maxiter=maxiter)
+    new_w = (B.t() / X_norm).reshape(W.shape).to(W.dtype)
+
+    resid_before = torch.norm(B0)
+    resid_after = torch.norm(B - B0)
+    rel_shift = (resid_after / resid_before).item() if resid_before > 0 else 0.0
+    return new_w, rel_shift
+
+
+@torch.no_grad()
+def _pcg_correct_masked_weights_sequential(model: nn.Module, teacher_model: nn.Module,
+                                            maskmgr: 'GradualMaskManager', cal_batch: dict,
+                                            device: str, maxiter: int = 5, damp_coef: float = 0.01,
+                                            global_step: int = 0, use_wandb: bool = False):
+    """Sequential (ALPS-style) variant of _pcg_correct_masked_weights: corrects
+    decoder layer 0, re-forwards it with the NEW weights to get the actual
+    hidden_states layer 1 will see, corrects layer 1 using THAT input, and so
+    on -- so each layer's correction accounts for how every earlier
+    correction changed its input, unlike the single-snapshot version (which
+    captures every layer's input from one forward pass on the
+    PRE-correction weights and is blind to upstream corrections).
+
+    Costs one extra forward pass PER DECODER LAYER (~28 for Qwen3-1.7B)
+    instead of one forward pass total -- meaningfully slower, which is why
+    the single-snapshot version is the default for per-mask-update use.
+    """
+    named_params = maskmgr.named_params
+    teacher_params = dict(teacher_model.named_parameters())
+    name_to_module = dict(model.named_modules())
+
+    layers = model.model.layers
+    was_training = model.training
+    model.eval()
+
+    input_ids = cal_batch['input_ids'].to(device)
+    attn_mask = cal_batch.get('attention_mask')
+    attn_mask = attn_mask.to(device) if attn_mask is not None else None
+
+    # Capture the exact kwargs (attention_mask/position_ids/position_embeddings)
+    # Qwen3Model.forward() passes into decoder layers, plus layer 0's actual
+    # input hidden_states, via a pre-hook -- avoids re-deriving rotary
+    # embeddings / causal mask construction by hand.
+    _cache = {}
+
+    def _catch_layer0(module, args, kwargs):
+        _cache['hidden_states'] = args[0] if args else kwargs.get('hidden_states')
+        _cache['attention_mask'] = kwargs.get('attention_mask')
+        _cache['position_ids'] = kwargs.get('position_ids')
+        _cache['position_embeddings'] = kwargs.get('position_embeddings')
+
+    _h0 = layers[0].register_forward_pre_hook(_catch_layer0, with_kwargs=True)
+    model(input_ids=input_ids, attention_mask=attn_mask)
+    _h0.remove()
+
+    hidden_states = _cache['hidden_states']
+    layer_kwargs = {k: v for k, v in _cache.items()
+                    if k != 'hidden_states' and v is not None}
+
+    n_corrected_total, worst_resid_ratio = 0, 0.0
+
+    for layer_idx, layer in enumerate(layers):
+        prefix = f'model.layers.{layer_idx}.'
+        layer_param_names = [n for n in named_params if n.startswith(prefix)]
+        if not layer_param_names:
+            hidden_states = layer(hidden_states, **layer_kwargs)
+            continue
+
+        captured = {}
+        handles = []
+
+        def _make_hook(pname):
+            def hook(module, inp, out):
+                x = inp[0]
+                if x.dim() == 3:
+                    x = x.reshape(-1, x.shape[-1])
+                captured[pname] = x.detach().float()
+            return hook
+
+        for name in layer_param_names:
+            mod_name = name[:-len('.weight')] if name.endswith('.weight') else None
+            module = name_to_module.get(mod_name) if mod_name else None
+            if isinstance(module, nn.Linear):
+                handles.append(module.register_forward_hook(_make_hook(name)))
+
+        layer(hidden_states, **layer_kwargs)  # forward only to trigger hooks
+        for h in handles:
+            h.remove()
+
+        for name in layer_param_names:
+            if name not in captured or name not in teacher_params:
+                continue
+            W = named_params[name]
+            new_w, rel_shift = _pcg_correct_one_weight(
+                W, captured[name], teacher_params[name].detach().to(W.device), maxiter, damp_coef)
+            if new_w is None:
+                continue
+            W.data.copy_(new_w)
+            worst_resid_ratio = max(worst_resid_ratio, rel_shift)
+            n_corrected_total += 1
+
+        # Re-forward with the now-corrected weights -- this is what makes it
+        # "sequential": layer_idx+1 will see the ACTUAL post-correction output.
+        hidden_states = layer(hidden_states, **layer_kwargs)
+        captured.clear()
+
+    if was_training:
+        model.train()
+
+    logging.info(f"  Sequential PCG correction @ step {global_step}: {n_corrected_total} weights, "
+                 f"max relative weight shift {worst_resid_ratio:.4f}")
+    if use_wandb:
+        wandb.log({"train/pcg_seq_layers_corrected": n_corrected_total,
+                   "train/pcg_seq_max_relative_shift": worst_resid_ratio, "step": global_step})
+
+
 def _tr_mask_update(maskmgr: 'GradualMaskManager', fisher: 'FisherAccumulator',
                     fsdp_model, model: nn.Module, cal_batch: dict,
                     final_sparsity: float, tr_delta: float,
@@ -1958,15 +2237,21 @@ def globalprune_gmp(
             # so rollouts (generated with pre-mask weights) serve as TR calibration.
             # When TR-GMP is off, refill happens after mask update as before.
             _opkd_refilled_pre_mask = False
-            if use_onpolicy and fsdp_model is not None and tr_enabled and not tr_reached:
-                # Sync current student weights to vLLM subprocess (FSDP collective).
+            if use_onpolicy and tr_enabled and not tr_reached:
+                # Sync current student weights to vLLM subprocess (FSDP: collective
+                # summon_full_params + sync_weights; non-FSDP: direct internal API
+                # via _sync_opkd_weights_to_vllm, same as the initial pool fill above).
+                _in_fsdp_refill = fsdp_model is not None and _FSDP_AVAILABLE
                 _fsdp_sync_ctx = (FSDP.summon_full_params(fsdp_model, writeback=False, offload_to_cpu=True, rank0_only=True)
-                                  if fsdp_model is not None and _FSDP_AVAILABLE else nullcontext())
+                                  if _in_fsdp_refill else nullcontext())
                 with _fsdp_sync_ctx:
-                    if is_main_process and _opkd_vllm_engine is not None and hasattr(_opkd_vllm_engine, 'sync_weights'):
-                        _sd = {n: p.data.cpu() for n, p in model.named_parameters()}
-                        _opkd_vllm_engine.sync_weights(_sd)
-                        del _sd
+                    if is_main_process and _opkd_vllm_engine is not None:
+                        if _in_fsdp_refill and hasattr(_opkd_vllm_engine, 'sync_weights'):
+                            _sd = {n: p.data.cpu() for n, p in model.named_parameters()}
+                            _opkd_vllm_engine.sync_weights(_sd)
+                            del _sd
+                        elif not _in_fsdp_refill:
+                            _sync_opkd_weights_to_vllm(model, _opkd_vllm_engine)
                 if is_main_process and _opkd_vllm_engine is not None:
                     _n_pool = mask_interval * grad_accum
                     _pool_batches = [next(prompt_iter) for _ in range(_n_pool)]
@@ -2019,6 +2304,16 @@ def globalprune_gmp(
                     import torch.distributed as _td2
                     _td2.barrier()
                     logging.info(f"  [BARRIER] after _tr_mask_update step={step} (rank={_td2.get_rank()})")
+                if getattr(FLAGS, 'gmp_pcg_correct', False) and teacher_model is not None and fsdp_model is None:
+                    _pcg_fn = (_pcg_correct_masked_weights_sequential
+                               if getattr(FLAGS, 'gmp_pcg_sequential', False)
+                               else _pcg_correct_masked_weights)
+                    _pcg_fn(
+                        model, teacher_model, maskmgr, _cal_batch, str(device),
+                        maxiter=getattr(FLAGS, 'gmp_pcg_maxiter', 5),
+                        damp_coef=getattr(FLAGS, 'gmp_pcg_damp', 0.01),
+                        global_step=step, use_wandb=use_wandb,
+                    )
                 if (opkd_prev_mask_teacher or prevmask_opkd_lambda > 0) and use_onpolicy:
                     _opkd_prev_delta = _tr_mask_delta
                 if use_wandb:
@@ -2060,14 +2355,18 @@ def globalprune_gmp(
                                     "step": step})
 
             # OPKD vLLM pool refill AFTER mask update (only when TR-GMP is off)
-            if use_onpolicy and fsdp_model is not None and not _opkd_refilled_pre_mask:
+            if use_onpolicy and not _opkd_refilled_pre_mask:
+                _in_fsdp_refill2 = fsdp_model is not None and _FSDP_AVAILABLE
                 _fsdp_sync_ctx2 = (FSDP.summon_full_params(fsdp_model, writeback=False, offload_to_cpu=True, rank0_only=True)
-                                   if fsdp_model is not None and _FSDP_AVAILABLE else nullcontext())
+                                   if _in_fsdp_refill2 else nullcontext())
                 with _fsdp_sync_ctx2:
-                    if is_main_process and _opkd_vllm_engine is not None and hasattr(_opkd_vllm_engine, 'sync_weights'):
-                        _sd = {n: p.data.cpu() for n, p in model.named_parameters()}
-                        _opkd_vllm_engine.sync_weights(_sd)
-                        del _sd
+                    if is_main_process and _opkd_vllm_engine is not None:
+                        if _in_fsdp_refill2 and hasattr(_opkd_vllm_engine, 'sync_weights'):
+                            _sd = {n: p.data.cpu() for n, p in model.named_parameters()}
+                            _opkd_vllm_engine.sync_weights(_sd)
+                            del _sd
+                        elif not _in_fsdp_refill2:
+                            _sync_opkd_weights_to_vllm(model, _opkd_vllm_engine)
                 if is_main_process and _opkd_vllm_engine is not None:
                     _n_pool = mask_interval * grad_accum
                     _pool_batches = [next(prompt_iter) for _ in range(_n_pool)]

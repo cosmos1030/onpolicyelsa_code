@@ -61,6 +61,10 @@ class AdmmTrainingArguments(TrainingArguments):
     admm_tr_gate_at_target: bool = field(default=True, metadata={"help": "Once trust-region sparsity has reached the final target, still KL-gate any further mask reselection (via the same swap/freeze logic used when growth fails) instead of reselecting unconditionally every interval."})
     admm_z_layerwise: bool = field(default=False, metadata={"help": "Compute the TR-z/cubic threshold per-parameter-tensor (like plain ELSA's default projection) instead of pooling all params into one global threshold."})
     admm_cubic_steps: int = field(default=2048, metadata={"help": "ks: training step at which the cubic schedule reaches final sparsity (independent of admm_interval, which controls z-projection call cadence)."})
+    admm_dynamic_barrier: bool = field(default=False, metadata={"help": "Replace the fixed/scheduled ADMM lambda with a per-step Dynamic Barrier coefficient (overrides admm_lmda_schedule_mode)."})
+    admm_barrier_alpha: float = field(default=0.5, metadata={"help": "Dynamic Barrier: how aggressively phi_k demands residual progress toward the target each step."})
+    admm_barrier_beta: float = field(default=0.8, metadata={"help": "Dynamic Barrier: shrink factor for the per-interval residual target c_t = beta * g_start."})
+    admm_barrier_lambda_max: float = field(default=100.0, metadata={"help": "Dynamic Barrier: safety clamp on the computed lambda_k."})
 
 # --- globalprune_admm function ---
 def globalprune_admm(FLAGS, model, tokenizer, device, prune_n=0, prune_m=0):
@@ -135,6 +139,10 @@ def globalprune_admm(FLAGS, model, tokenizer, device, prune_n=0, prune_m=0):
         admm_z_layerwise=getattr(FLAGS, 'admm_z_layerwise', False),
         admm_cubic_steps=getattr(FLAGS, 'admm_cubic_steps', 15),
         admm_tr_gate_at_target=getattr(FLAGS, 'admm_tr_gate_at_target', True),
+        admm_dynamic_barrier=getattr(FLAGS, 'admm_dynamic_barrier', False),
+        admm_barrier_alpha=getattr(FLAGS, 'admm_barrier_alpha', 0.5),
+        admm_barrier_beta=getattr(FLAGS, 'admm_barrier_beta', 0.8),
+        admm_barrier_lambda_max=getattr(FLAGS, 'admm_barrier_lambda_max', 100.0),
         fsdp="full_shard auto_wrap" if getattr(FLAGS, 'admm_use_fsdp', False) else "",
         fsdp_config={"fsdp_transformer_layer_cls_to_wrap": "Qwen3DecoderLayer"} if getattr(FLAGS, 'admm_use_fsdp', False) else {},
     )

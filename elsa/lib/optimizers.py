@@ -62,6 +62,11 @@ def get_admm_optimizer(base_optimizer_cls):
             split_dtype: str = 'fp32',
             accelerator=None,                    # optional: to get world_size and device
             init_lambda_from_inv_resid: bool = False,
+            dynamic_barrier: bool = False,        # replace fixed-lmda proximal term with an adaptive coefficient
+            barrier_alpha: float = 0.5,           # how aggressively to close the residual-vs-target gap per step
+            barrier_beta: float = 0.8,            # per-interval target = beta * residual at interval start
+            barrier_eps: float = 1e-12,
+            barrier_lambda_max: float = 100.0,    # safety clamp against small-||r||^2 blowup
             **base_optimizer_kwargs
         ):
             super().__init__(param_groups, **base_optimizer_kwargs)
@@ -128,6 +133,22 @@ def get_admm_optimizer(base_optimizer_cls):
             # recomputed every _proximal_update() call (i.e. every optimizer step).
             self._last_ntp_grad_norm_sq = 0.0
             self._last_admm_grad_norm_sq = 0.0
+
+            # --- Dynamic Barrier x-update (replaces fixed lmda*(w-z+u) with an
+            # adaptively-computed coefficient -- see lib/trainer.py callers for the
+            # derivation). c_t (the per-interval residual target) is set at the end
+            # of each _dual_update() call, using the freshly-updated z/u; None until
+            # the first _dual_update() runs, at which point dynamic_barrier falls
+            # back to a plain KD-only step (lambda=0) for that first interval.
+            self.dynamic_barrier = bool(dynamic_barrier)
+            self.barrier_alpha = float(barrier_alpha)
+            self.barrier_beta = float(barrier_beta)
+            self.barrier_eps = float(barrier_eps)
+            self.barrier_lambda_max = float(barrier_lambda_max)
+            self._barrier_c = None
+            self._last_barrier_lambda = 0.0
+            self._last_barrier_residual = 0.0
+            self._last_barrier_dot_qr = 0.0
 
         def _lazy_init_admm_state(self, p: torch.nn.Parameter, group: Dict):
             """
@@ -218,6 +239,62 @@ def get_admm_optimizer(base_optimizer_cls):
             st["initial_split"] = z0.detach().ne(0).clone().to(device=p.device)
 
         @torch.no_grad()
+        def _compute_barrier_lambda(self):
+            """
+            Dynamic Barrier coefficient: the minimum lambda_k such that
+            v = q + lambda_k * r satisfies r^T v >= alpha*(g(x) - c_t), where
+            q is the (pre-proximal) task gradient, r = w - z + u, and
+            g(x) = 0.5*||r||^2. Closed form for a single linear constraint:
+
+                lambda_k = max((phi_k - q^T r) / (||r||^2 + eps), 0)
+                phi_k    = alpha * (g(x) - c_t)
+
+            All dot products are summed GLOBALLY across every ADMM param (and
+            all-reduced across ranks under FSDP, since each rank only holds a
+            shard) -- this is one scalar lambda_k shared by every ADMM param
+            this step, not a per-parameter value. Returns 0.0 (falls back to
+            pure KD gradient, no ADMM pull) until the first _dual_update() has
+            set self._barrier_c.
+            """
+            if self._barrier_c is None:
+                return 0.0
+
+            dot_qr = torch.zeros((), device='cpu', dtype=torch.float64)
+            norm_r_sq = torch.zeros((), device='cpu', dtype=torch.float64)
+
+            for g in self.param_groups:
+                if not g.get("admm", False):
+                    continue
+                for w in g["params"]:
+                    if w.grad is None:
+                        continue
+                    self._lazy_init_admm_state(w, g)
+                    st = self.state[w]
+                    dual = st["dual"].dequant() if isinstance(st["dual"], FP8State) else st["dual"]
+                    split = st["split"].dequant() if isinstance(st["split"], FP8State) else st["split"]
+                    r = (w.detach() - split.detach() + dual.detach())
+                    r_local = _loc(r).float()
+                    q_local = (w.grad.to_local() if hasattr(w.grad, "to_local") else w.grad).detach().float()
+                    dot_qr += (q_local * r_local).sum().double().cpu()
+                    norm_r_sq += (r_local * r_local).sum().double().cpu()
+
+            if dist.is_initialized():
+                _t = torch.tensor([dot_qr.item(), norm_r_sq.item()], dtype=torch.float64,
+                                  device=next(iter(self.state.keys())).device if self.state else 'cuda')
+                dist.all_reduce(_t, op=dist.ReduceOp.SUM)
+                dot_qr, norm_r_sq = _t[0].cpu(), _t[1].cpu()
+
+            g_val = 0.5 * norm_r_sq.item()
+            phi = self.barrier_alpha * (g_val - self._barrier_c)
+            lam = max((phi - dot_qr.item()) / (norm_r_sq.item() + self.barrier_eps), 0.0)
+            lam = min(lam, self.barrier_lambda_max)
+
+            self._last_barrier_lambda = lam
+            self._last_barrier_residual = g_val
+            self._last_barrier_dot_qr = dot_qr.item()
+            return lam
+
+        @torch.no_grad()
         def _proximal_update(self):
             """
             Add proximal term to gradients AFTER global gradient clipping and
@@ -236,6 +313,8 @@ def get_admm_optimizer(base_optimizer_cls):
             ntp_sq = torch.zeros((), device='cpu')
             admm_sq = torch.zeros((), device='cpu')
 
+            _barrier_lam = self._compute_barrier_lambda() if self.dynamic_barrier else None
+
             for g in self.param_groups:
                 if not g.get("admm", False):
                     continue
@@ -245,12 +324,15 @@ def get_admm_optimizer(base_optimizer_cls):
                     self._lazy_init_admm_state(w, g)
                     st = self.state[w]
                     dual, split = st["dual"], st["split"]
-                    lmda = st["lmda"]
+                    lmda = _barrier_lam if _barrier_lam is not None else st["lmda"]
                     ## for fp8 states, upcast to fp32 for computation
                     dual = dual.dequant() if isinstance(dual, FP8State) else dual
                     split = split.dequant() if isinstance(split, FP8State) else split
 
                     # Proximal term: λ (w - z + u), add to gradient before optimizer step
+                    # (λ is either the fixed schedule value st["lmda"], or -- under
+                    # dynamic_barrier -- the single global lambda_k computed above,
+                    # shared by every ADMM param this step).
                     penalty = w.detach() - split.detach() + dual.detach()
                     prox = lmda * penalty
                     # Lasso term: lasso_lmda * sign(w), applied to all weights
@@ -282,6 +364,15 @@ def get_admm_optimizer(base_optimizer_cls):
                 'admm_grad_norm': self._last_admm_grad_norm_sq ** 0.5,
             }
 
+        def get_barrier_diagnostics(self) -> Dict[str, float]:
+            """Dynamic Barrier diagnostics from the most recent _proximal_update()/_dual_update()."""
+            return {
+                'barrier/lambda': self._last_barrier_lambda,
+                'barrier/residual': self._last_barrier_residual,
+                'barrier/dot_qr': self._last_barrier_dot_qr,
+                'barrier/target_c': self._barrier_c if self._barrier_c is not None else float('nan'),
+            }
+
         @torch.no_grad()
         def _dual_update(self):
             """
@@ -307,6 +398,12 @@ def get_admm_optimizer(base_optimizer_cls):
                                   'revived_cycle2_frac': 0.0, 'pruned_cycle2_frac': 0.0,
                                   'revived_w2_ratio': 0.0, 'pruned_w2_ratio': 0.0}
             admm_groups = 0
+            # Dynamic Barrier: global residual right after this interval's z/u
+            # refresh, summed across every admm group/param (not averaged like the
+            # mask-churn diagnostics above -- g = 0.5*||r||^2 is a single global
+            # quantity). Used below to set self._barrier_c = beta * g_start, the
+            # shrinking feasibility target for the NEXT interval's x-updates.
+            _barrier_r_sq_total = torch.zeros((), dtype=torch.float64)
 
             for g in self.param_groups:
                 if not g.get("admm", False):
@@ -327,6 +424,7 @@ def get_admm_optimizer(base_optimizer_cls):
                 pruned_w2_sum = torch.zeros((), device=device, dtype=torch.float64)
                 stable_kept_w2_sum = torch.zeros((), device=device, dtype=torch.float64)
                 stable_kept_count = torch.tensor(0, device=device, dtype=torch.int64)
+                barrier_r_sq_sum = torch.zeros((), device=device, dtype=torch.float64)
                 per_param_log = []
                 intersection_step = torch.tensor(0, device=device, dtype=torch.int64)
                 union_step = torch.tensor(0, device=device, dtype=torch.int64)
@@ -380,6 +478,14 @@ def get_admm_optimizer(base_optimizer_cls):
                     s_l = _loc(split)
                     d_l = _loc(dual)
                     z_new_l = _loc(z_new)
+
+                    if self.dynamic_barrier:
+                        # Fresh residual r = w - z_new + u_new, i.e. exactly the
+                        # proximal-term residual the NEXT _compute_barrier_lambda()
+                        # call will see once split/dual are committed below.
+                        u_new_l = _loc(u_new)
+                        r_new_l = w_l.float() - z_new_l.float() + u_new_l.float()
+                        barrier_r_sq_sum += (r_new_l * r_new_l).sum().double()
 
                     new_lmda_for_param = current_lmda
                     t = self.current_step
@@ -494,6 +600,11 @@ def get_admm_optimizer(base_optimizer_cls):
                     dist.all_reduce(intersection_initial, op=dist.ReduceOp.SUM)
                     dist.all_reduce(union_initial, op=dist.ReduceOp.SUM)
                     dist.all_reduce(numel_sum, op=dist.ReduceOp.SUM)
+                    if self.dynamic_barrier:
+                        dist.all_reduce(barrier_r_sq_sum, op=dist.ReduceOp.SUM)
+
+                if self.dynamic_barrier:
+                    _barrier_r_sq_total += barrier_r_sq_sum.double().cpu()
 
                 eps = 1e-12
                 self.mask_metrics['step_hamming'] += float(flip_sum_step.float() / (numel_sum.float() + eps))
@@ -535,6 +646,10 @@ def get_admm_optimizer(base_optimizer_cls):
                 self.mask_metrics['pruned_cycle2_frac'] /= admm_groups
                 self.mask_metrics['revived_w2_ratio'] /= admm_groups
                 self.mask_metrics['pruned_w2_ratio'] /= admm_groups
+
+            if self.dynamic_barrier:
+                g_start = 0.5 * _barrier_r_sq_total.item()
+                self._barrier_c = self.barrier_beta * g_start
 
         @torch.no_grad()
         def step(self, closure=None):
