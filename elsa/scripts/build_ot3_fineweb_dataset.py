@@ -31,8 +31,20 @@ from transformers import AutoTokenizer
 _ROLE_MAP = {"human": "user", "gpt": "assistant", "user": "user", "assistant": "assistant"}
 
 
-def _render_ot(batch, tok, min_tokens):
+def _render_ot(batch, tok, min_tokens, seqlen=None, strip_think=False):
+    # strip_think: if the fully-rendered conversation exceeds `seqlen` tokens,
+    # drop the <think>...</think> block from the assistant's final turn and
+    # keep only the text after it (the model's own post-think write-up),
+    # instead of letting main.py's tokenizer truncate from the front later.
+    # Matches the mechanism reverse-engineered from the pre-08-04
+    # ot3_fineweb_20k.jsonl build (verified byte-for-byte against raw
+    # OpenThoughts3-1.2M: the old dataset's think-less rows are an exact
+    # match for `assistant_value.split("</think>")[-1].strip()`) -- 62%
+    # of its rows already fit as-is and kept <think>, the rest were rescued
+    # this way. Domain mix is untouched since nothing here filters rows by
+    # length, only rewrites content.
     texts = []
+    stripped_flags = []
     for convs in batch["conversations"]:
         if isinstance(convs, str):
             convs = json.loads(convs)
@@ -41,13 +53,33 @@ def _render_ot(batch, tok, min_tokens):
             text = tok.apply_chat_template(msgs, tokenize=False, add_generation_prompt=False)
         except Exception:
             texts.append(None)
+            stripped_flags.append(False)
             continue
+        did_strip = False
+        if strip_think and seqlen is not None:
+            n_tok = len(tok(text, add_special_tokens=False).input_ids)
+            if n_tok > seqlen:
+                for m in reversed(msgs):
+                    if m["role"] == "assistant":
+                        think_end = m["content"].rfind("</think>")
+                        if think_end != -1:
+                            stripped_content = m["content"][think_end + len("</think>"):].strip()
+                            if stripped_content:
+                                m["content"] = stripped_content
+                                did_strip = True
+                        break
+                if did_strip:
+                    try:
+                        text = tok.apply_chat_template(msgs, tokenize=False, add_generation_prompt=False)
+                    except Exception:
+                        did_strip = False
         texts.append(text)
+        stripped_flags.append(did_strip)
     n_tokens = [
         len(tok(t, add_special_tokens=False).input_ids) if t is not None else 0
         for t in texts
     ]
-    return {"text": texts, "n_tokens": n_tokens}
+    return {"text": texts, "n_tokens": n_tokens, "stripped_think": stripped_flags}
 
 
 def _measure_fw(batch, tok):
@@ -56,7 +88,8 @@ def _measure_fw(batch, tok):
 
 
 def build(nsamples: int, out_path: str, model_path: str, seed: int = 42,
-          min_tokens: int = 64, num_proc: int = 8):
+          min_tokens: int = 64, num_proc: int = 8, seqlen: int = 2048,
+          strip_think_if_long: bool = False):
     n_ot = int(nsamples * 0.8)
     n_fw = nsamples - n_ot
 
@@ -68,13 +101,18 @@ def build(nsamples: int, out_path: str, model_path: str, seed: int = 42,
     ds_ot = load_dataset("open-thoughts/OpenThoughts3-1.2M", split="train")
     ds_ot = ds_ot.shuffle(seed=seed).select(range(min(n_ot * 3, len(ds_ot))))
     ds_ot = ds_ot.map(
-        lambda batch: _render_ot(batch, tok, min_tokens),
+        lambda batch: _render_ot(batch, tok, min_tokens, seqlen=seqlen, strip_think=strip_think_if_long),
         batched=True, batch_size=256, num_proc=num_proc,
         remove_columns=[c for c in ds_ot.column_names if c != "conversations"],
         desc="Rendering OT3 chat template",
     )
     ds_ot = ds_ot.filter(lambda ex: ex["text"] is not None and ex["n_tokens"] >= min_tokens,
                          desc="Filtering OT3 by length")
+    if strip_think_if_long:
+        n_stripped = sum(ds_ot["stripped_think"][:n_ot])
+        still_over = sum(1 for n in ds_ot["n_tokens"][:n_ot] if n > seqlen)
+        print(f"  think-stripped (exceeded {seqlen} tok as-is): {n_stripped}/{min(n_ot, len(ds_ot))}", flush=True)
+        print(f"  still over {seqlen} tok after stripping (will be front-truncated at train time): {still_over}", flush=True)
     ot_records = [{"text": t} for t in ds_ot["text"][:n_ot]]
     print(f"  → {len(ot_records)} OT samples", flush=True)
     records.extend(ot_records)
@@ -114,8 +152,16 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--min_tokens", type=int, default=64)
     parser.add_argument("--num_proc", type=int, default=8)
+    parser.add_argument("--seqlen", type=int, default=2048,
+                        help="Token budget used to decide whether to strip <think> (only relevant with --strip_think_if_long).")
+    parser.add_argument("--strip_think_if_long", action="store_true",
+                        help="If a rendered OT3 conversation exceeds --seqlen tokens, drop its <think>...</think> "
+                             "block and keep only the text after it (verified match for how the old, better-scoring "
+                             "pre-08-04 ot3_fineweb_20k.jsonl was built). Does not filter/exclude any row by length, "
+                             "so domain mix (math/code/science) is unaffected -- only content length changes.")
     args = parser.parse_args()
-    build(args.nsamples, args.out_path, args.model_path, args.seed, args.min_tokens, args.num_proc)
+    build(args.nsamples, args.out_path, args.model_path, args.seed, args.min_tokens, args.num_proc,
+          args.seqlen, args.strip_think_if_long)
 
 
 if __name__ == "__main__":
