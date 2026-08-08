@@ -15,6 +15,8 @@ export HF_HOME="/home1/doyoonkim/.cache/huggingface"
 export HF_DATASETS_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 
-echo "NODE=$(hostname)  JOB=$SLURM_JOB_ID"
-/home1/doyoonkim/miniconda3/envs/rac/bin/python /home1/doyoonkim/projects/elsa/scripts/prebuild_mixed_cot_cache.py
+DATA_PATH=${1:-/home1/doyoonkim/projects/elsa/data/ot3_fineweb_200k_qwen3.jsonl}
+
+echo "NODE=$(hostname)  JOB=$SLURM_JOB_ID  DATA_PATH=$DATA_PATH"
+/home1/doyoonkim/miniconda3/envs/rac/bin/python /home1/doyoonkim/projects/elsa/scripts/prebuild_mixed_cot_cache.py "$DATA_PATH"
 echo "##### END #####"

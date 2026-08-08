@@ -10,7 +10,7 @@ from transformers import AutoTokenizer
 from lib.gkd_admm_trainer import MixedTextDataset
 
 MODEL = "/home1/doyoonkim/.cache/huggingface/hub/models--Qwen--Qwen3-1.7B/snapshots/70d244cc86ccca08cf5af4e1e306ecf908b1ad5e"
-DATA_PATH = "/home1/doyoonkim/projects/elsa/data/ot3_fineweb_200k_qwen3.jsonl"
+DATA_PATH = sys.argv[1] if len(sys.argv) > 1 else "/home1/doyoonkim/projects/elsa/data/ot3_fineweb_200k_qwen3.jsonl"
 
 tokenizer = AutoTokenizer.from_pretrained(MODEL, trust_remote_code=True)
 ds = MixedTextDataset(
