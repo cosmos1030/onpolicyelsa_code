@@ -1991,6 +1991,8 @@ def globalprune_gmp(
     step = 0
     tr_delta        = tr_delta_init   # current TR step size, adapted each mask update
     tr_reached      = False           # set True when target sparsity achieved
+    _tr_reached_step = None           # step at which tr_reached first flipped True
+    _post_target_steps = getattr(FLAGS, 'gmp_post_target_steps', 0)  # 0 = disabled (old behavior)
 
     do_save = getattr(FLAGS, 'save_model', False) and getattr(FLAGS, 'gmp_save_path', None)
 
@@ -2340,6 +2342,8 @@ def globalprune_gmp(
                 if tr_reached:
                     logging.info(f"TR-GMP: target sparsity {final_sparsity} reached at step {step}, "
                                  f"switching to sparse training (mask frozen) for remaining steps.")
+                    if _tr_reached_step is None:
+                        _tr_reached_step = step
             else:
                 current_sparsity = 0.0 if step <= dense_warmup_steps else _cubic_sparsity(
                     min(step, pruning_end_steps), pruning_end_steps, final_sparsity, dense_warmup_steps)
@@ -2430,6 +2434,14 @@ def globalprune_gmp(
                                 tokenizer.save_pretrained(_ms_path)
                                 _passed_milestones[_ms] = _ms_path
                                 logging.info(f"[Milestone] saved to {_ms_path}")
+
+        # Early stop N steps after TR-GMP first reaches target sparsity, instead of
+        # continuing for the full remaining budget with the mask frozen (gmp_post_target_steps=0
+        # keeps the old behavior of training all the way to `steps`).
+        if _post_target_steps > 0 and _tr_reached_step is not None and step >= _tr_reached_step + _post_target_steps:
+            logging.info(f"TR-GMP: stopping {_post_target_steps} steps after reaching target sparsity "
+                         f"(reached at step {_tr_reached_step}, stopping at step {step}).")
+            break
 
         # Snapshot NTP grads before OPKD (for gradient conflict filter / projection)
         if ((filter_grad_conflict or project_opkd_onto_combined or filter_opkd_combined)
