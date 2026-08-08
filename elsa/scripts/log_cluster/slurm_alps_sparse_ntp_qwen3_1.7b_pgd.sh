@@ -24,10 +24,12 @@ exec 2>&1
 # e.g.: sbatch slurm_alps_sparse_ntp_qwen3_1.7b_pgd.sh 0.01
 #       sbatch slurm_alps_sparse_ntp_qwen3_1.7b_pgd.sh 0.003 0.5 cosine
 
-LR=${1:?"Usage: sbatch slurm_alps_sparse_ntp_qwen3_1.7b_pgd.sh <LR> [SPARSITY] [LR_SCHEDULER] [GRAD_CKPT]"}
+LR=${1:?"Usage: sbatch slurm_alps_sparse_ntp_qwen3_1.7b_pgd.sh <LR> [SPARSITY] [LR_SCHEDULER] [GRAD_CKPT] [BATCH_SIZE] [GRAD_ACCUM]"}
 SPARSITY=${2:-0.5}
 LR_SCHEDULER=${3:-cosine}
 GRAD_CKPT=${4:-false}
+BATCH_SIZE=${5:-1}
+GRAD_ACCUM=${6:-8}
 
 ALPS_MODEL="cosmos1030/alps-s50pct_20260802_055049"
 REPO_ROOT="/home/doyoonkim/projects/onpolicyelsa_code/elsa"
@@ -77,8 +79,8 @@ python main.py \
     --do_gmp=true \
     --gmp_fixed_mask=true \
     --steps=2048 \
-    --gmp_batch_size=1 \
-    --gmp_grad_accum=8 \
+    --gmp_batch_size=${BATCH_SIZE} \
+    --gmp_grad_accum=${GRAD_ACCUM} \
     --gmp_base_optimizer=activation_metric_pgd \
     --gmp_gradient_checkpointing=${GRAD_CKPT} \
     --lr=${LR} \
