@@ -1992,7 +1992,9 @@ def globalprune_gmp(
     tr_delta        = tr_delta_init   # current TR step size, adapted each mask update
     tr_reached      = False           # set True when target sparsity achieved
     _tr_reached_step = None           # step at which tr_reached first flipped True
-    _post_target_steps = getattr(FLAGS, 'gmp_post_target_steps', 0)  # 0 = disabled (old behavior)
+    _post_target_steps = getattr(FLAGS, 'gmp_post_target_steps', -1)
+    if _post_target_steps < 0:
+        _post_target_steps = mask_interval  # default: stop after exactly one more mask-update cycle
 
     do_save = getattr(FLAGS, 'save_model', False) and getattr(FLAGS, 'gmp_save_path', None)
 
