@@ -20,13 +20,21 @@
 3. **`elsa/lib/gmp_trainer.py` `candidate_masks()` 메모리 버그**: non-FSDP global-pruning 분기에서 전체 모델 파라미터의 Fisher importance score를 `torch.cat`으로 한번에 이어붙였음 (4B 모델 기준 ~13.5GB 단일 할당). A100(80GB)에서 이미 baseline 메모리(모델+optimizer+vLLM)가 68GB 넘게 차 있는 상태라 OOM. 바로 위 FSDP 분기가 이미 하던 대로(딕셔너리 그대로 순회하며 chunk binary search) 고쳐서 이 burst 자체를 없앰.
 4. 그 외 다른 서버 세션이 고친 것들(리베이스로 같이 받음): `lr_scheduler` 기본값 constant_with_warmup→cosine, GMP/OPD teacher가 `--model`과 동일해서 자기 자신을 teacher로 쓰던 버그, `gmp_post_target_steps` 신규 플래그(TR-GMP가 목표 희소도 도달 후 `gmp_mask_interval` 스텝만큼만 더 돌고 멈춤, 기본 -1=mask_interval에 연동).
 
-## 이번 세션에서 만든 스크립트 (`elsa/scripts/log_cluster/`)
+## 이번 세션에서 만든 스크립트 (전부 이 서버 repo 경로 기준 절대경로: `/home/doyoonkim/projects/onpolicyelsa_code/elsa/scripts/log_cluster/`)
 
-- `slurm_alps_sparse_ntp_qwen3_1.7b.sh` — ALPS s50pct 체크포인트 → NTP-only, AdamW, fixed mask.
-- `slurm_alps_sparse_ntp_qwen3_1.7b_pgd.sh` — 위와 동일하되 optimizer만 `ActivationMetricProjectedSGD`(신규, 아래 설명). `<LR> [SPARSITY] [LR_SCHEDULER] [GRAD_CKPT] [BATCH_SIZE] [GRAD_ACCUM]` 인자.
-- `slurm_gmp_tr_ntpkd_opd_qwen3_4b.sh` — TR-GMP NTP+KD+OPD(0.33/0.33/0.33 loss mix), dense Qwen3-4B에서 시작, cosine LR. `<SPARSITY> [LR_SCHEDULER] [MASK_INTERVAL]` 인자. **A100에서는 메모리 부족, H200에서만 안정적으로 돌아감** (모델+AdamW+vLLM OPD 엔진 합쳐서 80GB 근처까지 찬 상태이므로).
-- `slurm_eval_lighteval_only.sh` — 학습+저장은 끝났는데 `eval_full_bench` 도중 멈춘 job을 위한 eval 전용 재실행 스크립트. `HF_HUB_DISABLE_XET=1` 필수 (아래 xet 이슈 참고).
-- `build_cache_fast_tmp.py` 류 임시 스크립트는 이미 정리함 (git에 안 올라감).
+- `/home/doyoonkim/projects/onpolicyelsa_code/elsa/scripts/log_cluster/slurm_alps_sparse_ntp_qwen3_1.7b.sh` — ALPS s50pct 체크포인트 → NTP-only, AdamW, fixed mask.
+- `/home/doyoonkim/projects/onpolicyelsa_code/elsa/scripts/log_cluster/slurm_alps_sparse_ntp_qwen3_1.7b_pgd.sh` — 위와 동일하되 optimizer만 `ActivationMetricProjectedSGD`(신규, 아래 설명). `<LR> [SPARSITY] [LR_SCHEDULER] [GRAD_CKPT] [BATCH_SIZE] [GRAD_ACCUM]` 인자.
+- `/home/doyoonkim/projects/onpolicyelsa_code/elsa/scripts/log_cluster/slurm_gmp_tr_ntpkd_opd_qwen3_4b.sh` — TR-GMP NTP+KD+OPD(0.33/0.33/0.33 loss mix), dense Qwen3-4B에서 시작, cosine LR. `<SPARSITY> [LR_SCHEDULER] [MASK_INTERVAL]` 인자. **A100에서는 메모리 부족, H200에서만 안정적으로 돌아감** (모델+AdamW+vLLM OPD 엔진 합쳐서 80GB 근처까지 찬 상태이므로).
+- `/home/doyoonkim/projects/onpolicyelsa_code/elsa/scripts/log_cluster/slurm_eval_lighteval_only.sh` — 학습+저장은 끝났는데 `eval_full_bench` 도중 멈춘 job을 위한 eval 전용 재실행 스크립트. `HF_HUB_DISABLE_XET=1` 필수 (아래 xet 이슈 참고). 내부에서 `/home/doyoonkim/projects/onpolicyelsa_code/elsa/scripts/eval_full.py`(이 서버 전용 아님, repo 공통)를 호출함.
+- `/home/doyoonkim/projects/onpolicyelsa_code/elsa/scripts/log_cluster/SESSION_HANDOFF.md` — 이 파일 자체.
+- 이번 세션에서 만들었다가 지운 임시 스크립트: `build_cache_fast_tmp.py`(캐시 미리 빌드용, 1회성이라 삭제함), `db.json`/`db_updated.json` 류(아티팩트 DB 편집용 스크래치, `/tmp/claude-1031/.../scratchpad/`에 있었고 세션 종료 시 사라짐 — git에 없음).
+
+## 관련 데이터/모델 경로
+
+- 데이터셋: `/home/doyoonkim/projects/onpolicyelsa_code/elsa/data/ot3_fineweb_200k_qwen3_train.jsonl` (7.5GB), `/home/doyoonkim/projects/onpolicyelsa_code/elsa/data/ot3_fineweb_200k_qwen3_opdprompts.jsonl` (835MB) — HF `cosmos1030/ot3-fineweb-200k-qwen3`에서 다운로드해둔 것.
+- 학습 결과 체크포인트: `/home/doyoonkim/projects/onpolicyelsa_code/elsa/models/` 아래 (예: `gmp_s50pct_lr0.0001_20260808_024943` 등, 각 row의 `sub` 텍스트에 job 번호로 매핑돼 있음).
+- 토큰화 캐시: `/home/doyoonkim/projects/onpolicyelsa_code/elsa/.cache/datasets/6a37c5438de9.pkl` (fast tokenizer 기준, 1.7B/4B 공용, 179207 샘플, 8.4GB) — `use_fast=True` 수정 이후 생성된 올바른 캐시. 이거 지우지 말 것, 다음 실험에서도 그대로 재사용됨.
+- 로그: `/home/doyoonkim/projects/onpolicyelsa_code/elsa/logs/` 아래 `{job명}_{SLURM_JOB_ID}.out`.
 
 ## 새로 포팅한 optimizer: ActivationMetricProjectedSGD
 
