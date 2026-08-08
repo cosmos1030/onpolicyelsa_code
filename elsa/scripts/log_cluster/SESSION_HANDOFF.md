@@ -61,10 +61,10 @@
 | AdamW | 64.6 | 32.3 | 42.1 | 7.5 | 63.1 | -10.0 |
 | PGD lr=0.03 | 69.8 | 22.2 | 35.7 | 6.7 | 72.2 | -4.8 |
 | PGD lr=0.01 | 69.8 | 27.3 | 35.7 | 6.7 | 67.3 | -4.8 |
-| PGD lr=0.003 (batch=8) | 73.6 | - | - | - | - | -1.0 |
-| **PGD lr=0.001 (batch=8)** | **75.6** | - | - | - | - | **+1.0 (유일하게 이김)** |
+| PGD lr=0.003 (batch=8) | 73.6 | 26.3 | 결측(아래) | 3.7 | 71.2 | -1.0 |
+| **PGD lr=0.001 (batch=8)** | **75.6** | 24.2 | 44.0 | 6.3 | 68.8 | **+1.0 (유일하게 이김)** |
 
-lr이 낮을수록 좋아지는 추세. lr=0.003/0.001은 gpqa/ifeval/lcb/gsm8k 세션 종료 시점까지 안 나옴 (math500만 나옴) — wandb run에서 마무리 확인할 것.
+lr이 낮을수록 좋아지는 추세 (0.03/0.01→69.8, 0.003→73.6, 0.001→75.6, 단조 증가). lr=0.003(job 40432)은 ifeval 도중 `RuntimeError: CUDA error: an illegal memory access was encountered`로 죽어서 그 항목만 결측 — 재시도 안 하고 4/5 벤치마크로 기록함. lr=0.001(job 40433)은 5개 다 정상 완료. 둘 다 아티팩트에 반영 완료.
 
 ### 4B s50/s60/s70, dense에서 TR-GMP로 NTP+KD+OPD(0.33 each), cosine LR
 | mask_interval | s50 | s60 | s70 |
@@ -87,8 +87,8 @@ mask_interval=32가 8보다 나음 (1.7B에서 봤던 "16이 32보다 낫다"는
 | 40425 (재실행 전 40414) | 1.7B s50, ALPS→NTP-only, AdamW | `reasoning_qwen3_1.7b`/`bcdyv5co` | math500=64.6 (표 참고, 완료) |
 | 40426 (재실행 전 40418) | 1.7B s50, PGD lr=0.03 | `reasoning_qwen3_1.7b`/`2t4z4uol` | math500=69.8 (완료) |
 | 40427 (재실행 전 40419) | 1.7B s50, PGD lr=0.01 | `reasoning_qwen3_1.7b`/`8gpc0gih` | math500=69.8 (완료) |
-| 40432 | 1.7B s50, PGD lr=0.003, batch=8(H200) | `reasoning_qwen3_1.7b`/`bdhybpiu` | math500=73.6, 나머지 벤치마크 세션종료 시점 미확인 |
-| 40433 | 1.7B s50, PGD lr=0.001, batch=8(H200) | `reasoning_qwen3_1.7b`/`j6h7ikzz` | math500=75.6, 나머지 벤치마크 세션종료 시점 미확인 |
+| 40432 | 1.7B s50, PGD lr=0.003, batch=8(H200) | `reasoning_qwen3_1.7b`/`bdhybpiu` | math500=73.6, gpqa=26.3, lcb=3.7, gsm8k=71.2 (완료, ifeval만 CUDA 에러로 결측) |
+| 40433 | 1.7B s50, PGD lr=0.001, batch=8(H200) | `reasoning_qwen3_1.7b`/`j6h7ikzz` | **math500=75.6 (ALPS 원샷 74.6 처음 이김)**, gpqa=24.2, ifeval=44.0, lcb=6.3, gsm8k=68.8 (완료) |
 | 40428 (재실행 전 40415) | 4B s50, TR-GMP NTP+KD+OPD, mask_interval=32 | `reasoning_qwen3_4b`/`ggrptvah` | math500=77.2 (완료) |
 | 40429 (재실행 전 40416) | 4B s60, TR-GMP NTP+KD+OPD, mask_interval=32 | `reasoning_qwen3_4b`/`jvjj0p84` | math500=64.0 (완료) |
 | 40430 (재실행 전 40417) | 4B s70, TR-GMP NTP+KD+OPD, mask_interval=32 | `reasoning_qwen3_4b`/`m1zxzi0n` | math500=39.8 (완료) |
