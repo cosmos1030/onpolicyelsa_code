@@ -504,41 +504,34 @@ class GradualMaskManager:
                     return new_masks
 
                 # ── global pruning: single threshold across all layers ─────────────
-                all_scores = torch.cat([v.flatten() for v in local_imps.values()])
-                if torch.isnan(all_scores).any() or torch.isinf(all_scores).any():
+                # Never materialize one torch.cat'd tensor over every param in the model
+                # (e.g. ~13.5GB of fp32 scores for Qwen3-4B's ~3.6B linear weights, on top
+                # of whatever's already resident -- OOMs on an 80GB GPU well before the
+                # model + optimizer + activations even get close to the card's limit).
+                # Stay chunked over the per-layer dict throughout, same as the FSDP branch
+                # above; torch.kthvalue's int32/2B-element ceiling is moot here too since
+                # no per-layer tensor is anywhere near that size.
+                imp_tensors = list(local_imps.values())
+                if any(torch.isnan(v).any() or torch.isinf(v).any() for v in imp_tensors):
                     logging.warning("NaN/Inf in Fisher importance scores, skipping candidate mask")
                     return {n: m.clone() for n, m in self.masks.items()}
-                k = int(all_scores.numel() * sparsity)
+                n_total = sum(v.numel() for v in imp_tensors)
+                k = int(n_total * sparsity)
                 if k == 0:
                     return {n: m.clone() for n, m in self.masks.items()}
-                # torch.kthvalue uses int32 internally and overflows for tensors with
-                # >2B elements (Qwen3-4B has ~3.6B linear weights). Use chunked binary
-                # search: count in 100M-element chunks to avoid allocating a 27GB
-                # temporary comparison tensor. Same accuracy as full binary search.
-                _MAX_KTHVALUE = 100_000_000
-                if all_scores.numel() > _MAX_KTHVALUE:
-                    _CHUNK = 100_000_000
-                    lo = all_scores.min().item()
-                    hi = all_scores.max().item()
-                    for _ in range(48):
-                        mid = (lo + hi) / 2.0
-                        cnt = 0
-                        for _s in range(0, all_scores.numel(), _CHUNK):
-                            cnt += (all_scores[_s:_s + _CHUNK] <= mid).sum().item()
-                        if cnt < k:
-                            lo = mid
-                        else:
-                            hi = mid
-                    threshold = torch.tensor(hi, device=all_scores.device, dtype=all_scores.dtype)
-                    actual = sum(
-                        (all_scores[_s:_s + _CHUNK] <= threshold).sum().item()
-                        for _s in range(0, all_scores.numel(), _CHUNK)
-                    )
-                    logging.info(f"  [Fisher] large model ({all_scores.numel()} params): "
-                                 f"chunked binary-search threshold={threshold.item():.4e} "
-                                 f"(actual_below={actual}, target={k})")
-                else:
-                    threshold = torch.kthvalue(all_scores, k).values
+                lo = min(v.min().item() for v in imp_tensors)
+                hi = max(v.max().item() for v in imp_tensors)
+                for _ in range(48):
+                    mid = (lo + hi) / 2.0
+                    cnt = sum((v <= mid).sum().item() for v in imp_tensors)
+                    if cnt < k:
+                        lo = mid
+                    else:
+                        hi = mid
+                threshold = torch.tensor(hi, device=imp_tensors[0].device, dtype=imp_tensors[0].dtype)
+                actual = sum((v <= threshold).sum().item() for v in imp_tensors)
+                logging.info(f"  [Fisher] chunked binary-search threshold={threshold.item():.4e} "
+                             f"(n_total={n_total}, actual_below={actual}, target={k})")
 
             # For params with empty local shard (filtered out above), keep existing mask.
             return {
