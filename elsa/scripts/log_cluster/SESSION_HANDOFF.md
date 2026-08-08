@@ -64,7 +64,7 @@
 | PGD lr=0.003 (batch=8) | 73.6 | - | - | - | - | -1.0 |
 | **PGD lr=0.001 (batch=8)** | **75.6** | - | - | - | - | **+1.0 (유일하게 이김)** |
 
-lr이 낮을수록 좋아지는 추세. lr=0.003/0.001은 zero-shot/gpqa/ifeval/lcb/gsm8k 아직 안 나왔을 수 있음 — wandb `reasoning_qwen3_1.7b` 프로젝트에서 run id `q2hbtz1k`(0.003 재시도), 마지막 재제출은 H200 batch=8로 성공(job 40432/40433, wandb run은 로그 확인 필요).
+lr이 낮을수록 좋아지는 추세. lr=0.003/0.001은 gpqa/ifeval/lcb/gsm8k 세션 종료 시점까지 안 나옴 (math500만 나옴) — wandb run에서 마무리 확인할 것.
 
 ### 4B s50/s60/s70, dense에서 TR-GMP로 NTP+KD+OPD(0.33 each), cosine LR
 | mask_interval | s50 | s60 | s70 |
@@ -80,13 +80,25 @@ mask_interval=32가 8보다 나음 (1.7B에서 봤던 "16이 32보다 낫다"는
 - PCG(one-shot이든 sequential이든)도 뚜렷한 개선 없음.
 - 지금까지 나온 것 중 "추가 학습이 ALPS보다 나은 유일한 레시피"는 PGD optimizer + 낮은 lr. 더 낮은 lr(0.0003 등)도 시도해볼 가치 있음.
 
-## 진행 중이던 job (세션 종료 시점)
+## Job ID ↔ wandb run ↔ 결과, 전체 매핑 (최종/유효한 것만 — 버그로 취소/재제출된 중간 job ID는 뺐음)
 
-- 40446 (H200, 4B s60, mask_interval=8): 학습 중 (step ~330/2048)
-- 40447 (H200, 4B s70, mask_interval=8): 학습 중 (step ~305/2048)
-- 40438 (H200, 4B s50, mask_interval=8): eval 거의 끝남 (math500=71.2 이미 나옴, 나머지 벤치마크 진행중이었음)
+| Job ID | 내용 | wandb project/run | 결과 |
+|---|---|---|---|
+| 40425 (재실행 전 40414) | 1.7B s50, ALPS→NTP-only, AdamW | `reasoning_qwen3_1.7b`/`bcdyv5co` | math500=64.6 (표 참고, 완료) |
+| 40426 (재실행 전 40418) | 1.7B s50, PGD lr=0.03 | `reasoning_qwen3_1.7b`/`2t4z4uol` | math500=69.8 (완료) |
+| 40427 (재실행 전 40419) | 1.7B s50, PGD lr=0.01 | `reasoning_qwen3_1.7b`/`8gpc0gih` | math500=69.8 (완료) |
+| 40432 | 1.7B s50, PGD lr=0.003, batch=8(H200) | `reasoning_qwen3_1.7b`/`bdhybpiu` | math500=73.6, 나머지 벤치마크 세션종료 시점 미확인 |
+| 40433 | 1.7B s50, PGD lr=0.001, batch=8(H200) | `reasoning_qwen3_1.7b`/`j6h7ikzz` | math500=75.6, 나머지 벤치마크 세션종료 시점 미확인 |
+| 40428 (재실행 전 40415) | 4B s50, TR-GMP NTP+KD+OPD, mask_interval=32 | `reasoning_qwen3_4b`/`ggrptvah` | math500=77.2 (완료) |
+| 40429 (재실행 전 40416) | 4B s60, TR-GMP NTP+KD+OPD, mask_interval=32 | `reasoning_qwen3_4b`/`jvjj0p84` | math500=64.0 (완료) |
+| 40430 (재실행 전 40417) | 4B s70, TR-GMP NTP+KD+OPD, mask_interval=32 | `reasoning_qwen3_4b`/`m1zxzi0n` | math500=39.8 (완료) |
+| **40438** | 4B s50, TR-GMP NTP+KD+OPD, mask_interval=8 (candidate_masks 메모리 fix 적용판) | `reasoning_qwen3_4b`/`smx7fbtw` | math500=71.2, **세션 종료 시점 eval 진행중(lcb 13%)** |
+| **40446** | 4B s60, 위와 동일, mask_interval=8 | `reasoning_qwen3_4b`/`sj5yqq7j` | **세션 종료 시점 학습중 (step ~420/2048, sparsity 0.581/0.6)** |
+| **40447** | 4B s70, 위와 동일, mask_interval=8 | `reasoning_qwen3_4b`/`ytkownau` | **세션 종료 시점 학습중 (step ~395/2048, sparsity 0.588/0.7)** |
 
-다음 세션은 `squeue -u doyoonkim`으로 상태 확인부터 할 것.
+**세션 종료 시점 실제로 돌고 있던 건 40438(eval 마무리 중)/40446/40447 세 개뿐.** 다음 세션은 `squeue -u doyoonkim`으로 먼저 확인하고, 끝나 있으면 로그(`/home/doyoonkim/projects/onpolicyelsa_code/elsa/logs/tr_ntpkd_opd_4b_404{38,46,47}.out`)에서 5개 벤치마크 다 나왔는지 확인해서 위 결과 표(mask_interval=8 행)를 채울 것.
+
+버그 수정 과정에서 취소/재제출된 중간 job ID들(40380대~40420대 다수, use_fast 버그·캐시 재빌드·OOM 재시도 등으로 여러 번 죽었다 다시 제출됨)은 결과가 없거나 무효라 위 표에서 뺐음 — wandb에 orphan run으로 남아있을 수 있으니 혼동하지 말 것.
 
 ## 잡다한 참고
 
