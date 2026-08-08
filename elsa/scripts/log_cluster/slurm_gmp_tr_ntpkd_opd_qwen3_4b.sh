@@ -28,8 +28,9 @@ exec 2>&1
 #       sbatch slurm_gmp_tr_ntpkd_opd_qwen3_4b.sh 0.6
 #       sbatch slurm_gmp_tr_ntpkd_opd_qwen3_4b.sh 0.7
 
-SPARSITY=${1:?"Usage: sbatch slurm_gmp_tr_ntpkd_opd_qwen3_4b.sh <SPARSITY> [LR_SCHEDULER]"}
+SPARSITY=${1:?"Usage: sbatch slurm_gmp_tr_ntpkd_opd_qwen3_4b.sh <SPARSITY> [LR_SCHEDULER] [MASK_INTERVAL]"}
 LR_SCHEDULER=${2:-cosine}
+MASK_INTERVAL=${3:-32}
 
 MODEL="Qwen/Qwen3-4B"
 REPO_ROOT="/home/doyoonkim/projects/onpolicyelsa_code/elsa"
@@ -96,7 +97,7 @@ python main.py \
     --gmp_tr_kl_threshold=0.01 \
     --gmp_tr_kl_reduce=mean \
     --gmp_saliency=fisher \
-    --gmp_mask_interval=32 \
+    --gmp_mask_interval=${MASK_INTERVAL} \
     --gmp_fisher_beta=0.999 \
     --gmp_use_fsdp=false \
     --gmp_save_path="${REPO_ROOT}/models" \
