@@ -11,12 +11,13 @@ from lib.gkd_admm_trainer import MixedTextDataset
 
 MODEL = "/home1/doyoonkim/.cache/huggingface/hub/models--Qwen--Qwen3-1.7B/snapshots/70d244cc86ccca08cf5af4e1e306ecf908b1ad5e"
 DATA_PATH = sys.argv[1] if len(sys.argv) > 1 else "/home1/doyoonkim/projects/elsa/data/ot3_fineweb_200k_qwen3.jsonl"
+MAX_LEN = int(sys.argv[2]) if len(sys.argv) > 2 else 2048
 
 tokenizer = AutoTokenizer.from_pretrained(MODEL, trust_remote_code=True)
 ds = MixedTextDataset(
     jsonl_path=DATA_PATH,
     tokenizer=tokenizer,
-    max_len=2048,
+    max_len=MAX_LEN,
     max_prompt_len=512,
     nsamples=None,
     seed=42,

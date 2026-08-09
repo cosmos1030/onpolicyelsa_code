@@ -111,8 +111,9 @@ def _pack_fw(texts, tok, n_fw, target_seqlen):
 
 def build(nsamples: int, out_path: str, model_path: str, seed: int = 42,
           min_tokens: int = 64, num_proc: int = 8, seqlen: int = 2048,
-          strip_think_if_long: bool = False, pack_fineweb: bool = False):
-    n_ot = int(nsamples * 0.8)
+          strip_think_if_long: bool = False, pack_fineweb: bool = False,
+          ot_ratio: float = 0.8):
+    n_ot = int(nsamples * ot_ratio)
     n_fw = nsamples - n_ot
 
     tok = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
@@ -140,21 +141,24 @@ def build(nsamples: int, out_path: str, model_path: str, seed: int = 42,
     records.extend(ot_records)
 
     # ── FineWeb-Edu ───────────────────────────────────────────────────────────
-    print(f"Loading FineWeb-Edu (target {n_fw} samples)...", flush=True)
-    ds_fw = load_dataset("HuggingFaceFW/fineweb-edu", "sample-10BT", split="train")
-    ds_fw = ds_fw.shuffle(seed=seed).select(range(min(n_fw * 3, len(ds_fw))))
-    ds_fw = ds_fw.map(
-        lambda batch: _measure_fw(batch, tok),
-        batched=True, batch_size=256, num_proc=num_proc,
-        desc="Measuring FineWeb-Edu length",
-    )
-    if pack_fineweb:
-        fw_records = _pack_fw(ds_fw["text"], tok, n_fw, seqlen)
+    if n_fw > 0:
+        print(f"Loading FineWeb-Edu (target {n_fw} samples)...", flush=True)
+        ds_fw = load_dataset("HuggingFaceFW/fineweb-edu", "sample-10BT", split="train")
+        ds_fw = ds_fw.shuffle(seed=seed).select(range(min(n_fw * 3, len(ds_fw))))
+        ds_fw = ds_fw.map(
+            lambda batch: _measure_fw(batch, tok),
+            batched=True, batch_size=256, num_proc=num_proc,
+            desc="Measuring FineWeb-Edu length",
+        )
+        if pack_fineweb:
+            fw_records = _pack_fw(ds_fw["text"], tok, n_fw, seqlen)
+        else:
+            ds_fw = ds_fw.filter(lambda ex: ex["n_tokens"] >= min_tokens, desc="Filtering FineWeb by length")
+            fw_records = [{"text": t, "pretrain": True} for t in ds_fw["text"][:n_fw]]
+        print(f"  → {len(fw_records)} FineWeb samples", flush=True)
+        records.extend(fw_records)
     else:
-        ds_fw = ds_fw.filter(lambda ex: ex["n_tokens"] >= min_tokens, desc="Filtering FineWeb by length")
-        fw_records = [{"text": t, "pretrain": True} for t in ds_fw["text"][:n_fw]]
-    print(f"  → {len(fw_records)} FineWeb samples", flush=True)
-    records.extend(fw_records)
+        print("ot_ratio=1.0 -- skipping FineWeb-Edu entirely", flush=True)
 
     import random
     random.Random(seed).shuffle(records)
@@ -177,6 +181,10 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--min_tokens", type=int, default=64)
     parser.add_argument("--num_proc", type=int, default=8)
+    parser.add_argument("--ot_ratio", type=float, default=0.8,
+                        help="Fraction of --nsamples drawn from OpenThoughts3 (rest from FineWeb-Edu). "
+                             "Set to 1.0 to replicate ReasoningQAT's Stage 2 (end-to-end distillation) recipe, "
+                             "which trains on 100% OpenThoughts3 with no FineWeb-Edu mixed in at all.")
     parser.add_argument("--seqlen", type=int, default=2048,
                         help="Token budget used to decide whether to strip <think> (only relevant with --strip_think_if_long).")
     parser.add_argument("--strip_think_if_long", action="store_true",
@@ -191,7 +199,7 @@ def main():
                              "(mostly too-short) documents by --min_tokens.")
     args = parser.parse_args()
     build(args.nsamples, args.out_path, args.model_path, args.seed, args.min_tokens, args.num_proc,
-          args.seqlen, args.strip_think_if_long, args.pack_fineweb)
+          args.seqlen, args.strip_think_if_long, args.pack_fineweb, args.ot_ratio)
 
 
 if __name__ == "__main__":
