@@ -1021,8 +1021,11 @@ if __name__ == '__main__':
     flags.DEFINE_integer('gmp_post_target_steps', -1, "TR-GMP only: stop training this many steps after tr_reached first flips True (dynamic -- based on when the trust-region growth actually hits final_sparsity, not a precomputed step), instead of continuing for the full remaining `steps` budget with the mask frozen. -1 (default) = tie to gmp_mask_interval (stop after exactly one more mask-update cycle). 0 = explicitly disabled (old behavior: train all the way to `steps`).")
     flags.DEFINE_integer('gmp_mask_interval', 32, 'Steps between mask updates in GMP.')
     flags.DEFINE_float('gmp_fisher_beta', 0.999, 'EMA beta for Fisher diagonal accumulation.')
-    flags.DEFINE_enum('gmp_saliency', 'fisher', ['fisher', 'magnitude'],
-                      'Importance score for GMP pruning: fisher=F_hat*w^2 (Adam 2nd moment), magnitude=w^2.')
+    flags.DEFINE_enum('gmp_saliency', 'fisher', ['fisher', 'magnitude', 'spa'],
+                      'Importance score for GMP pruning: fisher=F_hat*w^2 (Adam 2nd moment), magnitude=w^2, '
+                      'spa=h*u^2 where u is the next unconstrained Adam iterate and h=sqrt(v_hat)+eps '
+                      '(Sparse Projected Adam saliency -- exact solution to projecting u onto a sparse '
+                      'support under the Adam metric).')
     flags.DEFINE_enum('gmp_fisher_source', 'adam', ['adam', 'opd_empirical'],
                       'Fisher source for TR saliency: adam=exp_avg_sq (default), opd_empirical=grad^2 on OPD cal_batch.')
     flags.DEFINE_enum('gmp_pruning_scope', 'global', ['global', 'layer'],

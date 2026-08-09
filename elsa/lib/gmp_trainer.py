@@ -207,7 +207,13 @@ class FisherAccumulator:
         self.named_params = named_params  # {name: param}
         self.optimizer = optimizer
         self._step = 0
-        self.saliency = saliency  # 'fisher' or 'magnitude'
+        self.saliency = saliency  # 'fisher', 'magnitude', or 'spa'
+        # Per-parameter group lookup for 'spa' -- correct even if some params
+        # (e.g. embeddings, no-decay groups) use different lr/wd/betas/eps
+        # than param_groups[0].
+        self.param_to_group = {
+            id(p): group for group in optimizer.param_groups for p in group['params']
+        }
 
     def update(self):
         """No-op: Adam updates exp_avg_sq automatically in optimizer.step()."""
@@ -234,13 +240,56 @@ class FisherAccumulator:
         return f
 
     def importance(self, name, param):
-        """Importance score for pruning. 'fisher': F_hat*w^2, 'magnitude': w^2."""
+        """Importance score for pruning. 'fisher': F_hat*w^2, 'magnitude': w^2,
+        'spa': h*u^2 (Sparse Projected Adam -- see _spa_importance)."""
         if self.saliency == 'magnitude':
             return param.data.float() ** 2
+        if self.saliency == 'spa':
+            return self._spa_importance(param)
         f = self.fisher_factor(param)
         if f is None:
             return param.data.float() ** 2  # fallback before first optimizer step
         imp = f * param.data.float() ** 2
+        if imp.sum() == 0:
+            imp = param.data.float() ** 2
+        return imp
+
+    def _spa_importance(self, param):
+        """Sparse Projected Adam(W) saliency: cost of pruning coordinate i in
+        the Adam-metric projection of the next unconstrained AdamW iterate u
+        onto a sparse support. u_i = (1-lr*wd)*w_i - lr*m_hat_i/h_i,
+        h_i = sqrt(v_hat_i)+eps; s_i = h_i * u_i^2 (keeping costs 0, pruning
+        costs h_i*u_i^2 exactly, since the projection decomposes
+        coordinate-wise under diagonal H). Uses the param's actual optimizer
+        group (lr/betas/eps/weight_decay), not param_groups[0], so this stays
+        correct if decay/no-decay or per-layer-LR groups are ever introduced."""
+        st = self.optimizer.state.get(param, {})
+        v = st.get('exp_avg_sq', None)
+        m = st.get('exp_avg', None)
+        if v is None or m is None:
+            return param.data.float() ** 2  # fallback before first optimizer step
+        if _DTENSOR_AVAILABLE and isinstance(v, DTensor):
+            v = v.redistribute(placements=[Replicate()]).to_local()
+        if _DTENSOR_AVAILABLE and isinstance(m, DTensor):
+            m = m.redistribute(placements=[Replicate()]).to_local()
+        v = v.float()
+        m = m.float()
+        step = st.get('step', self._step)
+        if torch.is_tensor(step):
+            step = step.item()
+        group = self.param_to_group[id(param)]
+        beta1, beta2 = group.get('betas', (0.9, 0.999))
+        eps = group.get('eps', 1e-8)
+        lr = group.get('lr', 0.0)
+        wd = group.get('weight_decay', 0.0)
+        if step > 0:
+            v_hat = v / (1.0 - beta2 ** step)
+            m_hat = m / (1.0 - beta1 ** step)
+        else:
+            v_hat, m_hat = v, m
+        h = v_hat.sqrt() + eps
+        u = (1.0 - lr * wd) * param.data.float() - lr * m_hat / h
+        imp = h * u ** 2
         if imp.sum() == 0:
             imp = param.data.float() ** 2
         return imp
