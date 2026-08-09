@@ -95,13 +95,51 @@ mask_interval=32가 8보다 나음 (1.7B에서 봤던 "16이 32보다 낫다"는
 | 40428 (재실행 전 40415) | 4B s50, TR-GMP NTP+KD+OPD, mask_interval=32 | `reasoning_qwen3_4b`/`ggrptvah` | math500=77.2 (완료) |
 | 40429 (재실행 전 40416) | 4B s60, TR-GMP NTP+KD+OPD, mask_interval=32 | `reasoning_qwen3_4b`/`jvjj0p84` | math500=64.0 (완료) |
 | 40430 (재실행 전 40417) | 4B s70, TR-GMP NTP+KD+OPD, mask_interval=32 | `reasoning_qwen3_4b`/`m1zxzi0n` | math500=39.8 (완료) |
-| **40438** | 4B s50, TR-GMP NTP+KD+OPD, mask_interval=8 (candidate_masks 메모리 fix 적용판) | `reasoning_qwen3_4b`/`smx7fbtw` | math500=71.2, **세션 종료 시점 eval 진행중(lcb 13%)** |
-| **40446** | 4B s60, 위와 동일, mask_interval=8 | `reasoning_qwen3_4b`/`sj5yqq7j` | **세션 종료 시점 학습중 (step ~420/2048, sparsity 0.581/0.6)** |
-| **40447** | 4B s70, 위와 동일, mask_interval=8 | `reasoning_qwen3_4b`/`ytkownau` | **세션 종료 시점 학습중 (step ~395/2048, sparsity 0.588/0.7)** |
+| **40438** | 4B s50, TR-GMP NTP+KD+OPD, mask_interval=8 (candidate_masks 메모리 fix 적용판) | `reasoning_qwen3_4b`/`smx7fbtw` | **완료**: math500=71.2, gpqa=32.8, ifeval=58.4, lcb=16.4, gsm8k=81.1, wt2=13.81 — mask_interval=32 형제 행(ggrptvah, 77.2)보다 전 지표에서 낮음 |
+| **40446** | 4B s60, 위와 동일, mask_interval=8 | `reasoning_qwen3_4b`/`sj5yqq7j` | **완료**: math500=44.4, gpqa=29.8, ifeval=27.2, lcb=2.2, gsm8k=73.9, wt2=18.02 — mask_interval=32 형제 행(jvjj0p84, 64.0)보다 낮음, 특히 ifeval(43.1→27.2)·lcb(10.1→2.2) 급락 |
+| **40447** | 4B s70, 위와 동일, mask_interval=8 | `reasoning_qwen3_4b`/`ytkownau` | **완료**: math500=39.2, gpqa=25.3, ifeval=26.3, lcb=0.0, gsm8k=68.8, wt2=22.60 — mask_interval=32 형제 행(m1zxzi0n, 39.8)과 math500은 비슷하나 lcb 0.4→0.0 등 나머지는 하락 |
 
-**세션 종료 시점 실제로 돌고 있던 건 40438(eval 마무리 중)/40446/40447 세 개뿐.** 다음 세션은 `squeue -u doyoonkim`으로 먼저 확인하고, 끝나 있으면 로그(`/home/doyoonkim/projects/onpolicyelsa_code/elsa/logs/tr_ntpkd_opd_4b_404{38,46,47}.out`)에서 5개 벤치마크 다 나왔는지 확인해서 위 결과 표(mask_interval=8 행)를 채울 것.
+40438/40446/40447 세 잡 모두 완료, 아티팩트(대시보드) 및 로그 기준으로 상태 갱신됨. **결론: mask_interval=8은 s50/s60/s70 전부에서 32보다 나쁨** — math500보다 ifeval/lcb에서 손해가 훨씬 크다 (특히 s60). candidate_masks() OOM을 피하려고 mask_interval을 8로 줄인 것이었는데, 정확도 목적이라면 32(또는 16, 703325 참고)가 낫다.
+
+**주의**: 40415/40416/40417(mask_interval=32) 원본 로그는 lcb 도중 CANCELLED로 끝나 있는데, 이는 진짜 실패가 아니라 이후 별도 eval-only job(40428/40429/40430, `slurm_eval_lighteval_only.sh`)이 같은 checkpoint·같은 wandb run ID에 이어서 lcb/gsm8k/zero-shot을 채운 것 — wandb API로 `run.state == finished` 및 전체 메트릭 존재를 확인해야 진짜 완료 여부를 알 수 있음 (원본 슬럼 로그만 보고 "취소됐으니 무효"라고 판단하면 안 됨). 대시보드에서 이 3개 행이 한 번 누락됐다가(동시 편집 충돌) 이 방식으로 재검증 후 복원됨.
+
+**대시보드 동시편집 참고**: 40446/40447 결과를 올리는 도중 다른 세션이 4B S50/S60/S70에 새 행 4개(wbid fnxyxnee/vsmcdjh9/4wsr5kgp/jhij6epp)를 먼저 게시해서 최초 publish가 409 conflict로 거부됨 — 최신본을 다시 fetch해서 그 위에 40446/40447만 병합 후 재게시함. 다음 세션도 이 패턴(publish 전 항상 최신 fetch) 유지할 것.
 
 버그 수정 과정에서 취소/재제출된 중간 job ID들(40380대~40420대 다수, use_fast 버그·캐시 재빌드·OOM 재시도 등으로 여러 번 죽었다 다시 제출됨)은 결과가 없거나 무효라 위 표에서 뺐음 — wandb에 orphan run으로 남아있을 수 있으니 혼동하지 말 것.
+
+### THINKSTRIP-200K 4B TR-GMP NTP+KD+OPD 스윕 (2026-08-09)
+
+데이터셋: `cosmos1030/ot3-fineweb-200k-qwen3-thinkstrip` (`elsa/data/ot3_fineweb_200k_qwen3_thinkstrip.jsonl`, 5.9GB, 20만 샘플) — PLAIN-200K와 달리 seqlen=2048 초과시 `<think>` 블록을 잘라내서 truncation을 80.3%→48.5%로 낮춘 버전. 자세한 설명은 `elsa/data/DATASETS.md` 참고.
+
+캐시: `elsa/scripts/log_cluster/slurm_prebuild_mixed_cot_cache.sh` (job 41178) — 이 클러스터엔 CPU 전용 파티션이 없어서 `--gres=gpu` 없이 3090 파티션에 제출, GPU 슬롯 안 잡고 CPU만 사용 (1시간 41분 소요, 198868 샘플 캐싱). 스크립트: `elsa/scripts/log_cluster/prebuild_mixed_cot_cache.py`.
+
+학습 런처: `elsa/scripts/log_cluster/slurm_gmp_tr_ntpkd_opd_qwen3_4b_thinkstrip.sh <SPARSITY> <LR> <KL_THRESHOLD> [LR_SCHEDULER] [MASK_INTERVAL]` — 기존 4B TR-GMP NTP+KD+OPD 레시피(mask_interval=32 고정)에 `--gmp_post_target_steps=0`(목표 희소도 조기 도달해도 2048 끝까지 학습) 추가, 데이터만 THINKSTRIP으로 교체.
+
+s50/s60/s70 × lr{1e-4, 5e-5} × kl_threshold{0.01, 0.02} = 12개 잡, 전부 캐시 잡(41178)에 `--dependency=afterok`로 걸어서 순차 실행:
+
+| Job ID | sparsity | lr | kl | wandb run | math500 | gpqa | ifeval | lcb | gsm8k | wt2 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 41179 | 0.5 | 1e-4 | 0.01 | `gy7hkspq` | 67.8 | 35.9 | 49.2 | 11.6 | 80.4 | 13.19 |
+| 41182 | 0.5 | 1e-4 | 0.02 | `oqduc9io` | 68.8 | 35.9 | 57.3 | 16.0 | 81.6 | 13.11 |
+| 41183 | 0.5 | 5e-5 | 0.01 | `cx7cpiua` | **76.8** | 43.9 | 71.2 | 22.0 | 86.1 | 12.73 |
+| 41184 | 0.5 | 5e-5 | 0.02 | `s5k3xtx8` | **77.4** | 38.9 | 68.6 | 19.0 | 85.7 | 12.90 |
+| 41180 | 0.6 | 1e-4 | 0.01 | `m42g2n88` | 63.2 | 36.9 | 45.5 | 12.3 | 76.7 | 15.66 |
+| 41185 | 0.6 | 1e-4 | 0.02 | `jovxawah` | 63.8 | 29.8 | **결측(아래 참고)** | 11.2 | 76.2 | 15.70 |
+| 41186 | 0.6 | 5e-5 | 0.01 | `zqaskjk7` | **74.0** | 31.3 | 59.3 | 15.7 | 80.7 | 16.12 |
+| 41187 | 0.6 | 5e-5 | 0.02 | `q6tt2iw2` | 72.0 | 36.4 | 59.7 | 17.9 | 81.6 | 15.42 |
+| 41181 | 0.7 | 1e-4 | 0.01 | `s6hnb9m2` | 51.6 | 28.8 | 27.0 | 4.9 | 67.6 | 23.16 |
+| 41188 | 0.7 | 1e-4 | 0.02 | `ypoklh00` | **53.0** | 29.8 | 30.1 | 8.6 | 71.0 | 21.88 |
+| 41189 | 0.7 | 5e-5 | 0.01 | `2fuheac7` | 38.0 | 22.7 | 26.8 | 1.5 | 62.9 | 31.84 |
+| 41190 | 0.7 | 5e-5 | 0.02 | `54gbsr9f` | 46.8 | 23.7 | 34.8 | 6.3 | 69.4 | 22.82 |
+
+**결론:**
+- **s50/s60에서는 lr=5e-5가 lr=1e-4보다 math500 기준 8~10pt 우세** (s50: 76.8-77.4 vs 67.8-68.8, s60: 72.0-74.0 vs 63.2-63.8).
+- **s70에서는 정반대로 뒤집힘** — lr=1e-4(51.6-53.0)가 lr=5e-5(38.0-46.8)보다 우세. 희소도가 높아질수록 낮은 lr이 mask 급변에 못 따라가는 것으로 추정.
+- `kl_threshold`(0.01 vs 0.02) 영향은 lr보다 훨씬 작음, 모든 sparsity에서.
+- **THINKSTRIP vs PLAIN-200K(같은 레시피, mask_interval=32) 최고 조합 비교**: s50 77.4 vs 77.2(거의 동일), s60 74.0 vs 64.0(**+10pt**), s70 53.0 vs 39.8(**+13pt**) — 희소도가 높을수록 THINKSTRIP 효과가 커짐 (PLAIN-200K의 truncation 문제가 고희소도에서 더 자주 발생하는 mask-update 스텝 수와 맞물려 악화되는 것으로 보임).
+- **새 실패 유형**: job 41185(s60, lr1e-4, kl0.02)에서 ifeval이 `RecursionError`로 결측 — lighteval의 ifeval 채점기가 모델이 생성한 비정상적으로 긴/중첩된 문자열을 `json.loads`로 파싱하다 재귀 깊이 초과. subprocess라 recursion limit 조정 불가, 재시도 안 함 (이전 SparseGPT-s70 gsm8k RecursionError와 같은 계열의 문제).
+
+**캐시 삭제 알림 (2026-08-09)**: 사용자 disk quota(2048G)가 거의 다 차서 `elsa/.cache/datasets/7fe7656ed131.pkl`(THINKSTRIP-200K, 198868 샘플, 7.1G)을 삭제함 — 위 스윕(41179-41190)은 이미 다 끝난 뒤라 데이터 손실은 없지만, THINKSTRIP 데이터셋으로 다시 학습을 돌리면 첫 잡에서 캐시가 다시 빌드되며 (`slurm_prebuild_mixed_cot_cache.sh` 기준) ~1시간 41분이 추가로 걸림. 같이 있던 `.tmp` 확장자 잔재 파일(788M, 중간에 끊긴 미완성 빌드)도 같이 지움. `6a37c5438de9.pkl`(PLAIN-200K)과 `42ab70a6b2d1.pkl`(ot3_100pct_100k, kl0.1/kl0.07 재실행 잡이 쓰는 중)은 그대로 둠.
 
 ## 잡다한 참고
 
