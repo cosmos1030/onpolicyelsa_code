@@ -37,7 +37,7 @@ exec 2>&1
 # that same 512-step tail, so this isolates whether cutting it short recovers
 # some of the gap vs ALPS's untrained one-shot checkpoint (74.6 math500).
 
-SPARSITY=${1:?"Usage: sbatch slurm_gmp_tr_ntpkd_opkd_qwen3_1.7b.sh <SPARSITY> <KL_THRESHOLD> [OPD_GEN_LEN] [MASK_INTERVAL] [LR_SCHEDULER] [STEPS] [POST_TARGET_STEPS] [LR] [DATA_PATH]"}
+SPARSITY=${1:?"Usage: sbatch slurm_gmp_tr_ntpkd_opkd_qwen3_1.7b.sh <SPARSITY> <KL_THRESHOLD> [OPD_GEN_LEN] [MASK_INTERVAL] [LR_SCHEDULER] [STEPS] [POST_TARGET_STEPS] [LR] [DATA_PATH] [SEQLEN] [GRAD_CKPT]"}
 KL_THRESHOLD=${2:-0.01}
 OPD_GEN_LEN=${3:-256}
 MASK_INTERVAL=${4:-8}
@@ -45,6 +45,8 @@ LR_SCHEDULER=${5:-cosine}
 STEPS=${6:-2048}
 POST_TARGET_STEPS=${7:-8}
 LR=${8:-1e-4}
+SEQLEN=${10:-2048}
+GRAD_CKPT=${11:-false}
 SPARSITY_PCT=$(python3 -c "print(int(${SPARSITY}*100))")
 
 PYTHON=/home1/doyoonkim/miniconda3/envs/rac/bin/python
@@ -99,7 +101,8 @@ $PYTHON main.py \
     --gmp_mask_interval=${MASK_INTERVAL} \
     --gmp_fisher_beta=0.999 \
     --gmp_saliency=fisher \
-    --seqlen=2048 \
+    --seqlen=${SEQLEN} \
+    --gmp_gradient_checkpointing=${GRAD_CKPT} \
     --gmp_max_prompt_len=512 \
     --gmp_kd_only=false \
     --gmp_ntp_lambda=0.33 \
