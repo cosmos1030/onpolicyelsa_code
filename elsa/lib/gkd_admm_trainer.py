@@ -357,7 +357,8 @@ class MixedTextDataset(Dataset):
                 records = records[:nsamples]
 
             self.samples = []
-            for rec in records:
+            from tqdm import tqdm
+            for rec in tqdm(records, desc=f"MixedTextDataset: tokenizing {os.path.basename(jsonl_path)}"):
                 text = rec.get("text", "")
                 if not text:
                     continue
