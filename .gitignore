@@ -76,6 +76,12 @@ __pycache__
 OPD/
 LMOps/
 # external baseline codebases (own git repos, not part of this project)
-ALPS/
-SparseLLM/
 macko_spmv/
+ALPS/.git.bak/
+ALPS/__pycache__/
+ALPS/logs/
+ALPS/wandb/
+SparseLLM/.git.bak/
+SparseLLM/__pycache__/
+SparseLLM/logs/
+SparseLLM/wandb/
