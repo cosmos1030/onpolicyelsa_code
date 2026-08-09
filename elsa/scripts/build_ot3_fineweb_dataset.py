@@ -87,9 +87,31 @@ def _measure_fw(batch, tok):
     return {"n_tokens": n_tokens}
 
 
+def _pack_fw(texts, tok, n_fw, target_seqlen):
+    # Replicates ReasoningQAT's (github.com/yasu0001/ReasoningQAT) FineWeb-Edu
+    # packing exactly: concatenate raw docs (bos + text + eos) into a running
+    # buffer until it tokenizes to >= target_seqlen, then cut the first
+    # target_seqlen tokens as one packed sample and start a fresh buffer --
+    # instead of filtering/keeping individual (mostly too-short) documents.
+    bos = tok.bos_token or ""
+    eos = tok.eos_token or ""
+    fw_records = []
+    buffer = ""
+    for text in texts:
+        buffer += bos + text + eos
+        ids = tok(buffer, add_special_tokens=False).input_ids
+        if len(ids) >= target_seqlen:
+            packed_text = tok.decode(ids[:target_seqlen])
+            fw_records.append({"text": packed_text, "pretrain": True})
+            buffer = ""
+            if len(fw_records) >= n_fw:
+                break
+    return fw_records
+
+
 def build(nsamples: int, out_path: str, model_path: str, seed: int = 42,
           min_tokens: int = 64, num_proc: int = 8, seqlen: int = 2048,
-          strip_think_if_long: bool = False):
+          strip_think_if_long: bool = False, pack_fineweb: bool = False):
     n_ot = int(nsamples * 0.8)
     n_fw = nsamples - n_ot
 
@@ -126,8 +148,11 @@ def build(nsamples: int, out_path: str, model_path: str, seed: int = 42,
         batched=True, batch_size=256, num_proc=num_proc,
         desc="Measuring FineWeb-Edu length",
     )
-    ds_fw = ds_fw.filter(lambda ex: ex["n_tokens"] >= min_tokens, desc="Filtering FineWeb by length")
-    fw_records = [{"text": t, "pretrain": True} for t in ds_fw["text"][:n_fw]]
+    if pack_fineweb:
+        fw_records = _pack_fw(ds_fw["text"], tok, n_fw, seqlen)
+    else:
+        ds_fw = ds_fw.filter(lambda ex: ex["n_tokens"] >= min_tokens, desc="Filtering FineWeb by length")
+        fw_records = [{"text": t, "pretrain": True} for t in ds_fw["text"][:n_fw]]
     print(f"  → {len(fw_records)} FineWeb samples", flush=True)
     records.extend(fw_records)
 
@@ -159,9 +184,14 @@ def main():
                              "block and keep only the text after it (verified match for how the old, better-scoring "
                              "pre-08-04 ot3_fineweb_20k.jsonl was built). Does not filter/exclude any row by length, "
                              "so domain mix (math/code/science) is unaffected -- only content length changes.")
+    parser.add_argument("--pack_fineweb", action="store_true",
+                        help="Replicate ReasoningQAT's FineWeb-Edu handling exactly: concatenate raw docs into a "
+                             "running buffer (bos+text+eos) until it reaches --seqlen tokens, then cut the first "
+                             "--seqlen tokens as one packed sample, instead of filtering/keeping individual "
+                             "(mostly too-short) documents by --min_tokens.")
     args = parser.parse_args()
     build(args.nsamples, args.out_path, args.model_path, args.seed, args.min_tokens, args.num_proc,
-          args.seqlen, args.strip_think_if_long)
+          args.seqlen, args.strip_think_if_long, args.pack_fineweb)
 
 
 if __name__ == "__main__":
