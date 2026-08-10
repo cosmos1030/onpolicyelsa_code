@@ -58,6 +58,13 @@ def parse_args():
     p.add_argument("--gpu_util", type=float, default=0.85)
     p.add_argument("--tp_size", type=int, default=1, help="tensor parallel size for vLLM (lighteval)")
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--seeds", default=None,
+                   help="comma-separated seeds for a multi-seed lighteval variance run (e.g. 42,0,1) -- "
+                        "overrides --seed for the lighteval section only (PPL/zero-shot still use --seed once). "
+                        "Runs each seed back to back, logs per-seed metrics as '<metric>_seed<N>', and logs "
+                        "'<metric>_mean'/'<metric>_std' across seeds to the same wandb run. Recommended for "
+                        "AIME24/25 and GPQA (small sample counts, high per-problem variance); math500/ifeval/"
+                        "gsm8k/lcb are fine with a single --seed given their sample counts.")
     p.add_argument("--skip_ppl", action="store_true")
     p.add_argument("--skip_zeroshot", action="store_true")
     p.add_argument("--skip_lighteval", action="store_true")
@@ -200,23 +207,54 @@ def main():
         logger.info("Model unloaded, GPU memory freed.")
 
     # ── lighteval benchmarks: vLLM subprocess ───────────────────────────────
-    # 5 tasks: math500, gpqa, ifeval, lcb, gsm8k
+    # 7 tasks: math500, aime24, aime25, gpqa, ifeval, lcb, gsm8k
     if not args.skip_lighteval:
-        logger.info("=== lighteval bench (5 tasks) ===")
-        lighteval_out = os.path.join(out_base, "lighteval")
-        m = run_lighteval_bench(
-            model_path=args.model_path,
-            out_base=lighteval_out,
-            gpu_util=args.gpu_util,
-            log_to_wandb=False,
-            tp_size=args.tp_size,
-            max_samples=args.max_samples,
-            only_tasks=args.benchmarks.split(",") if args.benchmarks else None,
-            seed=args.seed,
-        )
-        all_metrics.update(m)
-        if use_wandb:
-            wandb.log(m)
+        only_tasks = args.benchmarks.split(",") if args.benchmarks else None
+        seeds = [int(s) for s in args.seeds.split(",")] if args.seeds else [args.seed]
+        logger.info(f"=== lighteval bench (seeds={seeds}) ===")
+
+        per_seed_runs = []
+        for s in seeds:
+            lighteval_out = os.path.join(out_base, "lighteval") if len(seeds) == 1 \
+                else os.path.join(out_base, "lighteval", f"seed{s}")
+            m = run_lighteval_bench(
+                model_path=args.model_path,
+                out_base=lighteval_out,
+                gpu_util=args.gpu_util,
+                log_to_wandb=False,
+                tp_size=args.tp_size,
+                max_samples=args.max_samples,
+                only_tasks=only_tasks,
+                seed=s,
+            )
+            per_seed_runs.append(m)
+            if len(seeds) == 1:
+                all_metrics.update(m)
+                if use_wandb:
+                    wandb.log(m)
+            else:
+                seeded = {f"{k}_seed{s}": v for k, v in m.items()}
+                all_metrics.update(seeded)
+                if use_wandb:
+                    wandb.log(seeded)
+
+        if len(seeds) > 1:
+            import math as _math
+            all_keys = sorted({k for run in per_seed_runs for k in run})
+            agg = {}
+            for k in all_keys:
+                vals = [run[k] for run in per_seed_runs if k in run and isinstance(run[k], (int, float))
+                        and not (isinstance(run[k], float) and _math.isnan(run[k]))]
+                if not vals:
+                    continue
+                mean = sum(vals) / len(vals)
+                std = (sum((v - mean) ** 2 for v in vals) / (len(vals) - 1)) ** 0.5 if len(vals) > 1 else 0.0
+                agg[f"{k}_mean"] = mean
+                agg[f"{k}_std"] = std
+            all_metrics.update(agg)
+            if use_wandb:
+                wandb.log(agg)
+            logger.info(f"[eval_full] multi-seed aggregate: {agg}")
 
     # Save summary JSON
     summary_path = os.path.join(out_base, "eval_summary.json")

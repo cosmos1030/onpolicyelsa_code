@@ -27,21 +27,25 @@ exec 2>&1
 #   Seeds: math500/ifeval/gsm8k/lcb are fine at 1 seed given their sample
 #   counts; AIME24/25 (30 problems each) and GPQA (198 problems) need 3 seeds
 #   (e.g. 42/0/1) -- 1 problem is a multi-point swing on AIME specifically.
+#   Pass multiple comma-separated seeds (e.g. "42,0,1") in the SEED slot to
+#   run all of them back to back in one job and auto-log per-seed values plus
+#   "<metric>_mean"/"<metric>_std" to the same wandb run (see eval_full.py
+#   --seeds) -- no manual wandb-API aggregation needed afterward.
 #
-# Usage: sbatch slurm_eval_full.sh <MODEL_PATH> <RUN_NAME> <METHOD> <SPARSITY> <WANDB_PROJECT> [BENCHMARKS] [SEED] [TP_SIZE] [SKIP_PPL] [SKIP_ZEROSHOT]
+# Usage: sbatch slurm_eval_full.sh <MODEL_PATH> <RUN_NAME> <METHOD> <SPARSITY> <WANDB_PROJECT> [BENCHMARKS] [SEED_OR_SEEDS] [TP_SIZE] [SKIP_PPL] [SKIP_ZEROSHOT]
 # e.g. (full eval, unchanged from before):
 #   sbatch slurm_eval_full.sh /path/to/model sgpt_s60 sparsegpt 0.6 reasoning_qwen3_4b
-# e.g. (AIME24/25 only, seed 0, tensor_parallel=2 -- pass GPU count via --gres too):
+# e.g. (AIME24/25, 3-seed variance run, tensor_parallel=2 -- pass GPU count via --gres too):
 #   sbatch --gres=gpu:2 --cpus-per-task=16 --mem=96G slurm_eval_full.sh \
-#     /path/to/Qwen3-8B aime_seed0_8b dense 0.0 reasoning_qwen3_8b aime24,aime25 0 2 true true
+#     /path/to/Qwen3-8B aime_3seed_8b dense 0.0 reasoning_qwen3_8b aime24,aime25 42,0,1 2 true true
 
-MODEL_PATH=${1:?"Usage: sbatch slurm_eval_full.sh <MODEL_PATH> <RUN_NAME> <METHOD> <SPARSITY> <WANDB_PROJECT> [BENCHMARKS] [SEED] [TP_SIZE] [SKIP_PPL] [SKIP_ZEROSHOT]"}
+MODEL_PATH=${1:?"Usage: sbatch slurm_eval_full.sh <MODEL_PATH> <RUN_NAME> <METHOD> <SPARSITY> <WANDB_PROJECT> [BENCHMARKS] [SEED_OR_SEEDS] [TP_SIZE] [SKIP_PPL] [SKIP_ZEROSHOT]"}
 RUN_NAME=${2:-"eval"}
 METHOD=${3:-"sparsegpt"}
 SPARSITY=${4:-0.0}
 WANDB_PROJECT=${5:-"reasoning_pruning_v2"}
 BENCHMARKS=${6:-}
-SEED=${7:-42}
+SEED_OR_SEEDS=${7:-42}
 TP_SIZE=${8:-1}
 SKIP_PPL=${9:-false}
 SKIP_ZEROSHOT=${10:-false}
@@ -80,6 +84,11 @@ EXTRA_ARGS=()
 [ -n "$BENCHMARKS" ] && EXTRA_ARGS+=(--benchmarks "$BENCHMARKS")
 [ "$SKIP_PPL" = "true" ] && EXTRA_ARGS+=(--skip_ppl)
 [ "$SKIP_ZEROSHOT" = "true" ] && EXTRA_ARGS+=(--skip_zeroshot)
+if [[ "$SEED_OR_SEEDS" == *,* ]]; then
+    EXTRA_ARGS+=(--seeds "$SEED_OR_SEEDS")
+else
+    EXTRA_ARGS+=(--seed "$SEED_OR_SEEDS")
+fi
 
 $PYTHON scripts/eval_full.py \
     --model_path "$MODEL_PATH" \
@@ -89,7 +98,6 @@ $PYTHON scripts/eval_full.py \
     --sparsity "$SPARSITY" \
     --gpu_util 0.85 \
     --tp_size "$TP_SIZE" \
-    --seed "$SEED" \
     --out_base "$LOCAL_JOB_BASE/eval_${RUN_NAME}" \
     "${EXTRA_ARGS[@]}"
 
