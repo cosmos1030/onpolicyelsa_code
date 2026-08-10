@@ -23,12 +23,38 @@ Usage:
 
 import argparse
 import json
+import re
 from pathlib import Path
 
 from datasets import load_dataset
 from transformers import AutoTokenizer
 
 _ROLE_MAP = {"human": "user", "gpt": "assistant", "user": "user", "assistant": "assistant"}
+
+
+def _manual_render(msgs):
+    # Assembles the Qwen3 ChatML wrapper ourselves instead of calling
+    # tok.apply_chat_template(). The real template's Jinja logic special-cases
+    # any assistant content containing "</think>": it discards everything
+    # before the LAST "</think>" and re-displays it behind a *fresh, always-
+    # empty* "<think>\n\n</think>\n\n" stub -- so for raw OT3 rows that already
+    # contain a leading empty <think></think> stub followed by a second, real
+    # (often unclosed) <think> block, apply_chat_template collapses them to
+    # "<think>\n\n</think>\n\n<think>{unclosed raw reasoning}" NO MATTER what
+    # we've already done to the content beforehand (verified: re-rendering
+    # already-stripped content through apply_chat_template a second time
+    # reproduces the exact same collapse). This affected ~61-63% of rows in
+    # every Qwen3-templated build (PLAIN-200K, THINKSTRIP-200K alike -- it's
+    # not specific to strip_think_if_long, plain rendering triggers it too),
+    # while LEGACY-20K's DeepSeek-template build never had this bug because
+    # DeepSeek's chat template has no such collapsing behavior -- it just
+    # concatenates raw content verbatim. Manually formatting the wrapper here
+    # replicates DeepSeek's "verbatim" behavior on top of Qwen3's tags, so our
+    # own strip logic's output is what actually reaches the training file.
+    parts = []
+    for m in msgs:
+        parts.append(f"<|im_start|>{m['role']}\n{m['content']}<|im_end|>\n")
+    return "".join(parts)
 
 
 def _render_ot(batch, tok, min_tokens, seqlen=None, strip_think=False):
@@ -50,7 +76,7 @@ def _render_ot(batch, tok, min_tokens, seqlen=None, strip_think=False):
             convs = json.loads(convs)
         msgs = [{"role": _ROLE_MAP.get(c["from"], c["from"]), "content": c["value"]} for c in convs]
         try:
-            text = tok.apply_chat_template(msgs, tokenize=False, add_generation_prompt=False)
+            text = _manual_render(msgs)
         except Exception:
             texts.append(None)
             stripped_flags.append(False)
@@ -61,18 +87,25 @@ def _render_ot(batch, tok, min_tokens, seqlen=None, strip_think=False):
             if n_tok > seqlen:
                 for m in reversed(msgs):
                     if m["role"] == "assistant":
-                        think_end = m["content"].rfind("</think>")
+                        # Some raw OT3 rows already contain a leading empty
+                        # <think></think> stub (from the teacher model itself)
+                        # followed by a second, real <think> block. Strip any
+                        # such leading empty stub(s) first, then rfind the
+                        # real closing tag in what's left. If nothing follows
+                        # (the real <think> that remains never closes -- the
+                        # model's reasoning attempt never resolved), leave the
+                        # row unstripped rather than silently keeping the
+                        # entire raw reasoning trace as "post-think" content.
+                        content = re.sub(r"^(\s*<think>\s*</think>\s*)+", "", m["content"])
+                        think_end = content.rfind("</think>")
                         if think_end != -1:
-                            stripped_content = m["content"][think_end + len("</think>"):].strip()
+                            stripped_content = content[think_end + len("</think>"):].strip()
                             if stripped_content:
                                 m["content"] = stripped_content
                                 did_strip = True
                         break
                 if did_strip:
-                    try:
-                        text = tok.apply_chat_template(msgs, tokenize=False, add_generation_prompt=False)
-                    except Exception:
-                        did_strip = False
+                    text = _manual_render(msgs)
         texts.append(text)
         stripped_flags.append(did_strip)
     n_tokens = [

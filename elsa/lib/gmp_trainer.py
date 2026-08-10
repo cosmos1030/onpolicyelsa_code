@@ -1828,10 +1828,10 @@ def globalprune_gmp(
         loader = DataLoader(
             train_dataset,
             batch_size=batch_size,
-            shuffle=False,
+            shuffle=True,
             collate_fn=_collate_fn,
         )
-    data_iter = _infinite(loader)
+    data_iter = _infinite(loader, sampler=_train_sampler if is_distributed else None)
 
     # Anchor KD: separate iterator over CoT dataset (batch_size=1)
     anchor_iter = None
@@ -3237,9 +3237,13 @@ def _collate(batch, pad_token_id=0):
     return result
 
 
-def _infinite(loader):
+def _infinite(loader, sampler=None):
+    epoch = 0
     while True:
+        if sampler is not None and hasattr(sampler, "set_epoch"):
+            sampler.set_epoch(epoch)
         yield from loader
+        epoch += 1
 
 
 def _run_tag(FLAGS):
