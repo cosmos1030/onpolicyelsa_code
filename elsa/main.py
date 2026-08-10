@@ -680,7 +680,7 @@ def main(argv):
 
         # perplexity evaluation
         try:
-            ppl_test = eval_ppl(FLAGS, model, tokenizer, device,data_path=FLAGS.data_path)
+            ppl_test = eval_ppl(FLAGS, model, tokenizer, device)
             logging.info([(key,ppl) for key,ppl in ppl_test.items()])
             if FLAGS.wandb:
                 wandb.log({"sparsity_ratio": sparsity_ratio, **{f"ppl_test({key})": value for key, value in ppl_test.items()}})

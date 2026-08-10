@@ -37,7 +37,7 @@ exec 2>&1
 # that same 512-step tail, so this isolates whether cutting it short recovers
 # some of the gap vs ALPS's untrained one-shot checkpoint (74.6 math500).
 
-SPARSITY=${1:?"Usage: sbatch slurm_gmp_tr_ntpkd_opkd_qwen3_1.7b.sh <SPARSITY> <KL_THRESHOLD> [OPD_GEN_LEN] [MASK_INTERVAL] [LR_SCHEDULER] [STEPS] [POST_TARGET_STEPS] [LR] [DATA_PATH] [SEQLEN] [GRAD_CKPT]"}
+SPARSITY=${1:?"Usage: sbatch slurm_gmp_tr_ntpkd_opkd_qwen3_1.7b.sh <SPARSITY> <KL_THRESHOLD> [OPD_GEN_LEN] [MASK_INTERVAL] [LR_SCHEDULER] [STEPS] [POST_TARGET_STEPS] [LR] [DATA_PATH] [SEQLEN] [GRAD_CKPT] [WANDB_PROJECT]"}
 KL_THRESHOLD=${2:-0.01}
 OPD_GEN_LEN=${3:-256}
 MASK_INTERVAL=${4:-8}
@@ -47,6 +47,7 @@ POST_TARGET_STEPS=${7:-8}
 LR=${8:-1e-4}
 SEQLEN=${10:-2048}
 GRAD_CKPT=${11:-false}
+WANDB_PROJECT=${12:-reasoning_qwen3_1.7b}
 SPARSITY_PCT=$(python3 -c "print(int(${SPARSITY}*100))")
 
 PYTHON=/home1/doyoonkim/miniconda3/envs/rac/bin/python
@@ -124,7 +125,7 @@ $PYTHON main.py \
     --eval_full_bench=true \
     --eval_zero_shot=true \
     --wandb=true \
-    --wandb_project=reasoning_qwen3_1.7b \
+    --wandb_project=${WANDB_PROJECT} \
     --run_name_suffix="lr${LR}_mi${MASK_INTERVAL}_kl${KL_THRESHOLD}_$(basename "$DATA_PATH" .jsonl)" \
     --seed=42
 

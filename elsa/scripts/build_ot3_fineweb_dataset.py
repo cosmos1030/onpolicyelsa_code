@@ -177,7 +177,17 @@ def build(nsamples: int, out_path: str, model_path: str, seed: int = 42,
     if n_fw > 0:
         print(f"Loading FineWeb-Edu (target {n_fw} samples)...", flush=True)
         ds_fw = load_dataset("HuggingFaceFW/fineweb-edu", "sample-10BT", split="train")
-        ds_fw = ds_fw.shuffle(seed=seed).select(range(min(n_fw * 3, len(ds_fw))))
+        if pack_fineweb:
+            # Packing concatenates several raw docs per output sample (median
+            # FineWeb-Edu doc is ~600-1000 tokens, far short of a large
+            # --seqlen), so the raw-doc pool must scale with seqlen or it
+            # silently runs dry partway through packing (observed: 24k-doc
+            # pool at seqlen=2048 already fell short by ~10%; at seqlen=8192
+            # it needs ~4x more docs per packed sample).
+            fw_pool_mult = max(3, (seqlen // 700) * 2)
+        else:
+            fw_pool_mult = 3
+        ds_fw = ds_fw.shuffle(seed=seed).select(range(min(n_fw * fw_pool_mult, len(ds_fw))))
         ds_fw = ds_fw.map(
             lambda batch: _measure_fw(batch, tok),
             batched=True, batch_size=256, num_proc=num_proc,
