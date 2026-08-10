@@ -148,12 +148,12 @@ def _compute_token_stats(out_dir: str, bench_name: str, max_new_tokens: int,
 # (measured: math500 1002.8s->~2316s, gpqa 617.6s->~1237s for Qwen3-1.7B) --
 # too expensive to pay on every job in a hyperparameter sweep. Recommended
 # workflow: sweep with profile="quick" (fast, same budgets/task-set this
-# project always used before 2026-08-10), rank by math500, then re-run only
-# the winning checkpoint(s) with profile="full" (see
-# scripts/slurm_eval_final_protocol.sh) before they go in a results table.
-# profile="quick" is NOT reliable for cross-model-size comparisons (that's
-# what motivated adding "full" in the first place -- see DATASETS.md) but is
-# fine for ranking configs within one model size on math500.
+# project always used before 2026-08-10), pick winning config(s) by whatever
+# criterion makes sense for the sweep, then re-run only those checkpoint(s)
+# with profile="full" (see scripts/slurm_eval_final_protocol.sh) before they
+# go in a results table. profile="quick" is NOT reliable for cross-model-size
+# comparisons (that's what motivated adding "full" in the first place -- see
+# DATASETS.md) but is fine for ranking configs within one model size.
 #
 # (name, task_str, max_new_tokens, max_model_length, correct_metric_keys)
 _FULL_BENCHMARKS = [

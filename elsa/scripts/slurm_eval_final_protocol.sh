@@ -6,10 +6,11 @@
 exec 2>&1
 
 # Full "official protocol" re-evaluation for a single winning checkpoint
-# (picked from a cheap 8192-budget sweep by math500 ranking -- see this
-# session's notes: sweeping at 8192 is ~2-4x faster and preserves ranking
-# well enough within a fixed model size, but is NOT reliable for absolute
-# numbers or cross-model-size comparisons, so only re-run the actual winners
+# (picked from a cheap 8192-budget "quick" sweep by whatever criterion you
+# choose -- see this session's notes: sweeping at "quick" is ~2-4x faster
+# and preserves ranking well enough within a fixed model size, but is NOT
+# reliable for absolute numbers or cross-model-size comparisons, so only
+# re-run the actual winners
 # through this before they go in a table).
 #
 # Runs eval_full.py TWICE against the same checkpoint into the SAME wandb
