@@ -44,7 +44,7 @@ def _run_lighteval(model_path: str, task_str: str, out_dir: str,
         f"tensor_parallel_size={tp_size},gpu_memory_utilization={gpu_util:.4f},"
         f"max_model_length={max_model_length},max_num_batched_tokens={max_model_length},seed={seed},"
         f"override_chat_template=true,"
-        f"generation_parameters={{max_new_tokens:{max_new_tokens},temperature:0.6,top_p:0.95}}"
+        f"generation_parameters={{max_new_tokens:{max_new_tokens},temperature:0.6,top_p:0.95,top_k:20}}"
     )
     cmd = [sys.executable, _LIGHTEVAL_RUNNER, "vllm", model_args, task_str,
            "--output-dir", out_dir, "--save-details"]
@@ -171,9 +171,9 @@ def run_lighteval_bench(
     benchmarks = [
         ("math500", "lighteval|math_500|0",           8192, 8192, max_samples,
          ["pass@k:k=1&n=1"]),
-        ("aime24",  "lighteval|aime24|0",             32768, 32768, max_samples,
+        ("aime24",  "lighteval|aime24|0",             38912, 38912, max_samples,
          ["pass@k:k=1", "pass@k:k=1&n=1"]),
-        ("aime25",  "lighteval|aime25|0",             32768, 32768, max_samples,
+        ("aime25",  "lighteval|aime25|0",             38912, 38912, max_samples,
          ["pass@k:k=1&n=1"]),
         ("gpqa",    "lighteval|gpqa:diamond|0",       8192, 8192, max_samples,
          ["gpqa_pass@k:k=1", "pass@k:k=1&n=1", "acc_norm", "acc"]),
