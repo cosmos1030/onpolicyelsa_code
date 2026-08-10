@@ -62,6 +62,7 @@ def parse_args():
     p.add_argument("--skip_zeroshot", action="store_true")
     p.add_argument("--skip_lighteval", action="store_true")
     p.add_argument("--max_samples", type=int, default=None, help="limit samples per lighteval benchmark (smoke test)")
+    p.add_argument("--benchmarks", default=None, help="comma-separated subset of lighteval benchmark names to run (e.g. aime24,aime25); default runs all")
     p.add_argument("--out_base", default=None, help="base dir for lighteval outputs")
     p.add_argument("--flops", type=float, default=None,
                    help="Precomputed compute cost (FLOPs) for the pruning/calibration step that produced this "
@@ -210,6 +211,7 @@ def main():
             log_to_wandb=False,
             tp_size=args.tp_size,
             max_samples=args.max_samples,
+            only_tasks=args.benchmarks.split(",") if args.benchmarks else None,
         )
         all_metrics.update(m)
         if use_wandb:

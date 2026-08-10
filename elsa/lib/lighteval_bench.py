@@ -1,6 +1,6 @@
-"""Run 5-benchmark eval suite via lighteval+vLLM subprocess.
+"""Run 7-benchmark eval suite via lighteval+vLLM subprocess.
 
-Benchmarks: MATH-500, GPQA-Diamond, IFEval, LiveCodeBench, GSM8K.
+Benchmarks: MATH-500, AIME24, AIME25, GPQA-Diamond, IFEval, LiveCodeBench, GSM8K.
 (MMLU-Redux was dropped: Qwen3's default "thinking mode" makes the model emit
 a `<think>` opening token first, which the task's generation_size=1 cuts off
 before any answer letter appears, so every subset scored 0 — not worth the
@@ -24,6 +24,12 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 LIGHTEVAL_BIN = str(Path(sys.executable).parent / "lighteval")
+# Runs lighteval as `python lighteval_patched_runner.py ...` instead of the
+# raw `lighteval` binary so a known upstream bug fix (AvgAtN.compute using
+# self.k instead of self.n) ships with this repo via git, rather than
+# depending on a manual site-packages edit per machine -- see that file for
+# details.
+_LIGHTEVAL_RUNNER = str(Path(__file__).resolve().parent.parent / "scripts" / "lighteval_patched_runner.py")
 
 
 def _run_lighteval(model_path: str, task_str: str, out_dir: str,
@@ -39,7 +45,7 @@ def _run_lighteval(model_path: str, task_str: str, out_dir: str,
         f"override_chat_template=true,"
         f"generation_parameters={{max_new_tokens:{max_new_tokens},temperature:0.6,top_p:0.95}}"
     )
-    cmd = [LIGHTEVAL_BIN, "vllm", model_args, task_str,
+    cmd = [sys.executable, _LIGHTEVAL_RUNNER, "vllm", model_args, task_str,
            "--output-dir", out_dir, "--save-details"]
     if max_samples is not None:
         cmd += ["--max-samples", str(max_samples)]
@@ -143,6 +149,7 @@ def run_lighteval_bench(
     max_samples: Optional[int] = None,
     log_to_wandb: bool = True,
     tp_size: int = 1,
+    only_tasks: Optional[list] = None,
 ) -> dict:
     """Run all 5 benchmarks and return metrics dict.
 
@@ -157,17 +164,24 @@ def run_lighteval_bench(
     """
     # (name, task_str, max_new_tokens, max_model_length, max_samples, correct_metric_keys)
     benchmarks = [
-        ("math500", "lighteval|math_500|0|0",           8192, 8192, max_samples,
+        ("math500", "lighteval|math_500|0",           8192, 8192, max_samples,
          ["pass@k:k=1&n=1"]),
-        ("gpqa",    "lighteval|gpqa:diamond|0|0",       8192, 8192, max_samples,
+        ("aime24",  "lighteval|aime24|0",             8192, 8192, max_samples,
+         ["pass@k:k=1&n=1"]),
+        ("aime25",  "lighteval|aime25|0",             8192, 8192, max_samples,
+         ["pass@k:k=1&n=1"]),
+        ("gpqa",    "lighteval|gpqa:diamond|0",       8192, 8192, max_samples,
          ["gpqa_pass@k:k=1", "pass@k:k=1&n=1", "acc_norm", "acc"]),
-        ("ifeval",  "lighteval|ifeval|0|0",             8192, 8192, max_samples,
+        ("ifeval",  "lighteval|ifeval|0",             8192, 8192, max_samples,
          ["prompt_level_strict_acc"]),
-        ("lcb",     "lighteval|lcb:codegeneration|0|0", 8192, 8192, max_samples,
+        ("lcb",     "lighteval|lcb:codegeneration|0", 8192, 8192, max_samples,
          ["codegen_pass@1:16", "pass@1"]),
-        ("gsm8k",   "lighteval|gsm8k|0|0",              2048, 4096, max_samples,
+        ("gsm8k",   "lighteval|gsm8k|0",              2048, 4096, max_samples,
          ["extractive_match", "acc"]),
     ]
+
+    if only_tasks is not None:
+        benchmarks = [b for b in benchmarks if b[0] in only_tasks]
 
     metrics = {}
     for name, task_str, max_tok, ctx_len, ms, correct_keys in benchmarks:
@@ -183,6 +197,12 @@ def run_lighteval_bench(
         if name == "math500":
             v = r.get("lighteval|math_500|0", {}).get("pass@k:k=1&n=1")
             metrics["lighteval/math500"] = float(v) if v is not None else float("nan")
+        elif name == "aime24":
+            v = r.get("lighteval|aime24|0", {}).get("pass@k:k=1&n=1")
+            metrics["lighteval/aime24"] = float(v) if v is not None else float("nan")
+        elif name == "aime25":
+            v = r.get("lighteval|aime25|0", {}).get("pass@k:k=1&n=1")
+            metrics["lighteval/aime25"] = float(v) if v is not None else float("nan")
         elif name == "gpqa":
             t = r.get("lighteval|gpqa:diamond|0", {})
             v = t.get("gpqa_pass@k:k=1", t.get("acc_norm", t.get("acc", t.get("pass@k:k=1&n=1"))))
