@@ -70,6 +70,9 @@ def parse_args():
     p.add_argument("--skip_lighteval", action="store_true")
     p.add_argument("--max_samples", type=int, default=None, help="limit samples per lighteval benchmark (smoke test)")
     p.add_argument("--benchmarks", default=None, help="comma-separated subset of lighteval benchmark names to run (e.g. aime24,aime25); default runs all")
+    p.add_argument("--profile", default="full", choices=["full", "quick"],
+                   help="'full' (default, official Qwen3 budgets incl. AIME24/25, ~2-4x slower) or "
+                        "'quick' (8192 budget, no AIME -- for ranking sweep configs before the expensive rerun)")
     p.add_argument("--out_base", default=None, help="base dir for lighteval outputs")
     p.add_argument("--flops", type=float, default=None,
                    help="Precomputed compute cost (FLOPs) for the pruning/calibration step that produced this "
@@ -159,6 +162,7 @@ def main():
             }
         run = wandb.init(**init_kwargs)
         use_wandb = True
+        logger.info(f"[eval_full] wandb run id: {run.id}")
     except Exception as e:
         logger.warning(f"wandb.init failed ({e}), continuing without wandb — results saved to JSON only")
         run = None
@@ -226,6 +230,7 @@ def main():
                 max_samples=args.max_samples,
                 only_tasks=only_tasks,
                 seed=s,
+                profile=args.profile,
             )
             per_seed_runs.append(m)
             if len(seeds) == 1:

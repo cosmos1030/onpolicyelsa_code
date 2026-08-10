@@ -831,6 +831,7 @@ def main(argv):
                 tp_size=world_size,
                 log_to_wandb=FLAGS.wandb,
                 seed=FLAGS.seed,
+                profile=FLAGS.eval_profile,
             )
             # Also log math500_pass@1 as top-level for sweep metric
             if "lighteval/math500" in bench_metrics and FLAGS.wandb:
@@ -1183,7 +1184,11 @@ if __name__ == '__main__':
     flags.DEFINE_bool('data_ablation', False, 'Whether to use data ablation, for section 5.5. If True, we fix the step size and control the number of train samples with --admm_num_train_samples.')
     flags.DEFINE_bool('eval_zero_shot', True, 'Whether to evaluate zero-shot performance.')
     flags.DEFINE_bool('eval_math500', False, 'Whether to run MATH-500 pass@1 eval after pruning (via lighteval+vLLM).')
-    flags.DEFINE_bool('eval_full_bench', True, 'Whether to run all 7 benchmarks (MATH-500, AIME24, AIME25, GPQA, IFEval, LCB, GSM8K) after training.')
+    flags.DEFINE_bool('eval_full_bench', True, 'Whether to run the lighteval benchmark suite after training.')
+    flags.DEFINE_enum('eval_profile', 'quick', ['quick', 'full'],
+                       "'quick' (default, 8192 budget, 5 tasks, no AIME24/25 -- fast enough for every sweep job) "
+                       "or 'full' (official Qwen3 budgets incl. AIME24/25, ~2-4x slower per benchmark -- only "
+                       "use for a specific run you already know is going in a results table, not a routine sweep).")
     flags.DEFINE_float('gmp_offline_ipo_lambda', 0.0, 'Weight for offline IPO loss (0 = disabled).')
     flags.DEFINE_float('gmp_offline_ipo_beta', 0.1, 'IPO beta for offline preference pairs.')
     flags.DEFINE_string('gmp_offline_ipo_datasets', 'HuggingFaceH4/ultrafeedback_binarized', 'Comma-separated HF preference dataset names.')

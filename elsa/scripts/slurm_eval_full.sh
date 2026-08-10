@@ -18,12 +18,23 @@ exec 2>&1
 # seed/tensor-parallel) -- useful for re-checking a benchmark after a config
 # change, or for multi-seed variance runs.
 #
-# Current lighteval settings (lib/lighteval_bench.py, as of 2026-08-10):
-#   math500/gpqa/ifeval/lcb: max_new_tokens=max_model_length=32768
-#   aime24/aime25:           max_new_tokens=max_model_length=38912
-#   gsm8k:                   2048/4096 (not in Qwen3's official post-training
-#                            thinking-mode suite, no official budget to match)
-#   sampling: temperature=0.6, top_p=0.95, top_k=20 (Qwen3 thinking-mode recipe)
+# PROFILE (lib/lighteval_bench.py) picks the budget/task-set:
+#   full (default here):  math500/gpqa/ifeval/lcb @ 32768, aime24/aime25 @
+#                          38912 (AIME24/25 only exist in this profile),
+#                          gsm8k @ 2048/4096. ~2-4x slower per benchmark than
+#                          quick even with tensor_parallel_size=2 (measured:
+#                          math500 1002.8s->~2316s, gpqa 617.6s->~1237s for
+#                          Qwen3-1.7B) -- use for a checkpoint that's actually
+#                          going in a results table.
+#   quick:                 math500/gpqa/ifeval/lcb @ 8192, gsm8k @ 2048/4096,
+#                          no AIME. What every sweep job used before
+#                          2026-08-10 and still the right choice for ranking
+#                          configs within one model size cheaply -- NOT
+#                          reliable for cross-model-size comparisons (that's
+#                          what motivated adding "full"; see DATASETS.md).
+#   sampling (both profiles): temperature=0.6, top_p=0.95, top_k=20 (Qwen3
+#   thinking-mode recipe -- top_k costs nothing extra, so both profiles use it).
+#
 #   Seeds: math500/ifeval/gsm8k/lcb are fine at 1 seed given their sample
 #   counts; AIME24/25 (30 problems each) and GPQA (198 problems) need 3 seeds
 #   (e.g. 42/0/1) -- 1 problem is a multi-point swing on AIME specifically.
@@ -32,14 +43,21 @@ exec 2>&1
 #   "<metric>_mean"/"<metric>_std" to the same wandb run (see eval_full.py
 #   --seeds) -- no manual wandb-API aggregation needed afterward.
 #
-# Usage: sbatch slurm_eval_full.sh <MODEL_PATH> <RUN_NAME> <METHOD> <SPARSITY> <WANDB_PROJECT> [BENCHMARKS] [SEED_OR_SEEDS] [TP_SIZE] [SKIP_PPL] [SKIP_ZEROSHOT]
+#   For the full two-stage "sweep cheap, re-verify the winner properly"
+#   workflow (quick sweep -> full re-eval of just the best config) see
+#   scripts/slurm_eval_final_protocol.sh instead of assembling it by hand here.
+#
+# Usage: sbatch slurm_eval_full.sh <MODEL_PATH> <RUN_NAME> <METHOD> <SPARSITY> <WANDB_PROJECT> [BENCHMARKS] [SEED_OR_SEEDS] [TP_SIZE] [SKIP_PPL] [SKIP_ZEROSHOT] [PROFILE]
 # e.g. (full eval, unchanged from before):
 #   sbatch slurm_eval_full.sh /path/to/model sgpt_s60 sparsegpt 0.6 reasoning_qwen3_4b
 # e.g. (AIME24/25, 3-seed variance run, tensor_parallel=2 -- pass GPU count via --gres too):
 #   sbatch --gres=gpu:2 --cpus-per-task=16 --mem=96G slurm_eval_full.sh \
-#     /path/to/Qwen3-8B aime_3seed_8b dense 0.0 reasoning_qwen3_8b aime24,aime25 42,0,1 2 true true
+#     /path/to/Qwen3-8B aime_3seed_8b dense 0.0 reasoning_qwen3_8b aime24,aime25 42,0,1 2 true true full
+# e.g. (quick sweep-ranking eval, no AIME, 8192 budget):
+#   sbatch slurm_eval_full.sh /path/to/checkpoint sweep_lr5e-5_mi32 gmp 0.6 \
+#     reasoning_qwen3_1.7b math500,gpqa,ifeval,lcb,gsm8k 42 1 false false quick
 
-MODEL_PATH=${1:?"Usage: sbatch slurm_eval_full.sh <MODEL_PATH> <RUN_NAME> <METHOD> <SPARSITY> <WANDB_PROJECT> [BENCHMARKS] [SEED_OR_SEEDS] [TP_SIZE] [SKIP_PPL] [SKIP_ZEROSHOT]"}
+MODEL_PATH=${1:?"Usage: sbatch slurm_eval_full.sh <MODEL_PATH> <RUN_NAME> <METHOD> <SPARSITY> <WANDB_PROJECT> [BENCHMARKS] [SEED_OR_SEEDS] [TP_SIZE] [SKIP_PPL] [SKIP_ZEROSHOT] [PROFILE]"}
 RUN_NAME=${2:-"eval"}
 METHOD=${3:-"sparsegpt"}
 SPARSITY=${4:-0.0}
@@ -49,6 +67,7 @@ SEED_OR_SEEDS=${7:-42}
 TP_SIZE=${8:-1}
 SKIP_PPL=${9:-false}
 SKIP_ZEROSHOT=${10:-false}
+PROFILE=${11:-full}
 
 PYTHON=/home1/doyoonkim/miniconda3/envs/rac/bin/python
 
@@ -84,6 +103,7 @@ EXTRA_ARGS=()
 [ -n "$BENCHMARKS" ] && EXTRA_ARGS+=(--benchmarks "$BENCHMARKS")
 [ "$SKIP_PPL" = "true" ] && EXTRA_ARGS+=(--skip_ppl)
 [ "$SKIP_ZEROSHOT" = "true" ] && EXTRA_ARGS+=(--skip_zeroshot)
+EXTRA_ARGS+=(--profile "$PROFILE")
 if [[ "$SEED_OR_SEEDS" == *,* ]]; then
     EXTRA_ARGS+=(--seeds "$SEED_OR_SEEDS")
 else
