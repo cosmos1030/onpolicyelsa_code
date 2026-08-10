@@ -151,7 +151,7 @@ def run_lighteval_bench(
     tp_size: int = 1,
     only_tasks: Optional[list] = None,
 ) -> dict:
-    """Run all 5 benchmarks and return metrics dict.
+    """Run the 7 benchmarks (or a subset) and return metrics dict.
 
     Args:
         model_path: path to saved model directory
@@ -159,6 +159,9 @@ def run_lighteval_bench(
         gpu_util: vLLM gpu_memory_utilization
         max_samples: if set, limit samples per benchmark (smoketest mode)
         log_to_wandb: whether to log metrics to active wandb run
+        only_tasks: if set, only run these benchmark names (subset of
+            math500/aime24/aime25/gpqa/ifeval/lcb/gsm8k) instead of all 7 --
+            e.g. to re-run just the one benchmark that crashed a prior eval.
     Returns:
         dict with keys like "lighteval/math500", "lighteval/gpqa_diamond", etc.
     """
@@ -179,7 +182,6 @@ def run_lighteval_bench(
         ("gsm8k",   "lighteval|gsm8k|0",              2048, 4096, max_samples,
          ["extractive_match", "acc"]),
     ]
-
     if only_tasks is not None:
         benchmarks = [b for b in benchmarks if b[0] in only_tasks]
 

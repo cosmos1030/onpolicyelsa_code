@@ -56,6 +56,7 @@ export TMPDIR=/tmp
 export HF_TOKEN=$(cat ~/.hf_token 2>/dev/null || echo "")
 export WANDB_API_KEY=$(grep WANDB_API_KEY ~/.bashrc | cut -d'=' -f2 | tail -1)
 export HF_HOME=/home/shared/huggingface
+export HF_HUB_DISABLE_XET=1
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export TOKENIZERS_PARALLELISM=false
 export VLLM_HOST_IP=127.0.0.1
