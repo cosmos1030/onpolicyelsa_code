@@ -20,22 +20,24 @@ exec 2>&1
 # rather than re-discovering this per dataset.
 # so a plain tokenization pass doesn't tie up a GPU slot other jobs need.
 #
-# Usage: sbatch slurm_prebuild_mixed_cot_cache.sh [DATA_PATH]
+# Usage: sbatch slurm_prebuild_mixed_cot_cache.sh [DATA_PATH] [MAX_LEN]
 # e.g.: sbatch slurm_prebuild_mixed_cot_cache.sh
 #       sbatch slurm_prebuild_mixed_cot_cache.sh /path/to/other.jsonl
+#       sbatch slurm_prebuild_mixed_cot_cache.sh /path/to/other_8192.jsonl 8192
 
 source /opt/anaconda3/2022.05/etc/profile.d/conda.sh
 conda activate rac
 
 REPO_ROOT="/home/doyoonkim/projects/onpolicyelsa_code/elsa"
 DATA_PATH=${1:-${REPO_ROOT}/data/ot3_fineweb_200k_qwen3_thinkstrip.jsonl}
+MAX_LEN=${2:-2048}
 
 export TOKENIZERS_PARALLELISM=false
 export HF_HOME=/home/shared/huggingface
 export HF_TOKEN=$(cat ~/.hf_token 2>/dev/null || echo "")
 
-echo "NODE=$(hostname)  JOB=$SLURM_JOB_ID  DATA_PATH=$DATA_PATH"
-python "${REPO_ROOT}/scripts/log_cluster/prebuild_mixed_cot_cache.py" "$DATA_PATH"
+echo "NODE=$(hostname)  JOB=$SLURM_JOB_ID  DATA_PATH=$DATA_PATH  MAX_LEN=$MAX_LEN"
+python "${REPO_ROOT}/scripts/log_cluster/prebuild_mixed_cot_cache.py" "$DATA_PATH" "$MAX_LEN"
 EXIT_CODE=$?
 echo "=== EXIT: $EXIT_CODE ==="
 exit $EXIT_CODE

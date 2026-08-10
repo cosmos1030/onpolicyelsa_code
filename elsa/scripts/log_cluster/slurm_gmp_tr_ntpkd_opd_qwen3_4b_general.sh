@@ -18,29 +18,44 @@ exec 2>&1
 # the THINKSTRIP sweep (2026-08-09, see SESSION_HANDOFF.md).
 #
 # Usage: sbatch [--partition=A100 --job-name=... --output=...] slurm_gmp_tr_ntpkd_opd_qwen3_4b_general.sh \
-#          <SPARSITY> <LR> <KL_THRESHOLD> <DATA_PATH> [OPD_PROMPT_PATH] [MASK_INTERVAL] [LR_SCHEDULER] [SALIENCY] [MODEL]
+#          <SPARSITY> <LR> <KL_THRESHOLD> <DATA_PATH> [OPD_PROMPT_PATH] [MASK_INTERVAL] [LR_SCHEDULER] [SALIENCY] [MODEL] \
+#          [SEQLEN] [GRAD_CKPT] [ONPOLICY_MAX_NEW_TOKENS] [WANDB_PROJECT] [EVAL_PROFILE]
+# EVAL_PROFILE: 'quick' (default -- 8192 budget, 5 tasks, no AIME24/25, fast
+#          enough for every sweep job) or 'full' (official Qwen3 budgets incl.
+#          AIME24/25, ~2-4x slower -- reserve for a specific checkpoint you
+#          already picked as a winner, via scripts/slurm_eval_final_protocol.sh).
 # e.g. (4B/H200, default): sbatch slurm_gmp_tr_ntpkd_opd_qwen3_4b_general.sh 0.5 5e-5 0.01 \
 #         /home/doyoonkim/projects/onpolicyelsa_code/elsa/data/ot3_100pct_qwen3_100k.jsonl "" 32 cosine spa
 # e.g. (1.7B/A100, override partition via sbatch flag): sbatch --partition=A100 --job-name=tr_ntpkd_opd_1.7b \
 #         slurm_gmp_tr_ntpkd_opd_qwen3_4b_general.sh 0.5 5e-5 0.01 \
 #         /home/doyoonkim/projects/onpolicyelsa_code/elsa/data/ot3_100pct_qwen3_100k.jsonl \
 #         "" 32 cosine spa Qwen/Qwen3-1.7B
+# e.g. (4B/H200, seqlen=8192 nostrip sweep, dedicated project): \
+#         sbatch slurm_gmp_tr_ntpkd_opd_qwen3_4b_general.sh 0.5 5e-5 0.02 \
+#         /home/doyoonkim/projects/onpolicyelsa_code/elsa/data/ot3_fineweb_40k_qwen3_nostrip_8192.jsonl \
+#         "" 16 cosine fisher Qwen/Qwen3-4B 8192 true 512 reasoning_qwen3_nostrip8192
 
-SPARSITY=${1:?"Usage: <SPARSITY> <LR> <KL_THRESHOLD> <DATA_PATH> [OPD_PROMPT_PATH] [MASK_INTERVAL] [LR_SCHEDULER] [SALIENCY] [MODEL]"}
-LR=${2:?"Usage: <SPARSITY> <LR> <KL_THRESHOLD> <DATA_PATH> [OPD_PROMPT_PATH] [MASK_INTERVAL] [LR_SCHEDULER] [SALIENCY] [MODEL]"}
-KL_THRESHOLD=${3:?"Usage: <SPARSITY> <LR> <KL_THRESHOLD> <DATA_PATH> [OPD_PROMPT_PATH] [MASK_INTERVAL] [LR_SCHEDULER] [SALIENCY] [MODEL]"}
-DATA_PATH=${4:?"Usage: <SPARSITY> <LR> <KL_THRESHOLD> <DATA_PATH> [OPD_PROMPT_PATH] [MASK_INTERVAL] [LR_SCHEDULER] [SALIENCY] [MODEL]"}
+SPARSITY=${1:?"Usage: <SPARSITY> <LR> <KL_THRESHOLD> <DATA_PATH> [OPD_PROMPT_PATH] [MASK_INTERVAL] [LR_SCHEDULER] [SALIENCY] [MODEL] [SEQLEN] [GRAD_CKPT] [ONPOLICY_MAX_NEW_TOKENS] [WANDB_PROJECT]"}
+LR=${2:?"Usage: <SPARSITY> <LR> <KL_THRESHOLD> <DATA_PATH> [OPD_PROMPT_PATH] [MASK_INTERVAL] [LR_SCHEDULER] [SALIENCY] [MODEL] [SEQLEN] [GRAD_CKPT] [ONPOLICY_MAX_NEW_TOKENS] [WANDB_PROJECT]"}
+KL_THRESHOLD=${3:?"Usage: <SPARSITY> <LR> <KL_THRESHOLD> <DATA_PATH> [OPD_PROMPT_PATH] [MASK_INTERVAL] [LR_SCHEDULER] [SALIENCY] [MODEL] [SEQLEN] [GRAD_CKPT] [ONPOLICY_MAX_NEW_TOKENS] [WANDB_PROJECT]"}
+DATA_PATH=${4:?"Usage: <SPARSITY> <LR> <KL_THRESHOLD> <DATA_PATH> [OPD_PROMPT_PATH] [MASK_INTERVAL] [LR_SCHEDULER] [SALIENCY] [MODEL] [SEQLEN] [GRAD_CKPT] [ONPOLICY_MAX_NEW_TOKENS] [WANDB_PROJECT]"}
 REPO_ROOT="/home/doyoonkim/projects/onpolicyelsa_code/elsa"
 OPD_PROMPT_PATH=${5:-${REPO_ROOT}/data/ot3_fineweb_200k_qwen3_opdprompts.jsonl}
 MASK_INTERVAL=${6:-32}
 LR_SCHEDULER=${7:-cosine}
 SALIENCY=${8:-fisher}
 MODEL=${9:-Qwen/Qwen3-4B}
+SEQLEN=${10:-2048}
+GRAD_CKPT=${11:-false}
+ONPOLICY_MAX_NEW_TOKENS=${12:-256}
+WANDB_PROJECT_OVERRIDE=${13:-}
+EVAL_PROFILE=${14:-quick}
 
-# wandb project follows the model size (reasoning_qwen3_4b / reasoning_qwen3_1.7b / ...),
-# matching this session's existing per-size project convention.
+# wandb project follows the model size (reasoning_qwen3_4b / reasoning_qwen3_1.7b / ...)
+# by default, matching this session's existing per-size project convention --
+# override with $13 to route a sweep into its own dedicated project instead.
 MODEL_TAG=$(echo "$MODEL" | sed -E 's#.*Qwen3-##; s#B$#b#' | tr '[:upper:]' '[:lower:]')
-WANDB_PROJECT="reasoning_qwen3_${MODEL_TAG}"
+WANDB_PROJECT="${WANDB_PROJECT_OVERRIDE:-reasoning_qwen3_${MODEL_TAG}}"
 
 # Short, deduplicated dataset tag for the run name (strips the repetitive
 # ot3_/fineweb_200k_/qwen3_ boilerplate shared by every dataset filename).
@@ -92,13 +107,14 @@ python main.py \
     --lr=${LR} \
     --lr_scheduler=${LR_SCHEDULER} \
     --lr_warmup_steps=256 \
-    --seqlen=2048 \
+    --seqlen=${SEQLEN} \
+    --gmp_gradient_checkpointing=${GRAD_CKPT} \
     --gmp_max_prompt_len=512 \
     --gmp_ntp_lambda=0.33 \
     --gmp_kd_lambda=0.33 \
     --gmp_onpolicy_kd_lambda=0.33 \
     --gmp_kd_only=false \
-    --gmp_onpolicy_max_new_tokens=256 \
+    --gmp_onpolicy_max_new_tokens=${ONPOLICY_MAX_NEW_TOKENS} \
     --gmp_opkd_prev_mask_teacher=false \
     --gmp_opkd_vllm_gpu_mem=0.15 \
     --gmp_prompt_path="$OPD_PROMPT_PATH" \
@@ -116,6 +132,7 @@ python main.py \
     --push_to_hub=true \
     --eval_math500=false \
     --eval_full_bench=true \
+    --eval_profile=${EVAL_PROFILE} \
     --eval_zero_shot=true \
     --wandb=true \
     --wandb_project=${WANDB_PROJECT} \
