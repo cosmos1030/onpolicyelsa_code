@@ -212,6 +212,7 @@ def main():
             tp_size=args.tp_size,
             max_samples=args.max_samples,
             only_tasks=args.benchmarks.split(",") if args.benchmarks else None,
+            seed=args.seed,
         )
         all_metrics.update(m)
         if use_wandb:

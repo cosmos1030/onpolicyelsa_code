@@ -37,11 +37,12 @@ def _run_lighteval(model_path: str, task_str: str, out_dir: str,
                    max_samples: Optional[int] = None,
                    max_model_length: int = 8192,
                    extra_args: Optional[list] = None,
-                   tp_size: int = 1) -> int:
+                   tp_size: int = 1,
+                   seed: int = 42) -> int:
     model_args = (
         f"model_name={model_path},dtype=bfloat16,trust_remote_code=true,"
         f"tensor_parallel_size={tp_size},gpu_memory_utilization={gpu_util:.4f},"
-        f"max_model_length={max_model_length},max_num_batched_tokens={max_model_length},seed=42,"
+        f"max_model_length={max_model_length},max_num_batched_tokens={max_model_length},seed={seed},"
         f"override_chat_template=true,"
         f"generation_parameters={{max_new_tokens:{max_new_tokens},temperature:0.6,top_p:0.95}}"
     )
@@ -150,6 +151,7 @@ def run_lighteval_bench(
     log_to_wandb: bool = True,
     tp_size: int = 1,
     only_tasks: Optional[list] = None,
+    seed: int = 42,
 ) -> dict:
     """Run the 7 benchmarks (or a subset) and return metrics dict.
 
@@ -189,7 +191,7 @@ def run_lighteval_bench(
     for name, task_str, max_tok, ctx_len, ms, correct_keys in benchmarks:
         out_dir = os.path.join(out_base, name)
         os.makedirs(out_dir, exist_ok=True)
-        rc, elapsed = _run_lighteval(model_path, task_str, out_dir, max_tok, gpu_util, ms, ctx_len, tp_size=tp_size)
+        rc, elapsed = _run_lighteval(model_path, task_str, out_dir, max_tok, gpu_util, ms, ctx_len, tp_size=tp_size, seed=seed)
         metrics[f"eval_time_sec/{name}"] = elapsed
         if rc != 0:
             logger.warning(f"[lighteval_bench] {name} exited with code {rc}")

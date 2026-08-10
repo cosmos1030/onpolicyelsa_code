@@ -830,6 +830,7 @@ def main(argv):
                 gpu_util=_vllm_gpu_util,
                 tp_size=world_size,
                 log_to_wandb=FLAGS.wandb,
+                seed=FLAGS.seed,
             )
             # Also log math500_pass@1 as top-level for sweep metric
             if "lighteval/math500" in bench_metrics and FLAGS.wandb:
