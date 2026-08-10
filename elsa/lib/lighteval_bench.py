@@ -169,17 +169,17 @@ def run_lighteval_bench(
     """
     # (name, task_str, max_new_tokens, max_model_length, max_samples, correct_metric_keys)
     benchmarks = [
-        ("math500", "lighteval|math_500|0",           8192, 8192, max_samples,
+        ("math500", "lighteval|math_500|0",           32768, 32768, max_samples,
          ["pass@k:k=1&n=1"]),
         ("aime24",  "lighteval|aime24|0",             38912, 38912, max_samples,
          ["pass@k:k=1", "pass@k:k=1&n=1"]),
         ("aime25",  "lighteval|aime25|0",             38912, 38912, max_samples,
          ["pass@k:k=1&n=1"]),
-        ("gpqa",    "lighteval|gpqa:diamond|0",       8192, 8192, max_samples,
+        ("gpqa",    "lighteval|gpqa:diamond|0",       32768, 32768, max_samples,
          ["gpqa_pass@k:k=1", "pass@k:k=1&n=1", "acc_norm", "acc"]),
         ("ifeval",  "lighteval|ifeval|0",             8192, 8192, max_samples,
          ["prompt_level_strict_acc"]),
-        ("lcb",     "lighteval|lcb:codegeneration|0", 8192, 8192, max_samples,
+        ("lcb",     "lighteval|lcb:codegeneration|0", 32768, 32768, max_samples,
          ["codegen_pass@1:16", "pass@1"]),
         ("gsm8k",   "lighteval|gsm8k|0",              2048, 4096, max_samples,
          ["extractive_match", "acc"]),
