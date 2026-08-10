@@ -172,7 +172,7 @@ def run_lighteval_bench(
         ("math500", "lighteval|math_500|0",           8192, 8192, max_samples,
          ["pass@k:k=1&n=1"]),
         ("aime24",  "lighteval|aime24|0",             32768, 32768, max_samples,
-         ["pass@k:k=1&n=1"]),
+         ["pass@k:k=1", "pass@k:k=1&n=1"]),
         ("aime25",  "lighteval|aime25|0",             32768, 32768, max_samples,
          ["pass@k:k=1&n=1"]),
         ("gpqa",    "lighteval|gpqa:diamond|0",       8192, 8192, max_samples,
