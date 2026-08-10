@@ -177,7 +177,7 @@ def run_lighteval_bench(
          ["pass@k:k=1&n=1"]),
         ("gpqa",    "lighteval|gpqa:diamond|0",       32768, 32768, max_samples,
          ["gpqa_pass@k:k=1", "pass@k:k=1&n=1", "acc_norm", "acc"]),
-        ("ifeval",  "lighteval|ifeval|0",             8192, 8192, max_samples,
+        ("ifeval",  "lighteval|ifeval|0",             32768, 32768, max_samples,
          ["prompt_level_strict_acc"]),
         ("lcb",     "lighteval|lcb:codegeneration|0", 32768, 32768, max_samples,
          ["codegen_pass@1:16", "pass@1"]),
