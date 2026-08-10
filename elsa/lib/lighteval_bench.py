@@ -200,10 +200,12 @@ def run_lighteval_bench(
             v = r.get("lighteval|math_500|0", {}).get("pass@k:k=1&n=1")
             metrics["lighteval/math500"] = float(v) if v is not None else float("nan")
         elif name == "aime24":
-            v = r.get("lighteval|aime24|0", {}).get("pass@k:k=1&n=1")
+            t = r.get("lighteval|aime24|0", {})
+            v = t.get("pass@k:k=1", t.get("pass@k:k=1&n=1"))
             metrics["lighteval/aime24"] = float(v) if v is not None else float("nan")
         elif name == "aime25":
-            v = r.get("lighteval|aime25|0", {}).get("pass@k:k=1&n=1")
+            t = r.get("lighteval|aime25|0", {})
+            v = t.get("pass@k:k=1", t.get("pass@k:k=1&n=1"))
             metrics["lighteval/aime25"] = float(v) if v is not None else float("nan")
         elif name == "gpqa":
             t = r.get("lighteval|gpqa:diamond|0", {})
