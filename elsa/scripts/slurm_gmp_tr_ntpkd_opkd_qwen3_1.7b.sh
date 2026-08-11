@@ -21,10 +21,12 @@ exec 2>&1
 # grounds the model on real CoT data directly, which reverse-KL-only KD/OPKD
 # doesn't replace.
 #
-# Usage: sbatch slurm_gmp_tr_ntpkd_opkd_qwen3_1.7b.sh <SPARSITY> <KL_THRESHOLD> [OPD_GEN_LEN] [MASK_INTERVAL] [LR_SCHEDULER] [STEPS] [POST_TARGET_STEPS] [LR]
+# Usage: sbatch slurm_gmp_tr_ntpkd_opkd_qwen3_1.7b.sh <SPARSITY> <KL_THRESHOLD> [OPD_GEN_LEN] [MASK_INTERVAL] [LR_SCHEDULER] [STEPS] [POST_TARGET_STEPS] [LR] [DATA_PATH] [SEQLEN] [GRAD_CKPT] [WANDB_PROJECT] [SALIENCY]
 # e.g.: sbatch slurm_gmp_tr_ntpkd_opkd_qwen3_1.7b.sh 0.5 0.01 256
 #       sbatch slurm_gmp_tr_ntpkd_opkd_qwen3_1.7b.sh 0.5 0.01 256 8 cosine 2048 8
 #       sbatch slurm_gmp_tr_ntpkd_opkd_qwen3_1.7b.sh 0.5 0.02 256 32 cosine 2048 0 5e-5
+#       sbatch slurm_gmp_tr_ntpkd_opkd_qwen3_1.7b.sh 0.5 0.05 512 16 cosine 2048 0 5e-5 \
+#         /home1/doyoonkim/projects/elsa/data/ot3_fineweb_40k_qwen3_nostrip_8192.jsonl 8192 false reasoning_qwen3_1.7b_nostrip8192 spa
 #
 # MASK_INTERVAL default is 8 (mask updates every 8 steps) and POST_TARGET_STEPS
 # default is 8 (stop 8 steps after TR-GMP's trust-region growth ACTUALLY hits
@@ -48,6 +50,7 @@ LR=${8:-1e-4}
 SEQLEN=${10:-2048}
 GRAD_CKPT=${11:-false}
 WANDB_PROJECT=${12:-reasoning_qwen3_1.7b}
+SALIENCY=${13:-fisher}
 SPARSITY_PCT=$(python3 -c "print(int(${SPARSITY}*100))")
 
 PYTHON=/home1/doyoonkim/miniconda3/envs/rac/bin/python
@@ -74,7 +77,7 @@ export TRITON_CACHE_DIR=/tmp/triton_cache_${USER}
 export HF_DATASETS_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 
-echo "=== TR-GMP NTP+KD+OPKD(0.33/0.33/0.33) Qwen3-1.7B s${SPARSITY_PCT} lr=${LR} kl=${KL_THRESHOLD} opd_gen_len=${OPD_GEN_LEN} mask_interval=${MASK_INTERVAL} lr_scheduler=${LR_SCHEDULER} steps=${STEPS} post_target_steps=${POST_TARGET_STEPS} (OT80/FW20) ==="
+echo "=== TR-GMP NTP+KD+OPKD(0.33/0.33/0.33) Qwen3-1.7B s${SPARSITY_PCT} lr=${LR} kl=${KL_THRESHOLD} opd_gen_len=${OPD_GEN_LEN} mask_interval=${MASK_INTERVAL} lr_scheduler=${LR_SCHEDULER} steps=${STEPS} post_target_steps=${POST_TARGET_STEPS} saliency=${SALIENCY} (OT80/FW20) ==="
 echo "NODE=$(hostname)  JOB=$SLURM_JOB_ID"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 
@@ -101,7 +104,7 @@ $PYTHON main.py \
     --gmp_warmup_ratio=0.05 \
     --gmp_mask_interval=${MASK_INTERVAL} \
     --gmp_fisher_beta=0.999 \
-    --gmp_saliency=fisher \
+    --gmp_saliency=${SALIENCY} \
     --seqlen=${SEQLEN} \
     --gmp_gradient_checkpointing=${GRAD_CKPT} \
     --gmp_max_prompt_len=512 \

@@ -272,8 +272,6 @@ class FisherAccumulator:
             v = v.redistribute(placements=[Replicate()]).to_local()
         if _DTENSOR_AVAILABLE and isinstance(m, DTensor):
             m = m.redistribute(placements=[Replicate()]).to_local()
-        v = v.float()
-        m = m.float()
         step = st.get('step', self._step)
         if torch.is_tensor(step):
             step = step.item()
@@ -282,14 +280,22 @@ class FisherAccumulator:
         eps = group.get('eps', 1e-8)
         lr = group.get('lr', 0.0)
         wd = group.get('weight_decay', 0.0)
+        # Each step below reuses/overwrites its own buffer in-place instead of
+        # keeping every intermediate (v, m, v_hat, m_hat, h, u...) alive at
+        # once -- the naive out-of-place version held ~7 full-model-sized fp32
+        # tensors simultaneously (peak memory 3-4x fisher's), which OOM'd a
+        # 1.7B model on an 80GB GPU. `.float()` already makes a private copy
+        # (states are bf16), so mutating it in place is safe.
+        h = v.float()  # private copy; becomes h in place
         if step > 0:
-            v_hat = v / (1.0 - beta2 ** step)
-            m_hat = m / (1.0 - beta1 ** step)
-        else:
-            v_hat, m_hat = v, m
-        h = v_hat.sqrt() + eps
-        u = (1.0 - lr * wd) * param.data.float() - lr * m_hat / h
-        imp = h * u ** 2
+            h.div_(1.0 - beta2 ** step)
+        h.sqrt_().add_(eps)  # h = sqrt(v_hat) + eps; v_hat's buffer freed
+        u = m.float()  # private copy; becomes u in place
+        if step > 0:
+            u.div_(1.0 - beta1 ** step)
+        u.div_(h).mul_(-lr).add_(param.data.float(), alpha=(1.0 - lr * wd))
+        # u = (1-lr*wd)*w - lr*m_hat/h ; m_hat's buffer freed
+        imp = u.pow_(2).mul_(h)  # imp = h * u^2, written into u's buffer
         if imp.sum() == 0:
             imp = param.data.float() ** 2
         return imp
@@ -726,14 +732,20 @@ def _kl_loss(s_logits, t_logits, labels, temperature, topk, reverse=False):
 
     if reverse:
         # D(S||T) = sum_x S(x) * (log S(x) - log T(x)), always >= 0
-        kl = (s_logp_full.exp() * (s_logp_full - t_logp_full)).sum(dim=-1)
+        # F.kl_div is a fused kernel: mathematically identical to
+        # (s_logp.exp() * (s_logp - t_logp)).sum(-1) but doesn't materialize
+        # exp()/subtract/multiply as separate (B,T,V) tensors -- at
+        # seqlen=8192 x full vocab (~152k) each such tensor is ~5GB, so the
+        # naive elementwise chain was keeping 3-4 of them alive at once and
+        # eating most of an 80GB GPU's headroom for this single loss term.
+        kl = F.kl_div(t_logp_full, s_logp_full, log_target=True, reduction='none').sum(dim=-1)
     elif topk > 0:
         t_topk_idx = t_logits.topk(topk, dim=-1).indices     # (B, T-1, K)
         t_logp = t_logp_full.gather(-1, t_topk_idx)
         s_logp = s_logp_full.gather(-1, t_topk_idx)
         kl = (t_logp.exp() * (t_logp - s_logp)).sum(dim=-1)
     else:
-        kl = (t_logp_full.exp() * (t_logp_full - s_logp_full)).sum(dim=-1)
+        kl = F.kl_div(s_logp_full, t_logp_full, log_target=True, reduction='none').sum(dim=-1)
 
     diag = {}
     if topk > 0:
