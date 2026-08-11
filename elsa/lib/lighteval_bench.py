@@ -143,20 +143,21 @@ def _compute_token_stats(out_dir: str, bench_name: str, max_new_tokens: int,
         return {}
 
 
-# Two profiles, because the "full" official-protocol budgets (32768/38912,
+# Two profiles, because the "official" Qwen3-protocol budgets (32768/38912,
 # +AIME24/25) are ~2-4x slower per benchmark even with tensor_parallel_size=2
 # (measured: math500 1002.8s->~2316s, gpqa 617.6s->~1237s for Qwen3-1.7B) --
 # too expensive to pay on every job in a hyperparameter sweep. Recommended
-# workflow: sweep with profile="quick" (fast, same budgets/task-set this
-# project always used before 2026-08-10), pick winning config(s) by whatever
+# workflow: sweep with profile="quick" (same budgets/task-set this project
+# always used before 2026-08-10), pick winning config(s) by whatever
 # criterion makes sense for the sweep, then re-run only those checkpoint(s)
-# with profile="full" (see scripts/slurm_eval_final_protocol.sh) before they
-# go in a results table. profile="quick" is NOT reliable for cross-model-size
-# comparisons (that's what motivated adding "full" in the first place -- see
-# DATASETS.md) but is fine for ranking configs within one model size.
+# with profile="official" (see scripts/slurm_eval_final_protocol.sh) before
+# they go in a results table. profile="quick" is NOT reliable for
+# cross-model-size comparisons (that's what motivated adding "official" in
+# the first place -- see DATASETS.md) but is fine for ranking configs within
+# one model size.
 #
 # (name, task_str, max_new_tokens, max_model_length, correct_metric_keys)
-_FULL_BENCHMARKS = [
+_OFFICIAL_BENCHMARKS = [
     ("math500", "lighteval|math_500|0",           32768, 32768,
      ["pass@k:k=1&n=1"]),
     ("aime24",  "lighteval|aime24|0",             38912, 38912,
@@ -185,7 +186,7 @@ _QUICK_BENCHMARKS = [
     ("gsm8k",   "lighteval|gsm8k|0",              2048, 4096,
      ["extractive_match", "acc"]),
     # no aime24/aime25 in "quick" -- they're the single biggest added cost
-    # (38912 budget, 2x30 problems) and the main reason "full" is expensive.
+    # (38912 budget, 2x30 problems) and the main reason "official" is expensive.
 ]
 
 
@@ -198,7 +199,7 @@ def run_lighteval_bench(
     tp_size: int = 1,
     only_tasks: Optional[list] = None,
     seed: int = 42,
-    profile: str = "full",
+    profile: str = "official",
 ) -> dict:
     """Run the lighteval benchmark suite (or a subset) and return metrics dict.
 
@@ -211,15 +212,16 @@ def run_lighteval_bench(
         only_tasks: if set, only run these benchmark names (subset of
             math500/aime24/aime25/gpqa/ifeval/lcb/gsm8k) instead of all of
             them -- e.g. to re-run just the one benchmark that crashed.
-        profile: "full" (official Qwen3 budgets, 7 tasks incl. AIME24/25,
+        profile: "official" (official Qwen3 budgets, 7 tasks incl. AIME24/25,
             ~2-4x slower) or "quick" (8192 budget, 5 tasks, no AIME --
             for ranking configs within a sweep before the expensive rerun).
     Returns:
         dict with keys like "lighteval/math500", "lighteval/gpqa_diamond", etc.
     """
-    if profile not in ("full", "quick"):
-        raise ValueError(f"profile must be 'full' or 'quick', got {profile!r}")
-    base = _FULL_BENCHMARKS if profile == "full" else _QUICK_BENCHMARKS
+    profile = {"full": "official"}.get(profile, profile)  # old name
+    if profile not in ("official", "quick"):
+        raise ValueError(f"profile must be 'official' or 'quick', got {profile!r}")
+    base = _OFFICIAL_BENCHMARKS if profile == "official" else _QUICK_BENCHMARKS
     benchmarks = [(name, task_str, max_tok, ctx_len, max_samples, keys)
                   for name, task_str, max_tok, ctx_len, keys in base]
     if only_tasks is not None:

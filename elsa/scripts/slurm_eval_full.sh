@@ -12,14 +12,17 @@
 #SBATCH --output=/home1/doyoonkim/projects/elsa/logs/eval_full_%j.out
 exec 2>&1
 
-# Full eval (PPL + zero-shot + lighteval bench, 7 tasks by default) for an
+# Complete eval (PPL + zero-shot + lighteval bench, 7 tasks by default) for an
 # existing checkpoint. Optional trailing args let you narrow this down to a
 # lighteval-only rerun (skip PPL/zero-shot, pick specific benchmarks, set
 # seed/tensor-parallel) -- useful for re-checking a benchmark after a config
 # change, or for multi-seed variance runs.
 #
-# PROFILE (lib/lighteval_bench.py) picks the budget/task-set:
-#   full (default here):  math500/gpqa/ifeval/lcb @ 32768, aime24/aime25 @
+# PROFILE (lib/lighteval_bench.py) picks the budget/task-set -- "quick" vs
+# "official" (renamed from "full" so it can't be confused with this script's
+# own name, eval_full.py, which always runs the complete PPL+zeroshot+
+# reasoning suite regardless of which profile you pick):
+#   official (default here): math500/gpqa/ifeval/lcb @ 32768, aime24/aime25 @
 #                          38912 (AIME24/25 only exist in this profile),
 #                          gsm8k @ 2048/4096. ~2-4x slower per benchmark than
 #                          quick even with tensor_parallel_size=2 (measured:
@@ -31,7 +34,7 @@ exec 2>&1
 #                          2026-08-10 and still the right choice for ranking
 #                          configs within one model size cheaply -- NOT
 #                          reliable for cross-model-size comparisons (that's
-#                          what motivated adding "full"; see DATASETS.md).
+#                          what motivated adding "official"; see DATASETS.md).
 #   sampling (both profiles): temperature=0.6, top_p=0.95, top_k=20 (Qwen3
 #   thinking-mode recipe -- top_k costs nothing extra, so both profiles use it).
 #
@@ -44,15 +47,15 @@ exec 2>&1
 #   --seeds) -- no manual wandb-API aggregation needed afterward.
 #
 #   For the full two-stage "sweep cheap, re-verify the winner properly"
-#   workflow (quick sweep -> full re-eval of just the best config) see
+#   workflow (quick sweep -> official re-eval of just the best config) see
 #   scripts/slurm_eval_final_protocol.sh instead of assembling it by hand here.
 #
 # Usage: sbatch slurm_eval_full.sh <MODEL_PATH> <RUN_NAME> <METHOD> <SPARSITY> <WANDB_PROJECT> [BENCHMARKS] [SEED_OR_SEEDS] [TP_SIZE] [SKIP_PPL] [SKIP_ZEROSHOT] [PROFILE]
-# e.g. (full eval, unchanged from before):
+# e.g. (official-protocol eval, unchanged from before):
 #   sbatch slurm_eval_full.sh /path/to/model sgpt_s60 sparsegpt 0.6 reasoning_qwen3_4b
 # e.g. (AIME24/25, 3-seed variance run, tensor_parallel=2 -- pass GPU count via --gres too):
 #   sbatch --gres=gpu:2 --cpus-per-task=16 --mem=96G slurm_eval_full.sh \
-#     /path/to/Qwen3-8B aime_3seed_8b dense 0.0 reasoning_qwen3_8b aime24,aime25 42,0,1 2 true true full
+#     /path/to/Qwen3-8B aime_3seed_8b dense 0.0 reasoning_qwen3_8b aime24,aime25 42,0,1 2 true true official
 # e.g. (quick sweep-ranking eval, no AIME, 8192 budget):
 #   sbatch slurm_eval_full.sh /path/to/checkpoint sweep_lr5e-5_mi32 gmp 0.6 \
 #     reasoning_qwen3_1.7b math500,gpqa,ifeval,lcb,gsm8k 42 1 false false quick
@@ -67,7 +70,7 @@ SEED_OR_SEEDS=${7:-42}
 TP_SIZE=${8:-1}
 SKIP_PPL=${9:-false}
 SKIP_ZEROSHOT=${10:-false}
-PROFILE=${11:-full}
+PROFILE=${11:-official}
 
 PYTHON=/home1/doyoonkim/miniconda3/envs/rac/bin/python
 

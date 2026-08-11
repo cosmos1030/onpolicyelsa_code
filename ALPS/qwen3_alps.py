@@ -270,8 +270,8 @@ if __name__ == '__main__':
     parser.add_argument('--rho', type=float, default=300.0)
     parser.add_argument('--save', type=str, default='')
     parser.add_argument('--eval_full', action='store_true', help='Run full eval (PPL+zeroshot+lighteval) after pruning')
-    parser.add_argument('--profile', type=str, default='full', choices=['full', 'quick'],
-                         help="lighteval profile passed through to eval_full.py: 'full' (32768/38912 budget, "
+    parser.add_argument('--profile', type=str, default='official', choices=['official', 'quick'],
+                         help="lighteval profile passed through to eval_full.py: 'official' (32768/38912 budget, "
                               "incl. AIME24/25) or 'quick' (8192 budget, no AIME -- for ranking configs cheaply)")
     parser.add_argument('--wandb_project', type=str, default='reasoning_qwen3_1.7b')
     parser.add_argument('--run_name', type=str, default='')

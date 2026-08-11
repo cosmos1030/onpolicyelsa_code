@@ -21,7 +21,7 @@ exec 2>&1
 #          <SPARSITY> <LR> <KL_THRESHOLD> <DATA_PATH> [OPD_PROMPT_PATH] [MASK_INTERVAL] [LR_SCHEDULER] [SALIENCY] [MODEL] \
 #          [SEQLEN] [GRAD_CKPT] [ONPOLICY_MAX_NEW_TOKENS] [WANDB_PROJECT] [EVAL_PROFILE]
 # EVAL_PROFILE: 'quick' (default -- 8192 budget, 5 tasks, no AIME24/25, fast
-#          enough for every sweep job) or 'full' (official Qwen3 budgets incl.
+#          enough for every sweep job) or 'official' (official Qwen3 budgets incl.
 #          AIME24/25, ~2-4x slower -- reserve for a specific checkpoint you
 #          already picked as a winner, via scripts/slurm_eval_final_protocol.sh).
 # e.g. (4B/H200, default): sbatch slurm_gmp_tr_ntpkd_opd_qwen3_4b_general.sh 0.5 5e-5 0.01 \

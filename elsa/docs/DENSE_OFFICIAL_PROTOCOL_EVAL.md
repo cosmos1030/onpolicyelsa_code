@@ -16,7 +16,7 @@ dyk6208-gwangju-institute-of-science-and-technology.
 | Model | MATH-500 | IFEval | GPQA-Diamond (mean ± std, n) | LiveCodeBench (mean ± std, n) |
 |---|---|---|---|---|
 | Qwen3-1.7B | 89.6 | 71.4 | 40.1 ± 2.0 (n=3: 42.4/38.9/38.9) | 32.6 ± 1.8 (n=3: 31.7/31.3/34.7) |
-| Qwen3-4B   | 95.8 | 81.0 | 57.1 ± 3.6 (n=2: 59.6/54.6 — seed 42 pending, job 710046) | 52.0 ± 0.6 (n=3: 51.9/52.6/51.5) |
+| Qwen3-4B   | 95.8 | 81.0 | 55.2 ± 4.1 (n=3: 59.6/51.5/54.6) | 52.0 ± 0.6 (n=3: 51.9/52.6/51.5) |
 | Qwen3-8B   | 96.8 | 83.9 | 58.6 ± 1.0 (n=3: 58.6/57.6/59.6) | 57.6 ± 0.9 (n=3: 58.6/57.5/56.7) |
 
 Per-seed raw values (GPQA/LCB):
@@ -24,14 +24,14 @@ Per-seed raw values (GPQA/LCB):
 | Model | GPQA seed=42 | GPQA seed=0 | GPQA seed=1 | LCB seed=42 | LCB seed=0 | LCB seed=1 |
 |---|---|---|---|---|---|---|
 | 1.7B | 42.42 | 38.89 | 38.89 | 31.72 | 31.34 | 34.70 |
-| 4B   | 59.60 | pending (710046) | 54.55 | 51.87 | 52.61 | 51.49 |
+| 4B   | 59.60 | 51.52 | 54.55 | 51.87 | 52.61 | 51.49 |
 | 8B   | 58.59 | 57.58 | 59.60 | 58.58 | 57.46 | 56.72 |
 
 ## Notes / caveats
 
-- 4B GPQA seed=0 (job 710046) still running as of this write-up — was missed on the first
-  timeout-retry pass (only seed=1 for 4B was resubmitted; seed=0 for 4B slipped through).
-  Update this file once it lands.
+- All 3 seeds now landed for every model/benchmark (4B GPQA seed=0, job 710046, was
+  missed on the first timeout-retry pass — only seed=1 for 4B was resubmitted initially,
+  seed=0 slipped through and was caught and resubmitted afterward).
 - All GPQA/LCB retries needed a longer `--time` than the original submissions
   (2h/3h original limits were too short at 32768 budget + tp=2; retries used 8-10h).
   See job history: 709216/17/18/19 (gpqa, 2h) and 709225/26/27/28 (lcb, 3h) timed out;

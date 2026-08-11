@@ -73,7 +73,7 @@ $PYTHON scripts/eval_full.py \
     --gpu_util 0.85 \
     --tp_size "$TP_SIZE" \
     --benchmarks math500,ifeval,lcb \
-    --profile full \
+    --profile official \
     --out_base "$LOCAL_JOB_BASE/eval_${RUN_NAME}" \
     2>&1 | tee "$STAGE1_LOG"
 
@@ -97,7 +97,7 @@ $PYTHON scripts/eval_full.py \
     --skip_zeroshot \
     --benchmarks gpqa,aime24,aime25 \
     --seeds 42,0,1 \
-    --profile full \
+    --profile official \
     --out_base "$LOCAL_JOB_BASE/eval_${RUN_NAME}_stage2"
 
 echo "##### END ##### (wandb run: $RUN_ID)"

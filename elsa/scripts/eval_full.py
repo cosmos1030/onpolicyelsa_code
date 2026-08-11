@@ -70,9 +70,10 @@ def parse_args():
     p.add_argument("--skip_lighteval", action="store_true")
     p.add_argument("--max_samples", type=int, default=None, help="limit samples per lighteval benchmark (smoke test)")
     p.add_argument("--benchmarks", default=None, help="comma-separated subset of lighteval benchmark names to run (e.g. aime24,aime25); default runs all")
-    p.add_argument("--profile", default="full", choices=["full", "quick"],
-                   help="'full' (default, official Qwen3 budgets incl. AIME24/25, ~2-4x slower) or "
-                        "'quick' (8192 budget, no AIME -- for ranking sweep configs before the expensive rerun)")
+    p.add_argument("--profile", default="official", choices=["official", "quick", "full"],
+                   help="'official' (default, official Qwen3 budgets incl. AIME24/25, ~2-4x slower) or "
+                        "'quick' (8192 budget, no AIME -- for ranking sweep configs before the expensive rerun). "
+                        "'full' still accepted (old name for 'official').")
     p.add_argument("--out_base", default=None, help="base dir for lighteval outputs")
     p.add_argument("--flops", type=float, default=None,
                    help="Precomputed compute cost (FLOPs) for the pruning/calibration step that produced this "
