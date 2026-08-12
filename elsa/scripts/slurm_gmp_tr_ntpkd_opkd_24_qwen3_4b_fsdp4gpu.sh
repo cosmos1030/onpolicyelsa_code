@@ -2,7 +2,7 @@
 #SBATCH --job-name=tr_ntpkd_opkd_24_4b_fsdp4
 #SBATCH --partition=A100-80GB
 #SBATCH --qos=hpgpu
-#SBATCH --gres=gpu:2
+#SBATCH --gres=gpu:4
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=24
@@ -13,18 +13,27 @@
 exec 2>&1
 
 # TR-GMP NTP+KD+OPKD(0.33/0.33/0.33) for Qwen3-4B, 2:4 semi-structured
-# sparsity, 4-GPU FSDP (FULL_SHARD) on 4xA100-80GB -- same colocate pattern
-# as the newly-pulled 8B/2xH200 script (log_cluster/slurm_gmp_tr_ntpkd_opd_qwen3_8b_fsdp2gpu.sh):
-# vLLM (OPKD rollouts) shares training rank 0's physical GPU
-# (gmp_opkd_vllm_gpu_index=0) instead of a dedicated extra GPU, since a
-# second co-existing NCCL process group on a DIFFERENT GPU works fine, only
-# tensor-parallel vLLM sharing GPUs with an active FSDP group deadlocked.
+# sparsity, 4-GPU FSDP (FULL_SHARD) on 4xA100-80GB, vLLM (OPKD rollouts)
+# colocated on training rank 0's physical GPU (gmp_opkd_vllm_gpu_index=0,
+# gpu_mem=0.15) rather than a dedicated extra GPU -- a dedicated vLLM GPU
+# (tried at gpu:3/nproc=2) sits mostly idle between rollouts, wasting a
+# whole card; sharding training across 4 GPUs instead of 2 leaves enough
+# headroom per GPU for vLLM's slice without needing to dedicate one.
+# (gpu_mem=0.10 on the earlier 2-GPU colocate attempt failed outright --
+# too little for vLLM to even load a 4B model; 0.15 loaded but then OOM'd
+# during the first OPKD pool refill once combined with a 2-way-sharded
+# training footprint -- 4-way sharding should leave more room.)
 #
 # Structured-L1 pre-conditioning (gmp_l1_lambda, bottom-2-per-group,
 # gmp_l1_structured=true default) shrinks to-be-pruned weights toward zero
 # during normal KL-bounded training steps so the eventual hard 2:4 cut is
 # close to a no-op -- see the _structured_l1_loss bug fix (closed groups no
 # longer get penalized) validated by canary job 718464 (1xA100, no FSDP).
+# Under FSDP1 (classic FullyShardedDataParallel, no DTensor here), the term
+# is computed via forward pre-hooks on each Linear (_register_structured_l1_hooks)
+# that fire while FSDP has that layer's params fully gathered, so it rides
+# FSDP's own forward/backward machinery instead of a separate
+# summon_full_params+backward() pass (tried, failed two different ways).
 #
 # Usage: sbatch slurm_gmp_tr_ntpkd_opkd_24_qwen3_4b_fsdp4gpu.sh <SPARSITY> <LR> <KL_THRESHOLD> [MASK_INTERVAL] [L1_LAMBDA] [DATA_PATH] [WANDB_PROJECT]
 # e.g.: sbatch slurm_gmp_tr_ntpkd_opkd_24_qwen3_4b_fsdp4gpu.sh 0.5 1e-4 0.02
@@ -65,7 +74,7 @@ export NCCL_DEBUG=WARN
 
 MASTER_PORT=$(python -c "import socket; s=socket.socket(); s.bind(('',0)); p=s.getsockname()[1]; s.close(); print(p)")
 
-echo "=== TR-GMP NTP+KD+OPKD(0.33/0.33/0.33) 2:4 Qwen3-4B s${SPARSITY_PCT} lr=${LR} kl=${KL_THRESHOLD} mi=${MASK_INTERVAL} l1=${L1_LAMBDA} -- 2xA100 FSDP, vLLM sharing GPU0 (OT80/FW20) ==="
+echo "=== TR-GMP NTP+KD+OPKD(0.33/0.33/0.33) 2:4 Qwen3-4B s${SPARSITY_PCT} lr=${LR} kl=${KL_THRESHOLD} mi=${MASK_INTERVAL} l1=${L1_LAMBDA} -- 4xA100 FSDP, vLLM colocated on GPU0 (OT80/FW20) ==="
 echo "NODE=$(hostname)  JOB=$SLURM_JOB_ID"
 nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader
 
@@ -76,7 +85,7 @@ fi
 
 cd /home1/doyoonkim/projects/elsa
 
-$TORCHRUN --nproc_per_node=2 --master_port=${MASTER_PORT} main.py \
+$TORCHRUN --nproc_per_node=4 --master_port=${MASTER_PORT} main.py \
     --model="$MODEL" \
     --dataset=mixed_cot \
     --data_path="$DATA_PATH" \
@@ -88,7 +97,7 @@ $TORCHRUN --nproc_per_node=2 --master_port=${MASTER_PORT} main.py \
     --steps=2048 \
     --gmp_post_target_steps=0 \
     --gmp_batch_size=1 \
-    --gmp_grad_accum=4 \
+    --gmp_grad_accum=2 \
     --lr=${LR} \
     --lr_scheduler=cosine \
     --lr_warmup_steps=256 \

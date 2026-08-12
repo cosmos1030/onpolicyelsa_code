@@ -71,49 +71,98 @@ def _structured_l1_loss(named_params: dict, masks: dict, prune_n: int, prune_m: 
     and would bias the gradient signal.
     Normalized by alive element count so scale stays comparable to per-token NTP loss.
 
-    named_params must hold full, unsharded [rows, cols] tensors -- under FSDP1
-    (classic FullyShardedDataParallel, this file does not use FSDP2/DTensor)
-    each rank's plain param is a flat, differently-sized local shard, so the
-    reshape-into-groups-of-M logic below is only valid inside a
-    FSDP.summon_full_params(fsdp_model, with_grads=True) block; see the call
-    site for how the resulting loss's backward() is isolated from the main
-    training loss's backward() to avoid interleaving with FSDP's own
-    sharded forward/backward hooks.
+    named_params must hold full, unsharded [rows, cols] tensors -- not valid
+    directly under FSDP1 (classic FullyShardedDataParallel; this file does
+    not use FSDP2/DTensor), where each rank only holds a flat, differently
+    -sized local shard. See _register_structured_l1_hooks for the FSDP path,
+    which computes the same per-layer term via _structured_l1_layer_term
+    from inside a forward pre-hook (params are guaranteed fully gathered
+    there) instead.
     """
     total = None
     count = 0
     for name, param in named_params.items():
-        w = param
         mask = masks.get(name)
-        if w.dim() < 2:
-            alive = w[mask] if mask is not None else w
-            term = alive.abs().sum()
-            n = alive.numel()
-        else:
-            n_rows, n_cols = w.shape
-            n_full = n_cols // prune_m
-            n_nm_cols = n_full * prune_m
-            w_nm = w[:, :n_nm_cols].reshape(n_rows * n_full, prune_m)
-            alive_nm = mask[:, :n_nm_cols].reshape(n_rows * n_full, prune_m) if mask is not None \
-                       else torch.ones_like(w_nm, dtype=torch.bool)
-            # exclude groups already at their prune_n cap -- nothing left to
-            # decide there, so they must never contribute to this loss
-            open_nm = (alive_nm.sum(dim=1, keepdim=True) > prune_n).expand_as(alive_nm)
-            # within each group, only consider alive weights for bottom-k selection
-            metric = w_nm.abs()
-            metric[~alive_nm] = float('inf')  # dead weights can't be bottom-k
-            n_pruned = prune_m - prune_n
-            bottom_idx = torch.topk(metric, n_pruned, dim=1, largest=False).indices
-            selected = w_nm.abs().gather(1, bottom_idx)
-            # only count positions that are actually alive AND in a still-open group
-            alive_selected = alive_nm.gather(1, bottom_idx) & open_nm.gather(1, bottom_idx)
-            term = selected[alive_selected].sum()
-            n = int(alive_selected.sum().item())
+        term, n = _structured_l1_layer_term(param, mask, prune_n, prune_m)
+        if term is None:
+            continue
         total = term if total is None else total + term
         count += n
     if total is None or count == 0:
         return torch.tensor(0.0)
     return total / count
+
+
+def _structured_l1_layer_term(w: torch.Tensor, mask, prune_n: int, prune_m: int):
+    """Single-layer structured-L1 contribution (sum, alive-count) -- the per-
+    parameter body of _structured_l1_loss, factored out so the FSDP forward-
+    hook path (_register_structured_l1_hooks) can call it per-layer while
+    `w` is momentarily the full gathered weight, without needing the whole
+    named_params dict to be full-shape at once. Returns (None, 0) if the
+    layer contributes nothing (e.g. n_full == 0)."""
+    if w.dim() < 2:
+        alive = w[mask] if mask is not None else w
+        if alive.numel() == 0:
+            return None, 0
+        return alive.abs().sum(), alive.numel()
+    n_rows, n_cols = w.shape
+    n_full = n_cols // prune_m
+    if n_full == 0:
+        return None, 0
+    n_nm_cols = n_full * prune_m
+    w_nm = w[:, :n_nm_cols].reshape(n_rows * n_full, prune_m)
+    alive_nm = mask[:, :n_nm_cols].reshape(n_rows * n_full, prune_m) if mask is not None \
+               else torch.ones_like(w_nm, dtype=torch.bool)
+    # exclude groups already at their prune_n cap -- nothing left to
+    # decide there, so they must never contribute to this loss
+    open_nm = (alive_nm.sum(dim=1, keepdim=True) > prune_n).expand_as(alive_nm)
+    # within each group, only consider alive weights for bottom-k selection
+    metric = w_nm.abs()
+    metric = metric.masked_fill(~alive_nm, float('inf'))  # dead weights can't be bottom-k
+    n_pruned = prune_m - prune_n
+    bottom_idx = torch.topk(metric, n_pruned, dim=1, largest=False).indices
+    selected = w_nm.abs().gather(1, bottom_idx)
+    # only count positions that are actually alive AND in a still-open group
+    alive_selected = alive_nm.gather(1, bottom_idx) & open_nm.gather(1, bottom_idx)
+    term = selected[alive_selected].sum()
+    n = int(alive_selected.sum().item())
+    if n == 0:
+        return None, 0
+    return term, n
+
+
+def _register_structured_l1_hooks(model, named_params: dict, masks: dict, prune_n: int, prune_m: int):
+    """Register forward PRE-hooks on each target Linear so its structured-L1
+    contribution is computed at the moment FSDP has that layer's parameters
+    fully gathered (pre-hook fires before the layer's own forward math, i.e.
+    strictly after the enclosing FSDP unit's all-gather and strictly before
+    its post-forward reshard) -- riding FSDP's own, already-correct forward/
+    backward machinery instead of a separate summon_full_params + backward()
+    pass, which torch's exit-time grad-resharding doesn't support for a
+    freshly computed (not pre-existing) gradient (see call site history).
+
+    Returns (handles, terms) -- terms is a list this call appends
+    (term_tensor, alive_count) tuples to as hooks fire during the NEXT
+    forward pass; caller sums it into the main loss BEFORE calling
+    loss.backward(), then removes the handles.
+    """
+    name_to_module = dict(model.named_modules())
+    handles = []
+    terms: list = []
+    for name, param in named_params.items():
+        mod_name = name[:-len('.weight')] if name.endswith('.weight') else None
+        module = name_to_module.get(mod_name) if mod_name else None
+        if not isinstance(module, nn.Linear):
+            continue
+        mask = masks.get(name)
+
+        def _hook(module, args, mask=mask):
+            term, n = _structured_l1_layer_term(module.weight, mask, prune_n, prune_m)
+            if term is not None:
+                terms.append((term, n))
+
+        handles.append(module.register_forward_pre_hook(_hook))
+    return handles, terms
 
 
 def _open_group_mask(alive: torch.Tensor, prune_n: int, prune_m: int) -> torch.Tensor:
@@ -136,6 +185,32 @@ def _open_group_mask(alive: torch.Tensor, prune_n: int, prune_m: int) -> torch.T
     group_open = (group_alive_count > prune_n).expand_as(alive_nm)
     out[:, :n_nm_cols] = group_open.reshape(n_rows, n_nm_cols)
     return out
+
+
+def _nm_fully_closed(masks: dict, prune_n: int, prune_m: int) -> bool:
+    """Explicit, structural N:M completeness check: True only if EVERY
+    group-of-prune_m in EVERY masked layer has been pruned down to exactly
+    prune_n alive weights -- i.e. the mask is an actually-valid, hardware-
+    deployable N:M pattern. Used instead of comparing the aggregate sparsity
+    fraction against final_sparsity (even with 0 tolerance a match there is
+    only necessary, not sufficient in principle, and reasoning about "is the
+    pattern actually done" via a single scalar ratio is exactly the kind of
+    inference this function exists to avoid needing) -- checks per-layer,
+    per-group state directly instead.
+    """
+    for name, alive in masks.items():
+        if alive.dim() < 2:
+            continue
+        n_rows, n_cols = alive.shape
+        n_full = n_cols // prune_m
+        if n_full == 0:
+            continue
+        n_nm_cols = n_full * prune_m
+        alive_nm = alive[:, :n_nm_cols].reshape(n_rows * n_full, prune_m)
+        group_alive_count = alive_nm.sum(dim=1)
+        if bool((group_alive_count > prune_n).any()):
+            return False
+    return True
 
 
 def _gmp_l1_regularizer(named_params, maskmgr, fisher, mode="plain",
@@ -1501,8 +1576,37 @@ def _tr_mask_update(maskmgr: 'GradualMaskManager', fisher: 'FisherAccumulator',
 
     current_sp = maskmgr.current_sparsity()
 
+    # For N:M structured sparsity, "reached" must mean EVERY group has
+    # actually closed to exactly prune_n alive (true sparsity == exactly
+    # prune_n/prune_m, e.g. 0.5 for 2:4) -- unlike unstructured pruning,
+    # where being within a fraction of a percent of the target is a fine
+    # final state (a few thousand weights either way, spread randomly, is
+    # noise), a 2:4 pattern that's still short of target by even 0.5% means
+    # a meaningful number of groups have only 0 or 1 (not 2) weights
+    # pruned -- not a valid 2:4 pattern at all. Declaring "reached" there
+    # freezes the mask for the rest of training under that invalid
+    # intermediate state, wasting most of the step budget fine-tuning
+    # against a mask that gets silently replaced by the unconditional final
+    # hard-cut (`maskmgr.update(..., final_sparsity, ...)` at the very end
+    # of training) anyway. So for N:M, check the actual mask structure
+    # directly (_nm_fully_closed: every group at exactly prune_n alive) —
+    # not the aggregate sparsity fraction, even against a tight/zero
+    # tolerance, since a scalar ratio matching is only necessary, not
+    # sufficient, for "the pattern is actually done."
+    #
+    # Unstructured pruning used a 5e-3 (0.5%) undershoot allowance here
+    # (pre-existing, since 2026-07-21) -- changed to a hard >= (0% tolerance,
+    # never declare "reached" while still short) at the user's request: even
+    # though undershoot is far less consequential for unstructured than for
+    # N:M (no invalid-pattern concept), there's no reason to allow it either
+    # when TR growth can just keep trying instead of quietly falling back on
+    # the same unconditional end-of-training hard-cut.
+    _is_nm = getattr(maskmgr, 'prune_n', 0) > 0 and getattr(maskmgr, 'prune_m', 0) > 0
+    _reach_tol = 0.0
+
     # Early return: all_reduce so all ranks agree (local shard sparsity can differ).
-    _early = int(current_sp >= final_sparsity - 1e-4)
+    _early = int(_nm_fully_closed(maskmgr.masks, maskmgr.prune_n, maskmgr.prune_m)
+                 if _is_nm else current_sp >= final_sparsity - _reach_tol)
     if _tr_dist:
         _et = torch.tensor([_early], dtype=torch.int32, device=device)
         _tr_dist.all_reduce(_et, op=_tr_dist.ReduceOp.MAX)
@@ -1562,7 +1666,8 @@ def _tr_mask_update(maskmgr: 'GradualMaskManager', fisher: 'FisherAccumulator',
             last_accepted_sp    = try_sp
             last_accepted_delta = delta
             last_kl             = kl
-            if try_sp >= final_sparsity - 1e-4:
+            if (_nm_fully_closed(cand, maskmgr.prune_n, maskmgr.prune_m) if _is_nm
+                    else try_sp >= final_sparsity - _reach_tol):
                 _break_now = 1  # target reached on this rank
             else:
                 prev_accepted = True
@@ -1594,9 +1699,12 @@ def _tr_mask_update(maskmgr: 'GradualMaskManager', fisher: 'FisherAccumulator',
         maskmgr.masks = last_accepted_masks
         maskmgr.apply(fsdp_model)
         new_sp      = maskmgr.current_sparsity()
-        # Also check last_accepted_sp: subsampling threshold can make actual sparsity
-        # land slightly below target even when the candidate was accepted at target.
-        reached     = new_sp >= final_sparsity - 5e-3 or last_accepted_sp >= final_sparsity - 5e-3
+        if _is_nm:
+            reached = _nm_fully_closed(maskmgr.masks, maskmgr.prune_n, maskmgr.prune_m)
+        else:
+            # Also check last_accepted_sp: subsampling threshold can make actual
+            # sparsity land slightly below target even when accepted at target.
+            reached = new_sp >= final_sparsity - _reach_tol or last_accepted_sp >= final_sparsity - _reach_tol
         # Carry forward the delta that worked (doubled for next step)
         new_delta   = min(last_accepted_delta * 2.0, 0.10)
         logging.info(f"  TR-GMP: {current_sp:.4f} → {new_sp:.4f} "
@@ -2296,9 +2404,25 @@ def globalprune_gmp(
             batch = next(data_iter)
             batch = {k: v.to(device) for k, v in batch.items()}
 
+            # Structured-L1 (lasso) preconditioning only makes sense while the
+            # mask is still growing toward final_sparsity -- its entire
+            # purpose is shrinking soon-to-be-pruned weights toward zero
+            # BEFORE the cut that closes each group, so the eventual hard cut
+            # (or the exact-2:4 completion check, see _tr_mask_update) causes
+            # minimal disruption. Once tr_reached (mask frozen, into the
+            # sparse-training tail), there's nothing left to precondition for
+            # -- continuing to apply it there would just be an unmotivated
+            # extra regularizer actively fighting the fine-tuning objective.
+            _l1_active = use_l1 and not (tr_enabled and tr_reached)
+            _l1_fsdp_hooks, _l1_fsdp_terms = (
+                _register_structured_l1_hooks(fsdp_model, named_params, maskmgr.masks, prune_n, prune_m)
+                if (_l1_active and use_structured_l1 and is_fsdp) else ([], [])
+            )
             with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                 fwd_inputs = {k: v for k, v in batch.items()}
                 out = model(**fwd_inputs, output_hidden_states=use_hidden)
+                for _h in _l1_fsdp_hooks:
+                    _h.remove()
                 ntp_loss = out.loss
 
                 if use_kd or use_hidden:
@@ -2377,25 +2501,28 @@ def globalprune_gmp(
                     loss = loss + onpolicy_lambda * _tgkd_kl / grad_accum
                     accum_onpolicy += _tgkd_kl.item() / grad_accum
 
-            _structured_l1_pending_fsdp = False
-            if use_l1:
+            if _l1_active:
                 if use_structured_l1:
                     if is_fsdp:
-                        # Under FSDP1 each rank only holds a flat, unevenly-sized
-                        # local shard (not a full [rows, cols] tensor, and not a
-                        # DTensor either -- this file uses classic
-                        # FullyShardedDataParallel) so the reshape-into-groups-of-M
-                        # logic in _structured_l1_loss needs the params
-                        # temporarily un-sharded. Deferred to right before
-                        # loss.backward() below (still inside this micro_step) and
-                        # given its OWN backward() call inside the summon block,
-                        # rather than folded into `loss` here, because summoning
-                        # full params while the main loss's forward graph (built
-                        # from FSDP's own sharded forward hooks) is still
-                        # unresolved risks interleaving two different notions of
-                        # "current param shape" that FSDP's autograd hooks aren't
-                        # written to expect.
-                        _structured_l1_pending_fsdp = True
+                        # _l1_fsdp_terms was populated by forward pre-hooks
+                        # registered right before this micro-step's model(...)
+                        # call (see above) -- each hook computed its layer's
+                        # contribution while FSDP had that layer's params
+                        # fully gathered, as part of the SAME autograd graph
+                        # this micro-step's loss.backward() below already
+                        # walks. This rides FSDP's own, already-correct
+                        # forward/backward machinery instead of a separate
+                        # summon_full_params + backward() pass, which torch's
+                        # exit-time grad-resharding doesn't support for a
+                        # freshly computed (not pre-existing) gradient --
+                        # tried, failed two different ways (shape mismatch,
+                        # then a 2x-oversized grad from a skipped reshard).
+                        if _l1_fsdp_terms:
+                            total = sum(t for t, _ in _l1_fsdp_terms)
+                            count = sum(n for _, n in _l1_fsdp_terms)
+                            l1 = total / count if count > 0 else None
+                        else:
+                            l1 = None
                     else:
                         l1 = _structured_l1_loss(named_params, maskmgr.masks, prune_n, prune_m)
                 else:
@@ -2405,7 +2532,7 @@ def globalprune_gmp(
                                              clip_max=l1_fisher_cmax,
                                              open_groups_only=l1_open_only,
                                              prune_n=prune_n, prune_m=prune_m)
-                if not _structured_l1_pending_fsdp and l1 is not None:
+                if l1 is not None:
                     l1_term = l1_lambda * l1 / grad_accum
                     loss = loss + l1_term
                     accum_l1 += l1_term.item()
@@ -2419,19 +2546,6 @@ def globalprune_gmp(
             with _bwd_ctx:
                 loss.backward()
             accum_loss += loss.item()
-
-            if _structured_l1_pending_fsdp:
-                # Main loss's backward is fully resolved now (FSDP's hooks have
-                # already reduce-scattered its gradients into each shard) --
-                # safe to summon full params for the structured-L1 term's own,
-                # separate forward+backward. with_grads=True accumulates the
-                # resulting gradient into each rank's local .grad on exit, on
-                # top of whatever the main loss.backward() already put there.
-                with _bwd_ctx, FSDP.summon_full_params(fsdp_model, writeback=False, with_grads=True):
-                    l1 = _structured_l1_loss(named_params, maskmgr.masks, prune_n, prune_m)
-                    l1_term = l1_lambda * l1 / grad_accum
-                    l1_term.backward()
-                accum_l1 += l1_term.item()
 
         # anchored KD contributes to the NTP optimizer step
         if use_anchor and (step + 1) % anchor_interval == 0:

@@ -77,7 +77,10 @@ export WANDB_INIT_TIMEOUT=120
 export TMPDIR=/tmp
 export HF_TOKEN=$(cat ~/.hf_token 2>/dev/null || echo "")
 export WANDB_API_KEY=$(grep WANDB_API_KEY ~/.bashrc | cut -d'=' -f2 | tail -1)
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+# NOTE: expandable_segments is incompatible with vLLM's CuMemAllocator,
+# which the OPKD vLLM engine now requires (enable_sleep_mode=True, added in
+# the 2026-08-13 log_cluster pull) -- LLM(...) hard-asserts on this at
+# load_model() time if set. Left unset here.
 export TOKENIZERS_PARALLELISM=false
 export VLLM_USE_V1=0
 export VLLM_HOST_IP=127.0.0.1
