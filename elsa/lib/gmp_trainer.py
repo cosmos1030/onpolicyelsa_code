@@ -70,6 +70,15 @@ def _structured_l1_loss(named_params: dict, masks: dict, prune_n: int, prune_m: 
     Already-pruned (mask=0) positions are excluded — penalizing zeros is meaningless
     and would bias the gradient signal.
     Normalized by alive element count so scale stays comparable to per-token NTP loss.
+
+    named_params must hold full, unsharded [rows, cols] tensors -- under FSDP1
+    (classic FullyShardedDataParallel, this file does not use FSDP2/DTensor)
+    each rank's plain param is a flat, differently-sized local shard, so the
+    reshape-into-groups-of-M logic below is only valid inside a
+    FSDP.summon_full_params(fsdp_model, with_grads=True) block; see the call
+    site for how the resulting loss's backward() is isolated from the main
+    training loss's backward() to avoid interleaving with FSDP's own
+    sharded forward/backward hooks.
     """
     total = None
     count = 0
@@ -2368,9 +2377,27 @@ def globalprune_gmp(
                     loss = loss + onpolicy_lambda * _tgkd_kl / grad_accum
                     accum_onpolicy += _tgkd_kl.item() / grad_accum
 
+            _structured_l1_pending_fsdp = False
             if use_l1:
                 if use_structured_l1:
-                    l1 = _structured_l1_loss(named_params, maskmgr.masks, prune_n, prune_m)
+                    if is_fsdp:
+                        # Under FSDP1 each rank only holds a flat, unevenly-sized
+                        # local shard (not a full [rows, cols] tensor, and not a
+                        # DTensor either -- this file uses classic
+                        # FullyShardedDataParallel) so the reshape-into-groups-of-M
+                        # logic in _structured_l1_loss needs the params
+                        # temporarily un-sharded. Deferred to right before
+                        # loss.backward() below (still inside this micro_step) and
+                        # given its OWN backward() call inside the summon block,
+                        # rather than folded into `loss` here, because summoning
+                        # full params while the main loss's forward graph (built
+                        # from FSDP's own sharded forward hooks) is still
+                        # unresolved risks interleaving two different notions of
+                        # "current param shape" that FSDP's autograd hooks aren't
+                        # written to expect.
+                        _structured_l1_pending_fsdp = True
+                    else:
+                        l1 = _structured_l1_loss(named_params, maskmgr.masks, prune_n, prune_m)
                 else:
                     l1 = _gmp_l1_regularizer(named_params, maskmgr, fisher,
                                              mode=l1_mode,
@@ -2378,7 +2405,7 @@ def globalprune_gmp(
                                              clip_max=l1_fisher_cmax,
                                              open_groups_only=l1_open_only,
                                              prune_n=prune_n, prune_m=prune_m)
-                if l1 is not None:
+                if not _structured_l1_pending_fsdp and l1 is not None:
                     l1_term = l1_lambda * l1 / grad_accum
                     loss = loss + l1_term
                     accum_l1 += l1_term.item()
@@ -2392,6 +2419,19 @@ def globalprune_gmp(
             with _bwd_ctx:
                 loss.backward()
             accum_loss += loss.item()
+
+            if _structured_l1_pending_fsdp:
+                # Main loss's backward is fully resolved now (FSDP's hooks have
+                # already reduce-scattered its gradients into each shard) --
+                # safe to summon full params for the structured-L1 term's own,
+                # separate forward+backward. with_grads=True accumulates the
+                # resulting gradient into each rank's local .grad on exit, on
+                # top of whatever the main loss.backward() already put there.
+                with _bwd_ctx, FSDP.summon_full_params(fsdp_model, writeback=False, with_grads=True):
+                    l1 = _structured_l1_loss(named_params, maskmgr.masks, prune_n, prune_m)
+                    l1_term = l1_lambda * l1 / grad_accum
+                    l1_term.backward()
+                accum_l1 += l1_term.item()
 
         # anchored KD contributes to the NTP optimizer step
         if use_anchor and (step + 1) % anchor_interval == 0:
