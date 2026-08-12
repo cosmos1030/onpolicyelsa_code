@@ -213,11 +213,13 @@ def main(argv):
         _vllm_temp = getattr(FLAGS, 'gmp_onpolicy_temp', 0.6)
 
         if local_rank == 0:
-            from lib.vllm_proc import launch_vllm_subprocess as _launch_vllm
-            # vLLM runs in a subprocess with CUDA_VISIBLE_DEVICES set to the
-            # dedicated GPU (index = world_size).  This gives it a completely
-            # separate CUDA context so it cannot conflict with the training NCCL
-            # process group.
+            from lib.vllm_proc import launch_vllm_server as _launch_vllm
+            # vLLM runs as a fully independent OS process (subprocess.Popen,
+            # not a multiprocessing.Process child) with CUDA_VISIBLE_DEVICES
+            # set to its own GPU(s) -- see lib/vllm_proc.py's module docstring
+            # for why: nesting vLLM's distributed runtime inside torchrun's
+            # process tree (the previous approach) hit a daemon/fork/rendezvous
+            # bug chain once tensor_parallel_size>1 was introduced.
             # enforce_eager=True is mandatory: without it vLLM pre-allocates CUDA
             # graphs using (gpu_memory_utilization × GPU_MEM) of address space on the
             # vLLM GPU.  That allocation gets P2P-mapped into the training GPU's
@@ -226,10 +228,14 @@ def main(argv):
             # physical GPUs.  Eager mode allocates only model weights + actual KV
             # cache, keeping the vLLM GPU footprint small.
             _vllm_gpu_index = getattr(FLAGS, 'gmp_opkd_vllm_gpu_index', -1)
-            _vllm_cuda_dev = str(world_size) if _vllm_gpu_index < 0 else str(_vllm_gpu_index)
+            _vllm_tp_size = getattr(FLAGS, 'gmp_opkd_vllm_tp_size', 1)
+            if _vllm_tp_size > 1:
+                _vllm_cuda_dev = ','.join(str(i) for i in range(_vllm_tp_size))
+            else:
+                _vllm_cuda_dev = str(world_size) if _vllm_gpu_index < 0 else str(_vllm_gpu_index)
             logging.info(
-                f"[rank 0] Launching vLLM subprocess on GPU {_vllm_cuda_dev} "
-                f"(training ranks on GPUs 0-{world_size-1}), gpu_mem={_vllm_gpu_mem}")
+                f"[rank 0] Launching standalone vLLM server on GPU(s) {_vllm_cuda_dev} "
+                f"(tp_size={_vllm_tp_size}, training ranks on GPUs 0-{world_size-1}), gpu_mem={_vllm_gpu_mem}")
             _prebuilt_vllm_engine = _launch_vllm(
                 FLAGS.model,
                 cuda_device_str=_vllm_cuda_dev,
@@ -238,10 +244,11 @@ def main(argv):
                 enforce_eager=True,
                 default_max_new=_vllm_max_new,
                 default_temp=_vllm_temp,
-                startup_timeout=300,
+                startup_timeout=480,
+                tensor_parallel_size=_vllm_tp_size,
             )
             _prebuilt_vllm_params = None
-            logging.info(f"[rank 0] vLLM subprocess ready — signaling via dist.barrier")
+            logging.info(f"[rank 0] vLLM server ready — signaling via dist.barrier")
         else:
             logging.info(f"[rank {local_rank}] waiting for rank 0 vLLM via dist.barrier")
         # barrier: rank 1 waits here until rank 0 finishes vLLM launch
@@ -258,9 +265,9 @@ def main(argv):
         _opd_max_new = getattr(FLAGS, 'opd_vllm_max_tokens', 256)
         _vllm_cuda_dev = str(world_size)
         if local_rank == 0:
-            from lib.vllm_proc import launch_vllm_subprocess as _launch_vllm_opd
+            from lib.vllm_proc import launch_vllm_server as _launch_vllm_opd
             logging.info(
-                f"[rank 0] OPD: launching vLLM subprocess on GPU {_vllm_cuda_dev} "
+                f"[rank 0] OPD: launching vLLM server on GPU {_vllm_cuda_dev} "
                 f"(training ranks 0-{world_size-1}), gpu_mem={_opd_gpu_mem}")
             _prebuilt_opd_vllm_engine = _launch_vllm_opd(
                 FLAGS.model,
@@ -1069,6 +1076,7 @@ if __name__ == '__main__':
     flags.DEFINE_float('gmp_prevmask_opkd_lambda', 0.0, 'Weight for prev-mask-teacher OPKD loss added on top of dense teacher OPKD (0=disabled).')
     flags.DEFINE_float('gmp_opkd_vllm_gpu_mem', 0.35, 'GPU memory utilization for the OPKD vLLM engine.')
     flags.DEFINE_integer('gmp_opkd_vllm_gpu_index', -1, 'CUDA device index for the OPKD vLLM subprocess. -1 (default) = dedicated GPU at index=world_size. >=0 shares that training rank\'s physical GPU instead (no extra GPU needed).')
+    flags.DEFINE_integer('gmp_opkd_vllm_tp_size', 1, 'Tensor-parallel size for the OPKD vLLM engine. >1 spreads vLLM weights+KV cache evenly across that many training GPUs (indices 0..tp_size-1) instead of piling onto one -- takes priority over gmp_opkd_vllm_gpu_index.')
     flags.DEFINE_boolean('gmp_opkd_vllm_enforce_eager', False, 'If True, disable vLLM CUDA graph capture (enforce_eager=True) to save peak memory.')
     flags.DEFINE_boolean('gmp_gradient_checkpointing', False, 'If True, enable gradient checkpointing to reduce activation memory (trades compute for memory).')
     # TR-GMP: trust-region gradual mask selection

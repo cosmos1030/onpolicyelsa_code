@@ -1017,6 +1017,64 @@ def _pg_loss(s_logits, t_logits, gen_labels, is_log_w=None, old_s_logp=None,
     return loss
 
 
+def _offload_optimizer_state(optimizer) -> None:
+    """Move AdamW's exp_avg/exp_avg_sq (bf16, same size as the model itself --
+    ~32GB for 8B params) to CPU in-place, freeing that GPU memory for the
+    vLLM engine's wake_up() to actually have room to remap its offloaded
+    weights back onto the GPU. Model weights/grads are left alone (grads are
+    already None between steps via zero_grad(); only optimizer state is big
+    enough here to matter). Single-GPU path only -- FSDP shards this
+    per-rank already and isn't what's tight on memory."""
+    for state in optimizer.state.values():
+        for key in ('exp_avg', 'exp_avg_sq'):
+            if key in state and state[key].is_cuda:
+                state[key] = state[key].to('cpu', non_blocking=True)
+    torch.cuda.synchronize()
+    torch.cuda.empty_cache()
+
+
+def _reload_optimizer_state(optimizer, device) -> None:
+    """Undo _offload_optimizer_state after the vLLM rollout + sleep finishes,
+    moving exp_avg/exp_avg_sq back onto GPU before the next optimizer.step()."""
+    for state in optimizer.state.values():
+        for key in ('exp_avg', 'exp_avg_sq'):
+            if key in state and not state[key].is_cuda:
+                state[key] = state[key].to(device, non_blocking=True)
+    torch.cuda.synchronize()
+
+
+def _opkd_vllm_wake(vllm_engine) -> None:
+    """Wake the OPKD vLLM engine before a rollout batch, if it supports vLLM's
+    sleep/wake_up (the direct in-process single-GPU vllm.LLM object created
+    with enable_sleep_mode=True -- not the FSDP sidecar adapter, which has its
+    own dedicated/shared GPU budget and isn't put to sleep between rollouts).
+
+    Tracks asleep/awake ourselves (via an attribute stashed on the engine
+    object) rather than probing vLLM for its state or swallowing whatever
+    wake_up() raises: a wake_up() that fails when we *know* it should be
+    asleep is a real (usually GPU-memory) failure and must propagate --
+    silently continuing here once already caused a call into
+    _sync_opkd_weights_to_vllm() to write into memory vLLM had unmapped,
+    segfaulting instead of raising a catchable Python OOM."""
+    if hasattr(vllm_engine, 'wake_up') and getattr(vllm_engine, '_opkd_asleep', False):
+        vllm_engine.wake_up()
+        vllm_engine._opkd_asleep = False
+
+
+def _opkd_vllm_sleep(vllm_engine) -> None:
+    """Sleep (level 1: offload weights to CPU, drop KV cache) the OPKD vLLM
+    engine after a rollout batch, releasing its GPU memory for the training
+    steps until the next rollout -- this is what let an 8B single-GPU run
+    OOM in the KD full-vocab loss (vLLM's ~21GB stayed permanently resident
+    otherwise, see slurm_gmp_tr_ntpkd_opd_qwen3_4b_general.sh jobs 41450-55).
+    A failure here (e.g. not enough room to even start offloading) should
+    also propagate rather than leave training running with an engine we
+    believe is asleep but isn't."""
+    if hasattr(vllm_engine, 'sleep'):
+        vllm_engine.sleep(1)
+        vllm_engine._opkd_asleep = True
+
+
 def _sync_opkd_weights_to_vllm(model: nn.Module, vllm_engine) -> None:
     """Sync current student weights into the OPKD vLLM engine.
 
@@ -1830,6 +1888,11 @@ def globalprune_gmp(
                 trust_remote_code=True,
                 max_model_len=onpolicy_max_new + getattr(FLAGS, 'gmp_max_prompt_len', 512),
                 enforce_eager=_opkd_vllm_enforce_eager,
+                # enables .sleep(1)/.wake_up() -- offload weights to CPU + drop
+                # KV cache between rollouts so this engine's ~gpu_mem-fraction
+                # GPU footprint isn't permanently resident on a single shared
+                # GPU (see _opkd_vllm_sleep/_opkd_vllm_wake call sites below).
+                enable_sleep_mode=True,
             )
             _opkd_vllm_params = _VLLMSamplingParams(
                 max_tokens=onpolicy_max_new,
@@ -1849,6 +1912,7 @@ def globalprune_gmp(
                      if _in_fsdp else nullcontext())
         with _fsdp_ctx:
             if is_main_process and _opkd_vllm_engine is not None:
+                _opkd_vllm_wake(_opkd_vllm_engine)
                 if _in_fsdp and hasattr(_opkd_vllm_engine, 'sync_weights'):
                     _sd = {n: p.data.cpu() for n, p in model.named_parameters()}
                     logging.info("  OPKD vLLM: syncing weights (initial pool, FSDP→subprocess)")
@@ -1864,6 +1928,7 @@ def globalprune_gmp(
                 for b in _pool_batches
             ]
             _vllm_outs = _opkd_vllm_engine.generate(_vllm_inputs, _opkd_vllm_params)
+            _opkd_vllm_sleep(_opkd_vllm_engine)
             for _pb, _vo in zip(_pool_batches, _vllm_outs):
                 _plen = int(_pb['prompt_len'].item())
                 _p_ids = _pb['input_ids'][:, :_plen].cpu()
@@ -2401,6 +2466,9 @@ def globalprune_gmp(
                                   if _in_fsdp_refill else nullcontext())
                 with _fsdp_sync_ctx:
                     if is_main_process and _opkd_vllm_engine is not None:
+                        if fsdp_model is None:
+                            _offload_optimizer_state(optimizer)
+                        _opkd_vllm_wake(_opkd_vllm_engine)
                         if _in_fsdp_refill and hasattr(_opkd_vllm_engine, 'sync_weights'):
                             _sd = {n: p.data.cpu() for n, p in model.named_parameters()}
                             _opkd_vllm_engine.sync_weights(_sd)
@@ -2415,6 +2483,9 @@ def globalprune_gmp(
                         for b in _pool_batches
                     ]
                     _vllm_outs = _opkd_vllm_engine.generate(_vllm_inputs, _opkd_vllm_params)
+                    _opkd_vllm_sleep(_opkd_vllm_engine)
+                    if fsdp_model is None:
+                        _reload_optimizer_state(optimizer, device)
                     _opkd_standalone_pool = []
                     for _pb, _vo in zip(_pool_batches, _vllm_outs):
                         _plen = int(_pb['prompt_len'].item())
@@ -2530,6 +2601,9 @@ def globalprune_gmp(
                                    if _in_fsdp_refill2 else nullcontext())
                 with _fsdp_sync_ctx2:
                     if is_main_process and _opkd_vllm_engine is not None:
+                        if fsdp_model is None:
+                            _offload_optimizer_state(optimizer)
+                        _opkd_vllm_wake(_opkd_vllm_engine)
                         if _in_fsdp_refill2 and hasattr(_opkd_vllm_engine, 'sync_weights'):
                             _sd = {n: p.data.cpu() for n, p in model.named_parameters()}
                             _opkd_vllm_engine.sync_weights(_sd)
@@ -2544,6 +2618,9 @@ def globalprune_gmp(
                         for b in _pool_batches
                     ]
                     _vllm_outs = _opkd_vllm_engine.generate(_vllm_inputs, _opkd_vllm_params)
+                    _opkd_vllm_sleep(_opkd_vllm_engine)
+                    if fsdp_model is None:
+                        _reload_optimizer_state(optimizer, device)
                     _opkd_standalone_pool = []
                     for _pb, _vo in zip(_pool_batches, _vllm_outs):
                         _plen = int(_pb['prompt_len'].item())

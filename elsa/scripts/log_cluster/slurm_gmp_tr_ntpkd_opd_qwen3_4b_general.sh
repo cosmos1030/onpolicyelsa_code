@@ -6,7 +6,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
-#SBATCH --mem=80G
+#SBATCH --mem=150G
 #SBATCH --time=3-00:00:00
 #SBATCH --output=/home/doyoonkim/projects/onpolicyelsa_code/elsa/logs/tr_ntpkd_opd_4b_gen_%j.out
 exec 2>&1
@@ -77,7 +77,12 @@ export HF_TOKEN=$(cat ~/.hf_token 2>/dev/null || echo "")
 export WANDB_API_KEY=$(grep WANDB_API_KEY ~/.bashrc | cut -d'=' -f2 | tail -1)
 export HF_HOME=/home/shared/huggingface
 export HF_HUB_DISABLE_XET=1
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+# NOT expandable_segments:True here: this recipe always has on-policy KD
+# enabled (gmp_onpolicy_kd_lambda=0.33 below), whose vLLM engine now runs
+# with enable_sleep_mode=True (see lib/gmp_trainer.py _opkd_vllm_wake/sleep)
+# to free its GPU memory between rollouts -- vLLM's CuMemAllocator for sleep
+# mode explicitly asserts expandable_segments is NOT set (incompatible with
+# its memory pool), so this would crash at vLLM engine init if left on.
 export TOKENIZERS_PARALLELISM=false
 export VLLM_HOST_IP=127.0.0.1
 export TRITON_CACHE_DIR=/tmp/triton_cache_${USER}
