@@ -1,0 +1,43 @@
+# Model arguments
+model_name_or_path: /home1/doyoonkim/.cache/huggingface/hub/models--Qwen--Qwen3-1.7B/snapshots/70d244cc86ccca08cf5af4e1e306ecf908b1ad5e
+model_revision: main
+torch_dtype: bfloat16
+attn_implementation: eager
+
+# Data training arguments -- 200 OT3 prompts extracted by
+# elsa/scripts/extract_ot3_prompts.py (same seed=42/shuffle/filter pipeline
+# as elsa/scripts/build_ot3_fineweb_dataset.py, question-only, no teacher
+# answer). No system_prompt override: let Qwen3's own chat template + native
+# thinking mode drive generation instead of forcing the DeepSeek-R1-distill
+# <think>/<answer> format.
+dataset_name: /home1/doyoonkim/projects/elsa/data/ot3_prompts_2000_qwen3.jsonl
+dataset_prompt_column: prompt
+
+# GRPO trainer config (trace_only overrides do_train/do_eval at CLI time)
+bf16: true
+use_vllm: false
+do_train: false
+do_eval: false
+gradient_accumulation_steps: 8
+gradient_checkpointing: false
+log_level: info
+logging_steps: 1
+logging_strategy: steps
+max_prompt_length: 1024
+max_completion_length: 8192
+num_generations: 2
+output_dir: /home1/doyoonkim/projects/RAC/open-r1-main/math_trace
+overwrite_output_dir: true
+per_device_eval_batch_size: 4
+per_device_train_batch_size: 1
+push_to_hub: false
+report_to:
+- wandb
+reward_funcs:
+- accuracy
+reward_weights:
+- 1.0
+save_strategy: "no"
+seed: 42
+temperature: 0.7
+warmup_ratio: 0.1

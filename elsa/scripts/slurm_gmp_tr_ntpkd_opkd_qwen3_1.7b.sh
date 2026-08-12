@@ -51,6 +51,14 @@ SEQLEN=${10:-2048}
 GRAD_CKPT=${11:-false}
 WANDB_PROJECT=${12:-reasoning_qwen3_1.7b}
 SALIENCY=${13:-fisher}
+PRUNING_SCOPE=${14:-global}
+LOSS_WEIGHTS=${15:-0.33,0.33,0.33}  # NTP,KD,OPKD -- e.g. 0,0.5,0.5 to drop NTP and split KD/OPKD evenly
+SPARSITY_TYPE=${16:-unstructured}   # unstructured | 2:4 | 4:8
+L1_LAMBDA=${17:-0.0}                # gmp_l1_lambda -- structured-L1 pre-shrink for N:M endgame (0=off)
+NTP_LAMBDA=$(echo "$LOSS_WEIGHTS" | cut -d, -f1)
+KD_LAMBDA=$(echo "$LOSS_WEIGHTS" | cut -d, -f2)
+OPKD_LAMBDA=$(echo "$LOSS_WEIGHTS" | cut -d, -f3)
+KD_ONLY=$(python3 -c "print('true' if float('${NTP_LAMBDA}')==0.0 else 'false')")
 SPARSITY_PCT=$(python3 -c "print(int(${SPARSITY}*100))")
 
 PYTHON=/home1/doyoonkim/miniconda3/envs/rac/bin/python
@@ -93,6 +101,8 @@ $PYTHON main.py \
     --dataset=mixed_cot \
     --data_path="$DATA_PATH" \
     --sparsity_ratio=${SPARSITY} \
+    --sparsity_type=${SPARSITY_TYPE} \
+    --gmp_l1_lambda=${L1_LAMBDA} \
     --do_gmp=true \
     --steps=${STEPS} \
     --gmp_post_target_steps=${POST_TARGET_STEPS} \
@@ -105,13 +115,14 @@ $PYTHON main.py \
     --gmp_mask_interval=${MASK_INTERVAL} \
     --gmp_fisher_beta=0.999 \
     --gmp_saliency=${SALIENCY} \
+    --gmp_pruning_scope=${PRUNING_SCOPE} \
     --seqlen=${SEQLEN} \
     --gmp_gradient_checkpointing=${GRAD_CKPT} \
     --gmp_max_prompt_len=512 \
-    --gmp_kd_only=false \
-    --gmp_ntp_lambda=0.33 \
-    --gmp_kd_lambda=0.33 \
-    --gmp_onpolicy_kd_lambda=0.33 \
+    --gmp_kd_only=${KD_ONLY} \
+    --gmp_ntp_lambda=${NTP_LAMBDA} \
+    --gmp_kd_lambda=${KD_LAMBDA} \
+    --gmp_onpolicy_kd_lambda=${OPKD_LAMBDA} \
     --gmp_onpolicy_max_new_tokens=${OPD_GEN_LEN} \
     --gmp_opkd_prev_mask_teacher=false \
     --gmp_opkd_vllm_gpu_mem=0.15 \
@@ -129,7 +140,7 @@ $PYTHON main.py \
     --eval_zero_shot=true \
     --wandb=true \
     --wandb_project=${WANDB_PROJECT} \
-    --run_name_suffix="lr${LR}_mi${MASK_INTERVAL}_kl${KL_THRESHOLD}_$(basename "$DATA_PATH" .jsonl)" \
+    --run_name_suffix="${RUN_TAG:+${RUN_TAG}_}lr${LR}_mi${MASK_INTERVAL}_kl${KL_THRESHOLD}_${PRUNING_SCOPE}scope_$(basename "$DATA_PATH" .jsonl)" \
     --seed=42
 
 echo "##### END #####"

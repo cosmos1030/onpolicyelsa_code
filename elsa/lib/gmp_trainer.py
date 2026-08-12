@@ -58,7 +58,15 @@ def _find_linear_weights(model):
 def _structured_l1_loss(named_params: dict, masks: dict, prune_n: int, prune_m: int) -> torch.Tensor:
     """2:4 structured L1 regularization (mean-normalized).
 
-    Penalizes the mean abs value of the bottom-(M-N) alive weights per group-of-M.
+    Penalizes the mean abs value of the bottom-(M-N) alive weights per group-of-M
+    that has NOT yet reached its prune_n cap (see _open_group_mask) -- once a
+    group is down to exactly prune_n alive weights, topk(..., largest=False)
+    over a metric where dead positions are +inf trivially selects those same
+    prune_n survivors every time (they're the only finite entries left), so
+    without this gating the loss would keep shrinking already-decided,
+    supposed-to-survive weights indefinitely instead of only pressuring
+    still-undecided candidates -- actively damaging the model in the endgame
+    when most groups have already closed.
     Already-pruned (mask=0) positions are excluded — penalizing zeros is meaningless
     and would bias the gradient signal.
     Normalized by alive element count so scale stays comparable to per-token NTP loss.
@@ -79,14 +87,17 @@ def _structured_l1_loss(named_params: dict, masks: dict, prune_n: int, prune_m: 
             w_nm = w[:, :n_nm_cols].reshape(n_rows * n_full, prune_m)
             alive_nm = mask[:, :n_nm_cols].reshape(n_rows * n_full, prune_m) if mask is not None \
                        else torch.ones_like(w_nm, dtype=torch.bool)
+            # exclude groups already at their prune_n cap -- nothing left to
+            # decide there, so they must never contribute to this loss
+            open_nm = (alive_nm.sum(dim=1, keepdim=True) > prune_n).expand_as(alive_nm)
             # within each group, only consider alive weights for bottom-k selection
             metric = w_nm.abs()
             metric[~alive_nm] = float('inf')  # dead weights can't be bottom-k
             n_pruned = prune_m - prune_n
             bottom_idx = torch.topk(metric, n_pruned, dim=1, largest=False).indices
             selected = w_nm.abs().gather(1, bottom_idx)
-            # only count positions that are actually alive
-            alive_selected = alive_nm.gather(1, bottom_idx)
+            # only count positions that are actually alive AND in a still-open group
+            alive_selected = alive_nm.gather(1, bottom_idx) & open_nm.gather(1, bottom_idx)
             term = selected[alive_selected].sum()
             n = int(alive_selected.sum().item())
         total = term if total is None else total + term
@@ -207,13 +218,67 @@ class FisherAccumulator:
         self.named_params = named_params  # {name: param}
         self.optimizer = optimizer
         self._step = 0
-        self.saliency = saliency  # 'fisher', 'magnitude', or 'spa'
+        self.saliency = saliency  # 'fisher', 'magnitude', 'spa', 'sqrt_fisher', or 'wanda'
         # Per-parameter group lookup for 'spa' -- correct even if some params
         # (e.g. embeddings, no-decay groups) use different lr/wd/betas/eps
         # than param_groups[0].
         self.param_to_group = {
             id(p): group for group in optimizer.param_groups for p in group['params']
         }
+        self._wanda_scaler = {}  # name -> per-input-column activation L2-norm^2 (float32)
+
+    def capture_wanda_stats(self, model, cal_batch, device, chunk_size=8):
+        """Wanda-style activation scaler: scaler_row[j] = sum_tokens x_j^2,
+        accumulated over `cal_batch` in `chunk_size`-sequence forward passes
+        (same hook pattern as _pcg_correct_masked_weights, but chunked since
+        cal_batch here can be the full OPKD rollout pool -- e.g. 256
+        sequences -- which would OOM as a single forward pass). Only
+        meaningful per-layer (the resulting importance() scores are NOT
+        comparable across layers -- pair with --gmp_pruning_scope=layer,
+        see _compute_tr_kl / candidate_masks)."""
+        name_to_module = dict(model.named_modules())
+        accum = {}
+        handles = []
+
+        def _make_hook(pname):
+            def hook(module, inp, out):
+                x = inp[0]
+                if x.dim() == 3:
+                    x = x.reshape(-1, x.shape[-1])
+                sq = (x.detach().float() ** 2).sum(dim=0)
+                if pname in accum:
+                    accum[pname] += sq
+                else:
+                    accum[pname] = sq
+            return hook
+
+        for name in self.named_params:
+            mod_name = name[:-len('.weight')] if name.endswith('.weight') else None
+            module = name_to_module.get(mod_name) if mod_name else None
+            if not isinstance(module, nn.Linear):
+                continue
+            handles.append(module.register_forward_hook(_make_hook(name)))
+
+        if not handles:
+            return
+
+        was_training = model.training
+        model.eval()
+        input_ids_full = cal_batch['input_ids']
+        attn_mask_full = cal_batch.get('attention_mask')
+        n = input_ids_full.shape[0]
+        with torch.no_grad():
+            for i in range(0, n, chunk_size):
+                input_ids = input_ids_full[i:i + chunk_size].to(device)
+                attn_mask = attn_mask_full[i:i + chunk_size].to(device) if attn_mask_full is not None else None
+                model(input_ids=input_ids, attention_mask=attn_mask)
+        if was_training:
+            model.train()
+        for h in handles:
+            h.remove()
+
+        for name, sq in accum.items():
+            self._wanda_scaler[name] = sq
 
     def update(self):
         """No-op: Adam updates exp_avg_sq automatically in optimizer.step()."""
@@ -241,14 +306,28 @@ class FisherAccumulator:
 
     def importance(self, name, param):
         """Importance score for pruning. 'fisher': F_hat*w^2, 'magnitude': w^2,
-        'spa': h*u^2 (Sparse Projected Adam -- see _spa_importance)."""
+        'spa': h*u^2 (Sparse Projected Adam -- see _spa_importance), 'sqrt_fisher':
+        sqrt(F_hat)*w^2 (the lr->0 limit of 'spa': u->w and h->sqrt(v_hat)+eps
+        as the momentum/decay terms vanish, so imp->sqrt(v_hat)*w^2 -- same cost
+        as 'fisher', just with an extra sqrt(), no momentum state needed).
+        'wanda': |w|*sqrt(scaler_row) (Wanda-style weight*activation-norm, see
+        capture_wanda_stats) -- NOT comparable across layers (activation scale
+        varies wildly layer-to-layer), so only meaningful with
+        --gmp_pruning_scope=layer, never 'global'."""
         if self.saliency == 'magnitude':
             return param.data.float() ** 2
         if self.saliency == 'spa':
             return self._spa_importance(param)
+        if self.saliency == 'wanda':
+            scaler = self._wanda_scaler.get(name)
+            if scaler is None or param.dim() != 2:
+                return param.data.float() ** 2  # fallback before first capture / non-2D param
+            return param.data.float().abs() * scaler.to(param.device).sqrt().reshape(1, -1)
         f = self.fisher_factor(param)
         if f is None:
             return param.data.float() ** 2  # fallback before first optimizer step
+        if self.saliency == 'sqrt_fisher':
+            f = f.clamp(min=0).sqrt()
         imp = f * param.data.float() ** 2
         if imp.sum() == 0:
             imp = param.data.float() ** 2
@@ -2364,6 +2443,18 @@ def globalprune_gmp(
                     _cal_batch = next(prompt_iter)
                 if getattr(FLAGS, 'gmp_fisher_source', 'adam') == 'opd_empirical':
                     fisher.update_from_batch(fsdp_model if fsdp_model is not None else model, _cal_batch, str(device))
+                if getattr(fisher, 'saliency', None) == 'wanda':
+                    # Use the FULL OPKD rollout pool (mask_interval*grad_accum
+                    # sequences, e.g. 256) for the activation-norm snapshot when
+                    # available -- more samples than Wanda's own paper (128) --
+                    # instead of the small 8-sequence _cal_batch used for the KL
+                    # check, since scaler_row benefits from more tokens while
+                    # the KL check itself doesn't need to be this expensive.
+                    if _opkd_refilled_pre_mask and _opkd_standalone_pool:
+                        _wanda_batch = _opkd_pool_to_batch(_opkd_standalone_pool, str(device))
+                    else:
+                        _wanda_batch = _cal_batch
+                    fisher.capture_wanda_stats(fsdp_model if fsdp_model is not None else model, _wanda_batch, str(device))
                 current_sparsity, tr_delta, tr_reached, _tr_mask_delta = _tr_mask_update(
                     maskmgr, fisher, fsdp_model, model, _cal_batch,
                     final_sparsity=final_sparsity,
