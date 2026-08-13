@@ -198,6 +198,7 @@ def _nm_fully_closed(masks: dict, prune_n: int, prune_m: int) -> bool:
     inference this function exists to avoid needing) -- checks per-layer,
     per-group state directly instead.
     """
+    _checked = 0
     for name, alive in masks.items():
         if alive.dim() < 2:
             continue
@@ -208,8 +209,23 @@ def _nm_fully_closed(masks: dict, prune_n: int, prune_m: int) -> bool:
         n_nm_cols = n_full * prune_m
         alive_nm = alive[:, :n_nm_cols].reshape(n_rows * n_full, prune_m)
         group_alive_count = alive_nm.sum(dim=1)
+        _checked += 1
         if bool((group_alive_count > prune_n).any()):
             return False
+    if _checked == 0:
+        # Nothing was actually inspected -- either `masks` is empty or every
+        # entry was skipped (dim<2 or n_full==0). Silently returning True
+        # here would be a false "fully closed" positive (exactly the vacuous
+        # -truth bug this function exists to avoid for the aggregate-ratio
+        # check) -- fail loud instead so a real shape/wiring problem (e.g.
+        # under some FSDP configuration) surfaces immediately rather than
+        # silently reporting the mask as done when nothing was pruned.
+        raise RuntimeError(
+            f"_nm_fully_closed: no 2D masks with n_full>0 found among {len(masks)} "
+            f"entries (prune_n={prune_n}, prune_m={prune_m}) -- refusing to report "
+            f"vacuously 'fully closed'. Sample shapes: "
+            f"{[(n, tuple(m.shape)) for n, m in list(masks.items())[:3]]}"
+        )
     return True
 
 

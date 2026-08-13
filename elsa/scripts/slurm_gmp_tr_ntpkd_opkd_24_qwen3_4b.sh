@@ -52,8 +52,12 @@ export WANDB_API_KEY=$(grep WANDB_API_KEY ~/.bashrc | cut -d'=' -f2 | tail -1)
 # NOTE: expandable_segments is incompatible with vLLM's CuMemAllocator,
 # which the OPKD vLLM engine now requires (enable_sleep_mode=True, added in
 # the 2026-08-13 log_cluster pull) -- LLM(...) hard-asserts on this at
-# load_model() time if set. Left unset here; PYTORCH_CUDA_ALLOC_CONF is not
-# exported at all.
+# load_model() time if set. Use max_split_size_mb instead -- a different
+# fragmentation mitigation the CuMemAllocator assertion doesn't check for
+# (it only greps for the literal string "expandable_segments:True") --
+# leaving fragmentation completely unmitigated caused a real OOM after
+# ~760 steps on the 1.7B single-GPU 2:4 canary (720073).
+export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:256
 export TOKENIZERS_PARALLELISM=false
 export VLLM_USE_V1=0
 export VLLM_HOST_IP=127.0.0.1
