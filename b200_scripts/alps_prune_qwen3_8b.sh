@@ -31,6 +31,16 @@ export HF_TOKEN=$(cat /NHNHOME/log-postech/doyoonkim/secrets/hf_token)
 export WANDB_API_KEY=$(cat /NHNHOME/log-postech/doyoonkim/secrets/wandb_api_key)
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export TOKENIZERS_PARALLELISM=false
+# This host runs heavily multi-tenant (other users' jobs contending for the
+# same physical cores) -- default thread pools sized to nproc (72 here) blow
+# up badly under that contention (measured: single-call tokenizer/model-load
+# ops that take seconds in isolation took 1-2+ HOURS here with 0% GPU util
+# the whole time). Caps every native thread pool we know of, not just torch's.
+export OMP_NUM_THREADS=4
+export MKL_NUM_THREADS=4
+export OPENBLAS_NUM_THREADS=4
+export NUMEXPR_NUM_THREADS=4
+export RAYON_NUM_THREADS=4
 export TRITON_CACHE_DIR=/NHNHOME/log-postech/doyoonkim/.cache/triton
 export TORCHINDUCTOR_CACHE_DIR=/NHNHOME/log-postech/doyoonkim/.cache/torchinductor
 export VLLM_CACHE_ROOT=/NHNHOME/log-postech/doyoonkim/.cache/vllm

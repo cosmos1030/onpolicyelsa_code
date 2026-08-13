@@ -25,14 +25,27 @@ def get_ot_fw(nsamples, seed, seqlen, tokenizer, data_path):
     random.seed(seed)
     np.random.seed(seed)
 
+    # Tokenizing 40k+ long (8192+ token) docs one at a time in a plain Python
+    # loop (the original approach here) measured at ~44s/300 docs (~100min
+    # for the full corpus) on this box. Batched .map(num_proc=...) measured
+    # ~9s/300 docs (~5x) -- same per-doc tokenizer() call, just spread across
+    # worker processes instead of serialized in one. Not a threading issue
+    # (torch.set_num_threads(1) made no difference); this is inherent
+    # per-Python-call overhead x 40k docs, multiprocessing is what amortizes it.
+    def _tok_batch(batch):
+        return {'input_ids': [
+            tokenizer(t).input_ids if t else [] for t in batch['text']
+        ]}
+    tokenized = raw.map(
+        _tok_batch, batched=True, batch_size=32, num_proc=16,
+        remove_columns=raw.column_names, desc='Tokenizing calibration docs',
+    )
+
     all_tokens = []
-    for sample in raw:
-        text = sample.get('text', '')
-        if not text:
-            continue
-        tokens = tokenizer(text, return_tensors='pt').input_ids
-        if tokens.shape[1] >= seqlen:
-            all_tokens.append(tokens)
+    for row in tokenized:
+        ids = row['input_ids']
+        if len(ids) >= seqlen:
+            all_tokens.append(torch.tensor(ids, dtype=torch.long).unsqueeze(0))
     assert len(all_tokens) > 0, "No samples longer than seqlen"
 
     trainloader = []
@@ -44,14 +57,33 @@ def get_ot_fw(nsamples, seed, seqlen, tokenizer, data_path):
         tar[:, :-1] = -100
         trainloader.append((inp, tar))
 
-    full_text = ' '.join(s.get('text', '') for s in list(raw)[:500])
-    testenc = tokenizer(full_text, return_tensors='pt')
+    # Original approach here (join up to 500 raw docs into one string, then
+    # tokenize that ~6.75M-char string in a single call) hung for 2h19m on
+    # this box with 0% GPU util the whole time -- single massive-string
+    # encode() calls appear to hit the same host-contention-sensitive
+    # slowdown as the per-doc loop above did, just without multiprocessing
+    # available to amortize it (it's one call, can't be split across
+    # workers the same way). Reuse the per-doc token ids already computed
+    # above instead of re-tokenizing anything -- just concatenate them in
+    # dataset order until there's enough for the eval slice.
+    eval_ids = []
+    eval_len = 0
+    target_len = 256 * seqlen
+    for row in tokenized:
+        ids = row['input_ids']
+        if not ids:
+            continue
+        eval_ids.extend(ids)
+        eval_len += len(ids)
+        if eval_len >= target_len:
+            break
+    testenc_ids = torch.tensor(eval_ids, dtype=torch.long).unsqueeze(0)
 
     class TokenizerWrapper:
         def __init__(self, input_ids):
             self.input_ids = input_ids
 
-    return trainloader, TokenizerWrapper(testenc.input_ids[:, :256 * seqlen])
+    return trainloader, TokenizerWrapper(testenc_ids[:, :256 * seqlen])
 
 
 # ── Model ─────────────────────────────────────────────────────────────────────

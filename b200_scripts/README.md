@@ -119,3 +119,50 @@ fine with it since it's a separate subprocess.
 ## Scripts in this folder
 
 - `alps_prune_qwen3_8b.sh <SPARSITY>` — one-shot ALPS pruning + quick eval, adapted from `../ALPS/slurm_alps_prune_8b_rtx6000ada.sh` (Qwen hub id instead of a local snapshot path, saves under `/NHNHOME/.../models/`). Sets `EVAL_FULL_SCRIPT` env var so `ALPS/qwen3_alps.py` finds `elsa/scripts/eval_full.py` in *this* repo clone instead of the other server's hardcoded fallback path (`ALPS/qwen3_alps.py` reads `os.environ.get("EVAL_FULL_SCRIPT", "/home1/doyoonkim/...")` — that fallback is another server's path, always pass the env var here).
+
+## KNOWN UNRESOLVED: this host is heavily multi-tenant, default-width thread pools are catastrophic here (2026-08-13)
+
+**s50 ALPS pruning did not complete in 4 attempts (~4h22m total, all killed).** Not a B200/CUDA
+issue -- torch/vllm/flash-attn all confirmed working on this GPU separately (see main README/
+ONBOARDING). The failure is CPU-side, before any GPU work starts:
+
+- `vmstat`/`uptime` on this box show 80+ processes on the run queue and load average spiking as
+  high as 42 (baseline ~8-15) -- this physical host is shared with other tenants' containers, and
+  unlike a SLURM allocation (`--cpus-per-task=N` reserves real, isolated cores), this docker
+  container's `nproc`=72 is **not** an exclusive reservation -- those 72 logical CPUs are
+  contended with whatever else is scheduled on the same physical cores.
+- `qwen3_alps.py`'s `get_ot_fw()` originally tokenized 40k calibration docs one-at-a-time in a
+  Python loop -- measured ~44s/300 docs (~100min for the full corpus) under contention. Patched to
+  `datasets.Dataset.map(batched=True, num_proc=16)`: same per-doc `tokenizer()` call, just spread
+  across worker processes -- cut it to 1m44s for the full 40k on the one attempt that got that far.
+  **This part of the fix is validated and worth keeping regardless of the rest.**
+- A *second* single massive tokenize call in the same function (joining 500 raw docs into one
+  ~6.75M-token string for the eval/PPL slice) then hung for 2h19m at 0% GPU util. Patched to reuse
+  the per-doc token ids already computed above instead of re-tokenizing anything -- also worth
+  keeping.
+- A third attempt then hung 14min *before* the tokenizing progress bar even appeared (no
+  reproducible line to blame). Tried capping `OMP_NUM_THREADS`/`MKL_NUM_THREADS`/
+  `OPENBLAS_NUM_THREADS`/`RAYON_NUM_THREADS`/`NUMEXPR_NUM_THREADS=4` (all currently in
+  `alps_prune_qwen3_8b.sh`) on the theory that default nproc-wide (72) thread pools synchronizing
+  under heavy external contention is the common thread (measured `torch.set_num_threads(1)` made
+  *no* difference for the per-doc loop specifically, so it isn't simply "torch's own pool" -- capping
+  everything broadly was a hedge, not a confirmed diagnosis).
+- A **fourth** attempt with those caps applied then hung 7+ min between "Loading checkpoint shards:
+  100%" and the (should-be-instant) `Calibration FLOPs` print -- i.e. stuck inside
+  `model.eval()` / `sum(p.numel() for p in model.parameters())`, which do no I/O and shouldn't be
+  contention-sensitive at all. Working theory (unverified): capping threads to 4 may have made the
+  genuinely bulk, parallelism-benefiting part of `from_pretrained` (copying/casting ~16GB of
+  weights into place) *slower*, trading one failure mode for another. **The thread caps are a
+  hedge that made a different, still-unexplained stall worse or just as likely -- do not assume
+  they're a real fix without re-verifying.**
+
+**Net: every attempt stalled at a different point, each incompatible with the previous fix's
+theory.** This smells like host-level contention severe/variable enough that no single-process
+thread-count tuning reliably fixes it -- the real fix is probably requesting an environment with
+actual CPU isolation (a batch/SLURM-style allocation that reserves cores, if this platform offers
+one) rather than more trial-and-error in this interactive container. Session ended with the GPU
+deallocated before s50 pruning ever completed. **Next person/session: don't re-derive this from
+scratch** -- start from whatever `git log -- ALPS/qwen3_alps.py b200_scripts/` shows as the latest
+state, check whether host load (`uptime`) is actually low before assuming a fix works, and prefer
+verifying against a short/cheap repro (small `nsamples`, or time just `get_ot_fw()` in isolation)
+before burning a multi-hour end-to-end run again.
