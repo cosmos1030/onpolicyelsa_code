@@ -65,7 +65,12 @@ export HF_HUB_DISABLE_XET=1
 # NOT expandable_segments:True -- OPKD's vLLM engine runs with
 # enable_sleep_mode=True (single-GPU path, see lib/gmp_trainer.py
 # _opkd_vllm_wake/sleep), whose CuMemAllocator hard-asserts expandable_segments
-# is unset at load_model() time.
+# is unset at load_model() time. Use max_split_size_mb instead -- a different
+# fragmentation mitigation the CuMemAllocator assertion doesn't check for (it
+# only greps for the literal string "expandable_segments:True") -- leaving
+# fragmentation completely unmitigated caused a real OOM after ~760 steps on
+# the other server's 1.7B single-GPU 2:4 canary (job 720073).
+export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:256
 export TOKENIZERS_PARALLELISM=false
 export VLLM_HOST_IP=127.0.0.1
 export TRITON_CACHE_DIR=/tmp/triton_cache_${USER}
