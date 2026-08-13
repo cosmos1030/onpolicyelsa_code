@@ -12,7 +12,8 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 from modelutils import find_layers
 from alps import ALPS_prune
 
-EVAL_FULL_SCRIPT = "/home1/doyoonkim/projects/elsa/scripts/eval_full.py"
+EVAL_FULL_SCRIPT = os.environ.get(
+    "EVAL_FULL_SCRIPT", "/home1/doyoonkim/projects/elsa/scripts/eval_full.py")
 
 DEV = torch.device('cuda')
 

@@ -1,0 +1,22 @@
+{
+  "meta": {
+    "entity": "dyk6208-gwangju-institute-of-science-and-technology",
+    "hf_base": "https://huggingface.co/",
+    "environment": "1xB200 docker container (doyoon-test), NOT the SLURM log_cluster used for the TR-GMP 8B sweep -- run without sbatch, single GPU (torchrun/FSDP paths bypassed, see elsa/ONBOARDING.md B200 section). Kept separate from runs_db.json on purpose: those entries use different calibration/training data, mixing them in would misrepresent the comparison.",
+    "data": "ot3_fineweb_40k_qwen3_nostrip_8192.jsonl (OT80/FW20 nostrip8192) -- same calibration+training data as the TR-GMP 8B fsdp2 sweep this is meant to compare against (see elsa/scripts/log_cluster/slurm_gmp_tr_ntpkd_opd_qwen3_8b_fsdp2gpu.sh)",
+    "compare_against_wandb_project": "reasoning_qwen3_8b_nostrip8192"
+  },
+  "models": {
+    "qwen3_8b": {
+      "display": "Qwen3-8B",
+      "wb_project": "reasoning_qwen3_8b",
+      "notes": [
+        "ALPS one-shot pruning (Qwen3/ALPS/qwen3_alps.py) run on 1xB200, nostrip8192 calib data (128 samples), then ALPS->SFT NTP+KD+OPKD(0.33/0.33/0.33) recovery training (fixed mask, 2048 steps) run on the same B200, single-GPU code path (gmp_use_fsdp=false).",
+        "Sparsity/lr plan: ALPS prune at s50/s60/s70; recovery training at s50@lr5e-5, s60@lr5e-5, s70@lr1e-4, s70@lr5e-5 (chosen to match the already-finished/running TR-GMP fsdp2 lr cells)."
+      ],
+      "S50": [],
+      "S60": [],
+      "S70": []
+    }
+  }
+}
