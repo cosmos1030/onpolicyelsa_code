@@ -73,6 +73,10 @@ elsa/admm*/
 triton_cache/
 __pycache__
 
+# machine-local symlink to persistent storage (MixedTextDataset/
+# MixedPromptDataset pickle cache) -- see b200_scripts/README.md
+elsa/.cache
+
 OPD/
 LMOps/
 # external baseline codebases (own git repos, not part of this project)
