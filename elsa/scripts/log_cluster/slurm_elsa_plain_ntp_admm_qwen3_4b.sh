@@ -22,17 +22,25 @@ exec 2>&1
 # admm_lmda_schedule_mode=cosine (lmda ramps up smoothly, not held constant
 # -- this is "plain ELSA-like" behavior) is fixed; admm_lmda ITSELF is what
 # the sweep varies. Reference values (rerun_ot80fw20/slurm_elsa_plain_qwen3_4b.sh,
-# old OT80/FW20 data): s50/lr5e-5->1e-3, s60/lr5e-5->5e-3, s70/lr1e-4->5e-3.
+# old OT80/FW20 data): s50/lr5e-5->1e-3, s60/lr5e-5->5e-3, s70/lr1e-4->5e-3,
+# 2:4/lr5e-5->5e-3. SPARSITY_TYPE=2:4 needs prune_n=2/prune_m=4, which
+# lib/prune.py's globalprune_admm already threads through to
+# AdmmTrainingArguments (prune_n/prune_m fields) -- no code changes needed,
+# just pass sparsity_type=2:4 (sparsity_ratio is ignored by the N:M path but
+# still required positionally; conventionally passed as 0.5 to match 2:4's
+# fixed 50%).
 #
-# Usage: sbatch slurm_elsa_plain_ntp_admm_qwen3_4b.sh <SPARSITY> <LR> <LMDA> [DATA_PATH] [WANDB_PROJECT]
+# Usage: sbatch slurm_elsa_plain_ntp_admm_qwen3_4b.sh <SPARSITY> <LR> <LMDA> [SPARSITY_TYPE] [DATA_PATH] [WANDB_PROJECT]
 # e.g.: sbatch slurm_elsa_plain_ntp_admm_qwen3_4b.sh 0.5 5e-5 1e-3
+#       sbatch slurm_elsa_plain_ntp_admm_qwen3_4b.sh 0.5 5e-5 5e-3 2:4
 
-SPARSITY=${1:?"Usage: <SPARSITY> <LR> <LMDA> [DATA_PATH] [WANDB_PROJECT]"}
-LR=${2:?"Usage: <SPARSITY> <LR> <LMDA> [DATA_PATH] [WANDB_PROJECT]"}
-LMDA=${3:?"Usage: <SPARSITY> <LR> <LMDA> [DATA_PATH] [WANDB_PROJECT]"}
+SPARSITY=${1:?"Usage: <SPARSITY> <LR> <LMDA> [SPARSITY_TYPE] [DATA_PATH] [WANDB_PROJECT]"}
+LR=${2:?"Usage: <SPARSITY> <LR> <LMDA> [SPARSITY_TYPE] [DATA_PATH] [WANDB_PROJECT]"}
+LMDA=${3:?"Usage: <SPARSITY> <LR> <LMDA> [SPARSITY_TYPE] [DATA_PATH] [WANDB_PROJECT]"}
+SPARSITY_TYPE=${4:-unstructured}
 REPO_ROOT="/home/doyoonkim/projects/onpolicyelsa_code/elsa"
-DATA_PATH=${4:-${REPO_ROOT}/data/ot3_fineweb_40k_qwen3_nostrip_8192.jsonl}
-WANDB_PROJECT=${5:-reasoning_qwen3_4b_nostrip8192}
+DATA_PATH=${5:-${REPO_ROOT}/data/ot3_fineweb_40k_qwen3_nostrip_8192.jsonl}
+WANDB_PROJECT=${6:-reasoning_qwen3_4b_nostrip8192}
 MODEL="Qwen/Qwen3-4B"
 SEQLEN=8192
 SPARSITY_PCT=$(python3 -c "print(int(${SPARSITY}*100))")
@@ -59,7 +67,7 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export TOKENIZERS_PARALLELISM=false
 export TRITON_CACHE_DIR=/tmp/triton_cache_${USER}
 
-echo "=== Plain ELSA NTP-ADMM ${MODEL} s${SPARSITY_PCT} lr=${LR} lmda=${LMDA} (cosine schedule) data=${DATA_TAG} (single H200) ==="
+echo "=== Plain ELSA NTP-ADMM ${MODEL} s${SPARSITY_PCT} (${SPARSITY_TYPE}) lr=${LR} lmda=${LMDA} (cosine schedule) data=${DATA_TAG} (single H200) ==="
 echo "NODE=$(hostname)  JOB=$SLURM_JOB_ID"
 nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader
 
@@ -75,7 +83,7 @@ python main.py \
     --dataset=mixed_cot \
     --data_path="$DATA_PATH" \
     --sparsity_ratio=${SPARSITY} \
-    --sparsity_type=unstructured \
+    --sparsity_type=${SPARSITY_TYPE} \
     --steps=2048 \
     --admm_batch_size=1 \
     --admm_gradient_accumulation_steps=8 \
