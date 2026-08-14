@@ -1,5 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=eval_lighteval
+#SBATCH --partition=H200
 #SBATCH --qos=normal
 #SBATCH --gres=gpu:1
 #SBATCH --nodes=1
