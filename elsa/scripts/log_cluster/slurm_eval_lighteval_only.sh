@@ -19,17 +19,26 @@ exec 2>&1
 # HTTP downloader instead. PPL/zero-shot are skipped here since they already
 # completed and logged in the original run before it got stuck.
 #
-# Usage: sbatch slurm_eval_lighteval_only.sh <MODEL_DIR_NAME> <WANDB_PROJECT> <WANDB_RUN_ID> [BENCHMARKS]
+# Usage: sbatch slurm_eval_lighteval_only.sh <MODEL_DIR_NAME> <WANDB_PROJECT> <WANDB_RUN_ID> [BENCHMARKS] [PROFILE]
 # BENCHMARKS: optional comma-separated subset of math500,aime24,aime25,gpqa,ifeval,lcb,gsm8k
 #        (default: all 7) -- e.g. to re-run just the one benchmark that
 #        crashed a prior eval instead of redoing all of them.
+# PROFILE: 'quick' (default here -- 8192 budget, matches every sweep job's
+#        original eval_profile=quick) or 'official' (32768 budget incl.
+#        AIME24/25). scripts/eval_full.py itself defaults to 'official' when
+#        --profile is omitted, which silently produces a NON-comparable
+#        result if the original run used quick (see the mismatch this fixed:
+#        a gpqa re-run at official's 32768 max_new_tokens took ~50x longer
+#        than the original quick-profile run and wasn't apples-to-apples
+#        with the rest of that row's benchmarks).
 # e.g.: sbatch slurm_eval_lighteval_only.sh gmp_s50pct_lr0.0001_20260808_024943 reasoning_qwen3_1.7b bcdyv5co
 #       sbatch slurm_eval_lighteval_only.sh gmp_s70pct_..._20260809_204703 reasoning_qwen3_4b duk3az49 gsm8k
 
-MODEL_DIR_NAME=${1:?"Usage: sbatch slurm_eval_lighteval_only.sh <MODEL_DIR_NAME> <WANDB_PROJECT> <WANDB_RUN_ID> [BENCHMARKS]"}
+MODEL_DIR_NAME=${1:?"Usage: sbatch slurm_eval_lighteval_only.sh <MODEL_DIR_NAME> <WANDB_PROJECT> <WANDB_RUN_ID> [BENCHMARKS] [PROFILE]"}
 WANDB_PROJECT=${2:?"missing WANDB_PROJECT"}
 WANDB_RUN_ID=${3:?"missing WANDB_RUN_ID"}
 BENCHMARKS=${4:-}
+PROFILE=${5:-quick}
 
 REPO_ROOT="/home/doyoonkim/projects/onpolicyelsa_code/elsa"
 MODEL_PATH="${REPO_ROOT}/models/${MODEL_DIR_NAME}"
@@ -47,7 +56,7 @@ export TOKENIZERS_PARALLELISM=false
 export VLLM_HOST_IP=127.0.0.1
 export TMPDIR=/tmp
 
-echo "=== lighteval-only re-run: $MODEL_DIR_NAME (wandb $WANDB_PROJECT/$WANDB_RUN_ID) ==="
+echo "=== lighteval-only re-run: $MODEL_DIR_NAME (wandb $WANDB_PROJECT/$WANDB_RUN_ID) profile=$PROFILE benchmarks=${BENCHMARKS:-all} ==="
 echo "NODE=$(hostname)  JOB=$SLURM_JOB_ID  MODEL_PATH=$MODEL_PATH"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 
@@ -62,6 +71,7 @@ python scripts/eval_full.py \
     --out_base="$OUT_BASE" \
     --gpu_util=0.85 \
     --seed=42 \
+    --profile="$PROFILE" \
     ${BENCHMARKS:+--benchmarks="$BENCHMARKS"}
 
 EXIT_CODE=$?
