@@ -11,6 +11,7 @@ Key components (from "The State of Sparsity in LLMs"):
 
 import math
 import time
+import types
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -298,9 +299,164 @@ def _cubic_sparsity(step, total_steps, final_sparsity, warmup_steps=0):
     return final_sparsity * (1.0 - (1.0 - min(t / T, 1.0)) ** 3)
 
 
-def _apply_mask(param, mask):
+def _pgd_topk_mask(imps_by_name, cand_by_name, k, want_highest, dev, use_fsdp, global_lo, global_hi):
+    """Select exactly k positions (FSDP-global) from the True positions of
+    cand_by_name, ranked by imps_by_name -- the k LARGEST values if
+    want_highest (used to pick which revival candidates are most confidently
+    due), else the k SMALLEST (which pruning candidates are most confidently
+    due). Same binary-search-on-threshold pattern as the main PGD threshold
+    search above, so it composes with FSDP local shards the same way.
+    Positions outside cand_by_name are pushed just past the global value
+    range (global_lo-1 / global_hi+1) so they can never be selected."""
+    if use_fsdp:
+        import torch.distributed as _dist
+    sentinel = (global_lo - 1.0) if want_highest else (global_hi + 1.0)
+    vals = {n: torch.where(cand_by_name[n], imps_by_name[n], torch.full_like(imps_by_name[n], sentinel))
+            for n in imps_by_name}
+    lo, hi = global_lo - 1.0, global_hi + 1.0
+    cnt_t = torch.zeros(1, dtype=torch.long, device=dev)
+    for _ in range(48):
+        mid = (lo + hi) / 2.0
+        cnt_t.zero_()
+        for v in vals.values():
+            cnt_t += (v >= mid).sum(dtype=torch.long) if want_highest else (v <= mid).sum(dtype=torch.long)
+        if use_fsdp:
+            _dist.all_reduce(cnt_t, op=_dist.ReduceOp.SUM)
+        c = cnt_t.item()
+        if want_highest:
+            # count(>=mid) == k target; raising mid shrinks count
+            if c < k:
+                hi = mid
+            else:
+                lo = mid
+        else:
+            # count(<=mid) == k target; raising mid grows count
+            if c < k:
+                lo = mid
+            else:
+                hi = mid
+    thr = lo if want_highest else hi
+    return {n: ((v >= thr) if want_highest else (v <= thr)) for n, v in vals.items()}
+
+
+def _pgd_nm_pre_target(imps, masks, prune_n, prune_m, k_prune, dev, use_fsdp):
+    """N:M-aware PGD swap for use BEFORE TR-GMP growth has reached
+    final_sparsity (--gmp_pgd with sparsity_type=N:M). Growth's own
+    candidate_masks()/_nm_mask already guarantees every group of prune_m
+    never has more than (prune_m-prune_n) dead -- but PGD's plain global-
+    threshold reprojection has no group awareness at all, so left unchanged
+    it silently breaks the N:M pattern (verified empirically: ~1.5-2.4% of
+    groups ended up with the wrong dead-count on a 2:4 checkpoint). This caps
+    how much any single group can be pruned THIS step at its remaining
+    budget (prune_m-prune_n minus its current dead count) -- revivals are
+    always safe (they only reduce a group's dead count) but are throttled to
+    match however many prunes actually clear the cap, so the aggregate
+    revive/prune counts stay equal and overall sparsity doesn't drift.
+    Returns (new_masks, n_revivals, n_prunings)."""
+    max_dead = prune_m - prune_n
+    revive_cand, eligible_prune = {}, {}
+    for n, imp in imps.items():
+        mask = masks[n]
+        if imp.dim() < 2 or imp.numel() == 0:
+            revive_cand[n] = torch.zeros_like(mask)
+            eligible_prune[n] = torch.zeros_like(mask)
+            continue
+        n_rows, n_cols = imp.shape
+        n_full = n_cols // prune_m
+        n_nm = n_full * prune_m
+        imp_g = imp[:, :n_nm].reshape(n_rows * n_full, prune_m)
+        mask_g = mask[:, :n_nm].reshape(n_rows * n_full, prune_m)  # True = alive
+        dead_g = ~mask_g
+        dead_count = dead_g.sum(dim=1, keepdim=True)
+        budget = (max_dead - dead_count).clamp(min=0)  # more this group can lose this step
+
+        imp_rank_src = imp_g.masked_fill(dead_g, float('inf'))
+        rank = imp_rank_src.argsort(dim=1).argsort(dim=1)  # ascending; dead -> highest ranks
+        elig_g = (rank < budget) & mask_g  # lowest-importance alive slots, within budget
+
+        elig_full = torch.zeros_like(mask)
+        elig_full[:, :n_nm] = elig_g.reshape(n_rows, n_nm)
+        eligible_prune[n] = elig_full
+        # revival candidates get filled in below once the caller's global
+        # threshold has picked a `desired` mask; placeholder here.
+        revive_cand[n] = torch.zeros_like(mask)
+    return eligible_prune
+
+
+def _pgd_nm_post_target(imps, masks, prune_n, prune_m):
+    """N:M-aware PGD swap for use AFTER TR-GMP growth has reached
+    final_sparsity. Every group must stay at EXACTLY (prune_m-prune_n) dead
+    from here on (drifting either direction in one group forces the opposite
+    drift somewhere else, globally, to keep overall sparsity fixed) -- so
+    the pre-target cap-only approach can't do anything useful here: once
+    every group is already at its cap, no group ever has spare prune budget,
+    which would freeze the mask completely (zero revivals, zero prunings)
+    instead of letting PGD keep refining WHICH prune_n survive per group as
+    importance shifts. Independently recomputes each group's top-prune_n
+    alive set from scratch every step -- no cross-group bookkeeping needed."""
+    new_masks = {}
+    for n, imp in imps.items():
+        mask = masks[n]
+        if imp.dim() < 2 or imp.numel() == 0:
+            new_masks[n] = mask.clone()
+            continue
+        n_rows, n_cols = imp.shape
+        n_full = n_cols // prune_m
+        n_nm = n_full * prune_m
+        imp_g = imp[:, :n_nm].reshape(n_rows * n_full, prune_m)
+        rank = imp_g.argsort(dim=1).argsort(dim=1)  # ascending: 0=lowest .. prune_m-1=highest
+        keep_g = rank >= (prune_m - prune_n)
+        new_mask = mask.clone()
+        new_mask[:, :n_nm] = keep_g.reshape(n_rows, n_nm)
+        new_masks[n] = new_mask
+    return new_masks
+
+
+def _apply_mask(param, mask, ste=False):
+    if ste:
+        # STE mode: param.data is never hard-reset -- masking is enforced only
+        # in the forward pass (see _STEMaskFn / install_ste_forward_hooks), so
+        # Adam sees a true, continuously-compounding trajectory for masked
+        # weights instead of a one-step-from-zero snapshot every step.
+        return
     with torch.no_grad():
         param.data.mul_(mask)
+
+
+class _STEMaskFn(torch.autograd.Function):
+    """Straight-through estimator for masked weights: forward computes
+    weight*mask (so sparsity is respected in the actual computation), but
+    backward passes the gradient straight through unmasked to `weight` --
+    the real parameter is never touched/reset, so Adam naturally accumulates
+    the true trajectory underneath the mask with no manual replay needed."""
+
+    @staticmethod
+    def forward(ctx, weight, mask):
+        return weight * mask
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        return grad_output, None
+
+
+def install_ste_forward_hooks(model, maskmgr):
+    """Patch each masked nn.Linear's forward to route through _STEMaskFn,
+    reading maskmgr.masks[name] fresh on every call (so later mask updates --
+    in-place item writes or whole-dict reassignment -- are picked up with no
+    re-registration). Opt-in only (--gmp_ste=true) -- forward is 100% stock
+    HF Linear when this is never called."""
+    name_to_module = dict(model.named_modules())
+    for full_name in maskmgr.named_params:
+        assert full_name.endswith('.weight')
+        module = name_to_module[full_name[:-len('.weight')]]
+
+        def _make_forward(mask_name):
+            def _ste_forward(self, x):
+                w = _STEMaskFn.apply(self.weight, maskmgr.masks[mask_name])
+                return F.linear(x, w, self.bias)
+            return _ste_forward
+
+        module.forward = types.MethodType(_make_forward(full_name), module)
 
 
 # ---------------------------------------------------------------------------
@@ -562,11 +718,12 @@ class EmpiricalFisherAccumulator:
 class GradualMaskManager:
     """Maintains binary masks and updates them on a schedule."""
 
-    def __init__(self, named_params, fsdp_model=None, prune_n=0, prune_m=0, pruning_scope='global'):
+    def __init__(self, named_params, fsdp_model=None, prune_n=0, prune_m=0, pruning_scope='global', ste=False):
         self.named_params = named_params
         self.prune_n = prune_n  # N for N:M semi-structured sparsity (0 = unstructured)
         self.prune_m = prune_m  # M for N:M semi-structured sparsity
         self.pruning_scope = pruning_scope  # 'global' or 'layer' (per-layer)
+        self.ste = ste  # opt-in STE mode: apply()/update() skip the hard param.data reset (see _apply_mask)
         # With FSDP, p.data is a local shard — masks live at local shard shape.
         # summon_full_params is NOT used here: importance scoring and mask application
         # operate on local shards directly (all-gather used for global threshold only).
@@ -789,16 +946,19 @@ class GradualMaskManager:
         new_masks = self.candidate_masks(fisher, sparsity, fsdp_model)
         self.masks = new_masks
         for name, param in self.named_params.items():
-            _apply_mask(param, self.masks[name])
+            _apply_mask(param, self.masks[name], ste=self.ste)
 
     def apply(self, fsdp_model=None):
         """Zero out masked weights (call after every optimizer step).
 
         Applies masks to local shards directly — FSDP all-gathers params before each
         forward pass, so zeroing local shards is sufficient to enforce sparsity globally.
+        In STE mode (self.ste=True) this is a no-op: sparsity is enforced only in the
+        forward pass via install_ste_forward_hooks, so param.data is intentionally left
+        untouched here.
         """
         for name, param in self.named_params.items():
-            _apply_mask(param, self.masks[name])
+            _apply_mask(param, self.masks[name], ste=self.ste)
 
     def current_sparsity(self):
         total = sum(m.numel() for m in self.masks.values())
@@ -1878,7 +2038,24 @@ def globalprune_gmp(
     teacher_seqkd_temp = getattr(FLAGS, 'gmp_onpolicy_temperature', 1.0)
     teacher_seqkd_max_new = getattr(FLAGS, 'gmp_onpolicy_max_new_tokens', 512)
     pgd_enabled    = getattr(FLAGS, 'gmp_pgd', False)
+    pgd_max_swap_frac = getattr(FLAGS, 'gmp_pgd_max_swap_frac', 0.0)  # trust-region cap on PGD mask churn, 0=unlimited (see below)
     _pgd_scratch   = {}  # name -> preallocated fp32 buffer, reused in-place every PGD step (see below)
+    # ── STE mode (opt-in, --gmp_ste=true) ───────────────────────────────────
+    # Replaces the earlier shadow-weight-replay approach entirely (removed --
+    # mathematically the two give the same accumulated trajectory for a plain
+    # linear layer with weight_decay=0, since dL/dW at a masked position
+    # doesn't depend on W's own stored value, only on activation * upstream
+    # grad -- so the gradient sequence feeding Adam's m/v is identical either
+    # way). STE is strictly better: maskmgr.apply()/update() become a no-op
+    # when GradualMaskManager.ste=True (see _apply_mask), so param.data itself
+    # is never hard-reset -- Adam accumulates the true, multi-step trajectory
+    # directly in the real parameter (not a separate replayed buffer), and a
+    # revived weight's value is the mature accumulated one, not a cold-started
+    # near-zero one. Sparsity is enforced only in the forward pass via
+    # install_ste_forward_hooks (weight*mask, gradient passes straight
+    # through) -- see GradualMaskManager construction below, gated by the
+    # same flag.
+    ste_enabled = getattr(FLAGS, 'gmp_ste', False)
 
     use_kd         = (teacher_model is not None) and (kd_lambda > 0.0)
     use_hidden     = (teacher_model is not None) and (hidden_lambda > 0.0)
@@ -2132,10 +2309,15 @@ def globalprune_gmp(
         else:
             logging.info("Fisher source: adam (exp_avg_sq)")
     maskmgr = GradualMaskManager(named_params, fsdp_model, prune_n=prune_n, prune_m=prune_m,
-                                  pruning_scope=getattr(FLAGS, 'gmp_pruning_scope', 'global'))
+                                  pruning_scope=getattr(FLAGS, 'gmp_pruning_scope', 'global'),
+                                  ste=ste_enabled)
     if fixed_mask:
         maskmgr.init_from_weights()
         maskmgr.apply(fsdp_model)
+    if ste_enabled:
+        install_ste_forward_hooks(model, maskmgr)
+        logging.info("  STE masking ENABLED (--gmp_ste): forward masks weight*mask, "
+                     "gradient passes straight through; param.data is never hard-reset.")
     if lr_schedule in ('constant', 'constant_with_warmup'):
         if constant_warmup_steps > 0:
             scheduler = get_constant_schedule_with_warmup(optimizer, num_warmup_steps=constant_warmup_steps)
@@ -3372,6 +3554,15 @@ def globalprune_gmp(
             _pgd_imps = {}
             _pgd_fast_path = (fisher.saliency == 'fisher')
             for _n, _p in maskmgr.named_params.items():
+                # _p.data itself is the source: in STE mode (--gmp_ste) it is
+                # never hard-reset by maskmgr.apply()/update() (see
+                # _apply_mask), so it already holds the true, continuously-
+                # compounding Adam trajectory -- no separate shadow replay
+                # needed (the earlier shadow-buffer approach was removed;
+                # mathematically equivalent to STE for weight_decay=0, but
+                # STE is strictly better since it also fixes "cold revival"
+                # -- see install_ste_forward_hooks). In hard-mask mode,
+                # _p.data is the usual one-step-from-zero snapshot, as before.
                 if _pgd_fast_path:
                     _f = fisher.fisher_factor(_p)
                     if _f is None:
@@ -3429,15 +3620,112 @@ def globalprune_gmp(
                         _pgd_hi = _pgd_mid
                 _pgd_thr = _pgd_hi
 
-                # apply new mask, count revivals/prunings
-                for _n in maskmgr.named_params:
-                    _old = maskmgr.masks[_n]
-                    _new = (_pgd_imps[_n] > _pgd_thr) if _n in _pgd_imps else _old.clone()
-                    _pgd_revivals += int((_new & ~_old).sum().item())
-                    _pgd_prunings += int((~_new & _old).sum().item())
-                    maskmgr.masks[_n] = _new
+                # desired mask (uncapped) -- same as before pgd_max_swap_frac existed
+                _pgd_desired = {
+                    _n: (_pgd_imps[_n] > _pgd_thr) if _n in _pgd_imps else maskmgr.masks[_n].clone()
+                    for _n in maskmgr.named_params
+                }
+
+                # N:M-aware PGD (sparsity_type=2:4/4:8): plain global-threshold
+                # reprojection has no group awareness and silently breaks the
+                # N:M pattern (verified empirically: ~1.5-2.4% of groups ended
+                # up with the wrong dead-count on a 2:4 checkpoint pruned this
+                # way). Two regimes, since the correctness requirement differs:
+                # before TR-GMP growth reaches final_sparsity, a group only
+                # needs to never be over-pruned (a cap suffices, free to grow
+                # asymmetrically across groups); once at final_sparsity, every
+                # group must stay at EXACTLY (prune_m-prune_n) dead forever
+                # after (a cap alone would freeze the mask completely, since
+                # every group already at its cap has zero spare prune budget)
+                # -- so post-target uses an independent per-group top-prune_n
+                # recompute instead. See _pgd_nm_pre_target/_pgd_nm_post_target.
+                _pgd_is_nm = getattr(maskmgr, 'prune_n', 0) > 0 and getattr(maskmgr, 'prune_m', 0) > 0
+                if _pgd_is_nm:
+                    _pgd_at_target = maskmgr.current_sparsity() >= final_sparsity
+                    if _pgd_at_target:
+                        _new_masks = _pgd_nm_post_target(_pgd_imps, maskmgr.masks, maskmgr.prune_n, maskmgr.prune_m)
+                        for _n in maskmgr.named_params:
+                            _old = maskmgr.masks[_n]
+                            _new = _new_masks.get(_n, _old)
+                            _pgd_revivals += int((_new & ~_old).sum().item())
+                            _pgd_prunings += int((~_new & _old).sum().item())
+                            maskmgr.masks[_n] = _new
+                    else:
+                        _revive_cand = {_n: _pgd_desired[_n] & ~maskmgr.masks[_n] for _n in maskmgr.named_params}
+                        _eligible_prune = _pgd_nm_pre_target(_pgd_imps, maskmgr.masks, maskmgr.prune_n,
+                                                              maskmgr.prune_m, _pgd_k_prune, _pgd_dev, _pgd_use_fsdp)
+                        _n_elig_t = torch.tensor(
+                            sum(v.sum().item() for v in _eligible_prune.values()), dtype=torch.long, device=_pgd_dev)
+                        if _pgd_use_fsdp:
+                            _dist.all_reduce(_n_elig_t, op=_dist.ReduceOp.SUM)
+                        _k_actual = min(_pgd_k_prune, int(_n_elig_t.item()))
+                        _sel_prune = (_pgd_topk_mask(_pgd_imps, _eligible_prune, _k_actual, False, _pgd_dev, _pgd_use_fsdp, _pgd_lo, _pgd_hi)
+                                      if _k_actual > 0 else {n: torch.zeros_like(m) for n, m in maskmgr.masks.items()})
+                        _n_revive_cand_t = torch.tensor(
+                            sum(v.sum().item() for v in _revive_cand.values()), dtype=torch.long, device=_pgd_dev)
+                        if _pgd_use_fsdp:
+                            _dist.all_reduce(_n_revive_cand_t, op=_dist.ReduceOp.SUM)
+                        _k_revive = min(_k_actual, int(_n_revive_cand_t.item()))
+                        _sel_revive = (_pgd_topk_mask(_pgd_imps, _revive_cand, _k_revive, True, _pgd_dev, _pgd_use_fsdp, _pgd_lo, _pgd_hi)
+                                       if _k_revive > 0 else {n: torch.zeros_like(m) for n, m in maskmgr.masks.items()})
+                        for _n in maskmgr.named_params:
+                            _old = maskmgr.masks[_n]
+                            _new = _old.clone()
+                            if _n in _pgd_imps:
+                                _new = (_new | _sel_revive[_n]) & ~_sel_prune[_n]
+                            _pgd_revivals += int((_new & ~_old).sum().item())
+                            _pgd_prunings += int((~_new & _old).sum().item())
+                            maskmgr.masks[_n] = _new
+                # trust-region cap: limit how many positions actually flip this
+                # step (--gmp_pgd_max_swap_frac, fraction of total masked
+                # params). Uncapped PGD projects straight onto the full
+                # top-k-by-importance set every step regardless of how many
+                # positions that moves -- observed to be enormous under STE
+                # (hundreds of thousands to millions/step, since param.data
+                # is never hard-reset there and masked weights can grow
+                # without bound, see install_ste_forward_hooks) vs ~tens/step
+                # under hard-masking. When capped, only the most-confident
+                # revivals (highest importance among revival candidates) and
+                # most-confident prunings (lowest importance among pruning
+                # candidates) are applied -- capped symmetrically since
+                # revival-candidate count == pruning-candidate count exactly
+                # (old and desired masks both have the same target keep-count).
+                elif pgd_max_swap_frac > 0:
+                    _revive_cand = {_n: _pgd_desired[_n] & ~maskmgr.masks[_n] for _n in maskmgr.named_params}
+                    _prune_cand  = {_n: (~_pgd_desired[_n]) & maskmgr.masks[_n] for _n in maskmgr.named_params}
+                    _n_revive_cand_t = torch.tensor(
+                        sum(v.sum().item() for v in _revive_cand.values()), dtype=torch.long, device=_pgd_dev)
+                    if _pgd_use_fsdp:
+                        _dist.all_reduce(_n_revive_cand_t, op=_dist.ReduceOp.SUM)
+                    _n_revive_cand = int(_n_revive_cand_t.item())
+                    _pgd_cap = max(1, round(pgd_max_swap_frac * _pgd_stats[1].item()))
+                    if _n_revive_cand > _pgd_cap:
+                        _sel_revive = _pgd_topk_mask(_pgd_imps, _revive_cand, _pgd_cap, True, _pgd_dev, _pgd_use_fsdp, _pgd_lo, _pgd_hi)
+                        _sel_prune  = _pgd_topk_mask(_pgd_imps, _prune_cand, _pgd_cap, False, _pgd_dev, _pgd_use_fsdp, _pgd_lo, _pgd_hi)
+                        for _n in maskmgr.named_params:
+                            _old = maskmgr.masks[_n]
+                            _new = _old.clone()
+                            if _n in _pgd_imps:
+                                _new = (_new | _sel_revive[_n]) & ~_sel_prune[_n]
+                            _pgd_revivals += int((_new & ~_old).sum().item())
+                            _pgd_prunings += int((~_new & _old).sum().item())
+                            maskmgr.masks[_n] = _new
+                    else:
+                        for _n in maskmgr.named_params:
+                            _old = maskmgr.masks[_n]
+                            _new = _pgd_desired[_n]
+                            _pgd_revivals += int((_new & ~_old).sum().item())
+                            _pgd_prunings += int((~_new & _old).sum().item())
+                            maskmgr.masks[_n] = _new
+                else:
+                    for _n in maskmgr.named_params:
+                        _old = maskmgr.masks[_n]
+                        _new = _pgd_desired[_n]
+                        _pgd_revivals += int((_new & ~_old).sum().item())
+                        _pgd_prunings += int((~_new & _old).sum().item())
+                        maskmgr.masks[_n] = _new
                 maskmgr.apply(fsdp_model)
-                del _pgd_imps, _old, _new
+                del _pgd_imps, _pgd_desired
                 torch.cuda.empty_cache()
 
                 # sum revival/pruning counts across ranks (FSDP only)
@@ -3581,6 +3869,19 @@ def globalprune_gmp(
     # final mask at full sparsity
     maskmgr.update(fisher, final_sparsity, fsdp_model)
     logging.info(f"Final sparsity: {maskmgr.current_sparsity():.4f}")
+
+    if maskmgr.ste:
+        # STE mode never hard-resets param.data during training (that's the
+        # whole point -- see _apply_mask) -- so param.data is still dense at
+        # this point even though maskmgr.masks / current_sparsity() already
+        # reflect the final target sparsity. Hard-apply the final mask into
+        # the real weights once, here, before anything gets saved or
+        # evaluated -- otherwise the checkpoint on disk (and any in-run PPL/
+        # sparsity sanity check) would see a dense model.
+        with torch.no_grad():
+            for name, param in maskmgr.named_params.items():
+                param.data.mul_(maskmgr.masks[name])
+        logging.info("STE finalize: hard-applied final mask into param.data before save/eval.")
 
     if is_main_process:
         # Gradient fine-tuning: ~6*N*tokens (forward+backward+update), vs ~2*N*tokens

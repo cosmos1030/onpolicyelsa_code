@@ -1007,6 +1007,8 @@ if __name__ == '__main__':
     flags.DEFINE_bool('gmp_random_cot_ntp', False, 'Use random seqlen-token windows from CoT (no prompt masking) instead of MixedTextDataset.')
     flags.DEFINE_bool('gmp_use_fsdp', False, 'Wrap GMP model with FSDP for multi-GPU training (requires torchrun / accelerate launch).')
     flags.DEFINE_bool('gmp_pgd', False, 'Enable PGD projection after each optimizer step: re-project mask using Fisher saliency (v_t*w^2), logging pgd/revivals and pgd/prunings.')
+    flags.DEFINE_bool('gmp_ste', False, 'Straight-through estimator masking: forward computes weight*mask (sparsity respected), backward passes gradient straight through unmasked -- param.data is never hard-reset, so Adam accumulates masked weights\' true trajectory (used with --gmp_pgd so revival/importance scoring sees a multi-step signal instead of a one-step-from-zero snapshot).')
+    flags.DEFINE_float('gmp_pgd_max_swap_frac', 0.0, 'Trust-region cap on PGD mask churn per step, as a fraction of total masked params (0 = unlimited, PGD projects onto the full top-k set every step regardless of how many positions that flips). When capped, only the most-confident revivals/prunings are applied each step; the rest are re-evaluated next step.')
     flags.DEFINE_float('gmp_dpo_lambda', 0.0, 'Weight for DPO loss (0 = disabled).')
     flags.DEFINE_float('gmp_dpo_beta', 0.1, 'DPO beta (temperature).')
     flags.DEFINE_integer('gmp_dpo_n_pairs', 1024, 'Number of chosen pairs to pre-generate.')
