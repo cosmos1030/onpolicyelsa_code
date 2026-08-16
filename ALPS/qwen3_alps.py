@@ -20,7 +20,7 @@ DEV = torch.device('cuda')
 
 # ── Data ─────────────────────────────────────────────────────────────────────
 
-def get_ot_fw(nsamples, seed, seqlen, tokenizer, data_path):
+def get_ot_fw(nsamples, seed, seqlen, tokenizer, data_path, pack_short_docs=False):
     raw = load_dataset('json', data_files=data_path, split='train')
     random.seed(seed)
     np.random.seed(seed)
@@ -41,21 +41,59 @@ def get_ot_fw(nsamples, seed, seqlen, tokenizer, data_path):
         remove_columns=raw.column_names, desc='Tokenizing calibration docs',
     )
 
-    all_tokens = []
-    for row in tokenized:
-        ids = row['input_ids']
-        if len(ids) >= seqlen:
-            all_tokens.append(torch.tensor(ids, dtype=torch.long).unsqueeze(0))
-    assert len(all_tokens) > 0, "No samples longer than seqlen"
+    if pack_short_docs:
+        # NOTE: an earlier version of this branch concatenated multiple
+        # DIFFERENT docs together (bos-separated) to fill out short ones --
+        # measured to actively HURT self-gen calibration at s70 (math500
+        # 2.6->0.0) versus the plain windowing path below. Root cause: the
+        # concatenation buffer starts empty, so if the FIRST randomly-drawn
+        # doc already exceeds seqlen (true for ~97% of self-gen v2 rows --
+        # they're prompt+completion and the ORIGINAL prompt alone is often
+        # long), the window is just that one doc's tokens [0:seqlen] with NO
+        # random offset -- for a long prompt this can capture only the
+        # prompt and cut off before the self-gen model's own completion ever
+        # starts, silently defeating the entire point of self-gen
+        # calibration. Fixed: keep each doc separate (no concatenation, per
+        # explicit instruction), take a RANDOM offset window (matching the
+        # plain path's proven-good behavior) for any doc >= seqlen, and drop
+        # (not pad/concatenate) anything shorter -- this flag now only
+        # differs from the plain path in intent/logging, not mechanics,
+        # since essentially all rows here already clear seqlen; kept as a
+        # distinct code path for future datasets with a higher short-doc
+        # rate, where it'd matter more.
+        all_tokens = []
+        for row in tokenized:
+            ids = row['input_ids']
+            if len(ids) >= seqlen:
+                all_tokens.append(torch.tensor(ids, dtype=torch.long).unsqueeze(0))
+        assert len(all_tokens) > 0, "No samples longer than seqlen"
+        print(f'[pack_short_docs] {len(all_tokens)}/{len(tokenized)} docs >= seqlen={seqlen} '
+              f'({len(tokenized) - len(all_tokens)} dropped as too short, no concatenation)')
 
-    trainloader = []
-    for _ in range(nsamples):
-        src = random.choice(all_tokens)
-        i = random.randint(0, src.shape[1] - seqlen)
-        inp = src[:, i:i + seqlen]
-        tar = inp.clone()
-        tar[:, :-1] = -100
-        trainloader.append((inp, tar))
+        trainloader = []
+        for _ in range(nsamples):
+            src = random.choice(all_tokens)
+            i = random.randint(0, src.shape[1] - seqlen)
+            inp = src[:, i:i + seqlen]
+            tar = inp.clone()
+            tar[:, :-1] = -100
+            trainloader.append((inp, tar))
+    else:
+        all_tokens = []
+        for row in tokenized:
+            ids = row['input_ids']
+            if len(ids) >= seqlen:
+                all_tokens.append(torch.tensor(ids, dtype=torch.long).unsqueeze(0))
+        assert len(all_tokens) > 0, "No samples longer than seqlen"
+
+        trainloader = []
+        for _ in range(nsamples):
+            src = random.choice(all_tokens)
+            i = random.randint(0, src.shape[1] - seqlen)
+            inp = src[:, i:i + seqlen]
+            tar = inp.clone()
+            tar[:, :-1] = -100
+            trainloader.append((inp, tar))
 
     # Original approach here (join up to 500 raw docs into one string, then
     # tokenize that ~6.75M-char string in a single call) hung for 2h19m on
@@ -175,9 +213,17 @@ def qwen3_sequential(model, dataloader, dev, args):
 
     tot_params, tot_nnz = 0, 0
 
+    skip_set = getattr(args, 'skip_layer_names', None) or {}
+
     for i in range(len(layers)):
         layer = layers[i].to(dev)
         full = find_layers(layer)
+        skip_here = skip_set.get(i, set())
+        if skip_here:
+            names_to_skip = list(full.keys()) if '*' in skip_here else [n for n in skip_here if n in full]
+            for name in names_to_skip:
+                print(f'  Layer {i} {name}: SKIPPED (kept dense)')
+                del full[name]
         sequential = [list(full.keys())]
 
         scd = {}
@@ -296,11 +342,17 @@ if __name__ == '__main__':
     parser.add_argument('model', type=str)
     parser.add_argument('sp', type=float, help='Sparsity level')
     parser.add_argument('--data_path', type=str, required=True, help='Path to ot+fw JSONL')
+    parser.add_argument('--pack_short_docs', action='store_true',
+                         help='Pack docs shorter than seqlen instead of dropping them (fixes a bug where '
+                              'self-gen calibration rows shorter than seqlen were silently discarded)')
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--nsamples', type=int, default=128)
     parser.add_argument('--nm_n', type=int, default=0)
     parser.add_argument('--nm_m', type=int, default=0)
     parser.add_argument('--rho', type=float, default=300.0)
+    parser.add_argument('--skip_layer_names', type=str, default='',
+                         help="comma-separated layer_idx:proj_name pairs to keep dense, e.g. '35:mlp.up_proj' "
+                              "or '35:mlp.up_proj,35:mlp.gate_proj'")
     parser.add_argument('--save', type=str, default='')
     parser.add_argument('--eval_full', action='store_true', help='Run full eval (PPL+zeroshot+lighteval) after pruning')
     parser.add_argument('--profile', type=str, default='official', choices=['official', 'quick'],
@@ -326,7 +378,16 @@ if __name__ == '__main__':
     flops = 2 * n_params * n_tokens
     print(f'Calibration FLOPs: {flops:.3e} ({n_params} params x {n_tokens} tokens, forward-only)')
 
-    dataloader, testenc = get_ot_fw(args.nsamples, args.seed, model.seqlen, tokenizer, args.data_path)
+    dataloader, testenc = get_ot_fw(args.nsamples, args.seed, model.seqlen, tokenizer, args.data_path,
+                                     pack_short_docs=args.pack_short_docs)
+
+    skip_layer_names = {}
+    if args.skip_layer_names:
+        for pair in args.skip_layer_names.split(','):
+            idx_str, name = pair.split(':')
+            skip_layer_names.setdefault(int(idx_str), set()).add(name)
+        print(f'Skipping (keeping dense): {skip_layer_names}')
+    args.skip_layer_names = skip_layer_names
 
     tick = time.time()
     qwen3_sequential(model, dataloader, DEV, args)

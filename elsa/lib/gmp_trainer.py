@@ -1878,6 +1878,7 @@ def globalprune_gmp(
     teacher_seqkd_temp = getattr(FLAGS, 'gmp_onpolicy_temperature', 1.0)
     teacher_seqkd_max_new = getattr(FLAGS, 'gmp_onpolicy_max_new_tokens', 512)
     pgd_enabled    = getattr(FLAGS, 'gmp_pgd', False)
+    _pgd_scratch   = {}  # name -> preallocated fp32 buffer, reused in-place every PGD step (see below)
 
     use_kd         = (teacher_model is not None) and (kd_lambda > 0.0)
     use_hidden     = (teacher_model is not None) and (hidden_lambda > 0.0)
@@ -3341,6 +3342,25 @@ def globalprune_gmp(
         optimizer.zero_grad()
 
         # ── PGD projection (fisher-saliency, FSDP-aware) ─────────────────────
+        # Runs every step by design (classic PGD: project back onto the
+        # sparsity constraint after every unconstrained gradient step, not
+        # just at mask_interval boundaries). fisher.importance() allocates
+        # 3-4 fresh full-precision tensors PER PARAMETER, model-wide, every
+        # call -- doing that every step (not just every mask_interval steps
+        # like the base training path's own mask updates) churned enough
+        # large short-lived allocations to fragment CUDA memory badly enough
+        # to crash 3/3 first real runs of this never-before-exercised flag
+        # (a segfault in an unrelated later kl_div call once fragmentation
+        # left no contiguous block big enough, rather than a clean
+        # OutOfMemoryError -- at unpredictable step counts consistent with
+        # cumulative fragmentation, not a fixed peak-memory ceiling).
+        # Fix: for the common gmp_saliency='fisher' case, compute v_t*w^2
+        # in-place into a persistent per-parameter fp32 buffer allocated
+        # ONCE (_pgd_scratch) and reused every step -- no new allocation at
+        # all on the hot path, so nothing to fragment and no empty_cache()
+        # needed. Falls back to fisher.importance() unchanged for any other
+        # saliency mode (spa/wanda/magnitude/sqrt_fisher), which this
+        # in-place path does not special-case.
         if pgd_enabled and step > dense_warmup_steps and not math.isnan(grad_norm) and not math.isinf(grad_norm):
             _pgd_revivals = 0
             _pgd_prunings = 0
@@ -3350,8 +3370,23 @@ def globalprune_gmp(
 
             # importance scores (v_t * w^2), skip empty FSDP shards
             _pgd_imps = {}
+            _pgd_fast_path = (fisher.saliency == 'fisher')
             for _n, _p in maskmgr.named_params.items():
-                _t = fisher.importance(_n, _p)
+                if _pgd_fast_path:
+                    _f = fisher.fisher_factor(_p)
+                    if _f is None:
+                        _t = _p.data.float() ** 2  # pre-first-optimizer-step fallback (rare, one-off)
+                    else:
+                        _buf = _pgd_scratch.get(_n)
+                        if _buf is None or _buf.shape != _p.shape:
+                            _buf = torch.empty_like(_p.data, dtype=torch.float32)
+                            _pgd_scratch[_n] = _buf
+                        _buf.copy_(_p.data)
+                        _buf.pow_(2)
+                        _buf.mul_(_f)
+                        _t = _buf
+                else:
+                    _t = fisher.importance(_n, _p)
                 if _t.numel() > 0:
                     _pgd_imps[_n] = _t
 
@@ -3402,6 +3437,8 @@ def globalprune_gmp(
                     _pgd_prunings += int((~_new & _old).sum().item())
                     maskmgr.masks[_n] = _new
                 maskmgr.apply(fsdp_model)
+                del _pgd_imps, _old, _new
+                torch.cuda.empty_cache()
 
                 # sum revival/pruning counts across ranks (FSDP only)
                 if _pgd_use_fsdp:

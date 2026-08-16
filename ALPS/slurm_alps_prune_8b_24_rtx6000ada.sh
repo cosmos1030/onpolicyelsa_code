@@ -72,7 +72,7 @@ $PYTHON qwen3_alps.py \
     --wandb_project reasoning_qwen3_8b \
     --run_name "alps_8b_s24" \
     --gpu_util 0.85 \
-    --tp_size 2 \
+    --tp_size 1 \
     --out_base "$LOCAL_JOB_BASE/eval_out" \
     --profile quick \
     --push_to_hub
