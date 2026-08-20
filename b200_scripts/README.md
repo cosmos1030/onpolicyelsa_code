@@ -62,6 +62,7 @@ Append to `~/.bashrc` (after the `conda initialize` block conda init adds):
 # assignment. chmod 600 ~/.bashrc once these are in it.
 export WANDB_API_KEY=<from /NHNHOME/log-postech/doyoonkim/secrets/wandb_api_key>
 export HF_TOKEN=<from /NHNHOME/log-postech/doyoonkim/secrets/hf_token>
+export GITHUB_TOKEN=<from /NHNHOME/log-postech/doyoonkim/secrets/github_token -- PAT with repo scope, for pushing to github.com/cosmos1030/onpolicyelsa_code from this container (no gh CLI / SSH key here, HTTPS+PAT only)>
 export HF_HOME=/NHNHOME/log-postech/doyoonkim/.cache/huggingface
 
 export OT3_DATA=/NHNHOME/log-postech/doyoonkim/data/ot3_fineweb_40k_qwen3_nostrip_8192.jsonl
@@ -89,7 +90,7 @@ ln -sf /NHNHOME/log-postech/doyoonkim/secrets/hf_token ~/.hf_token
 | Path | Contents |
 |---|---|
 | `miniconda3/envs/rac/` | The conda env (python 3.10, torch 2.7.1+cu128, vllm 0.10.0, flash-attn 2.8.3) |
-| `secrets/` | `hf_token`, `wandb_api_key` — `chmod 700` dir / `600` files, ACL-masked so the shared group (`26msit001_A`/`2000`, which has default rwx on everything under `doyoonkim/`) can't read them |
+| `secrets/` | `hf_token`, `wandb_api_key`, `github_token` (PAT, repo scope) — `chmod 700` dir / `600` files, ACL-masked so the shared group (`26msit001_A`/`2000`, which has default rwx on everything under `doyoonkim/`) can't read them |
 | `data/` | Downloaded datasets (currently `ot3_fineweb_40k_qwen3_nostrip_8192.jsonl`) |
 | `models/` | ALPS/GMP checkpoint saves (`--save`/`--gmp_save_path` point here) |
 | `logs/<job_tag>/` | Per-run wandb dir + eval_out, one subfolder per job (see launcher scripts) |
