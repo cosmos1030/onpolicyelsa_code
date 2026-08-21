@@ -3018,6 +3018,19 @@ def globalprune_gmp(
                                 _passed_milestones[_ms] = _ms_path
                                 logging.info(f"[Milestone] saved to {_ms_path}")
 
+            # Reclaim the caching allocator's fragmented free blocks. Every
+            # mask_interval boundary above churns through several differently-
+            # shaped full-model-forward allocations (OPKD pool refill batches
+            # padded to whatever the longest rollout happened to be this round,
+            # trust-region candidate-mask KL forwards) that PYTORCH_CUDA_ALLOC_CONF=
+            # expandable_segments:True would normally defragment -- can't set
+            # that flag here since it's incompatible with vLLM's CuMemAllocator
+            # sleep mode (co-located on this single GPU). empty_cache() is the
+            # next-best manual defrag: only touches PyTorch's free-block cache
+            # (nothing live gets freed), so purely a memory-fragmentation
+            # mitigation, no effect on the mask-search/KL logic or its outputs.
+            torch.cuda.empty_cache()
+
         # Early stop N steps after TR-GMP first reaches target sparsity, instead of
         # continuing for the full remaining budget with the mask frozen (gmp_post_target_steps=0
         # keeps the old behavior of training all the way to `steps`).
