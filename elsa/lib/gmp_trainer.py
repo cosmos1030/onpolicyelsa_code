@@ -1389,6 +1389,7 @@ def _opkd_pool_to_batch(pool_items: list, device: str) -> dict:
     return {'input_ids': padded.to(device), 'attention_mask': attn.to(device)}
 
 
+@torch.no_grad()
 def _compute_tr_kl(model: nn.Module, cal_batch: dict, cand_masks: dict,
                    maskmgr: 'GradualMaskManager', device: str,
                    kl_reduce: str = 'mean', kl_quantile: float = 0.95) -> float:
@@ -1398,6 +1399,11 @@ def _compute_tr_kl(model: nn.Module, cal_batch: dict, cand_masks: dict,
     cal_batch may come from prompt_iter (has 'labels') or from OPKD pool
     (no 'labels' — all non-padding positions are valid).
     Temporarily applies candidate masks, runs two forward passes, then restores.
+    @torch.no_grad() -- callers only ever read the (already-detached) logits/KL
+    values, never backward() through them; without it these two full-model
+    forward passes built a full autograd graph for nothing, roughly doubling
+    the peak activation memory this function needs on top of the training
+    step's own forward/backward.
     """
     input_ids = cal_batch['input_ids'].to(device)
     attn_mask = cal_batch['attention_mask'].to(device)
