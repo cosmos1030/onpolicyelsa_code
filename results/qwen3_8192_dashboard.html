@@ -3721,6 +3721,7 @@ const DB = {
         "ALPS→SFT NTP+KD+OPKD 8B s50(728889, 2xH200 FSDP, lr=5e-5) 완료(11h47m): math500=85.4, gpqa=46.0, ifeval=76.5, lcb=26.9, gsm8k=82.0 — 같은 s50에서 ALPS 원샷(719633, 86.4)과 거의 동률(-1.0), TR-GMP 최고(41507, 86.4)와도 동률권. s60(730460)/s70(730461)은 log_cluster에서 제출됐다가 완료 기록 없이 유실됨.",
         "ALPS→SFT NTP+KD+OPKD 8B s60(2026-08-20, 새 환경: log_cluster 대신 1xB200 도커 컨테이너, single-GPU, FSDP/vLLM sidecar 없이 main.py 순정 single-GPU 경로로 전환 — 183GB 단일 GPU가 2xH200 FSDP가 필요했던 OOM 피크보다 커서 가능해짐) lr=5e-5 완료: math500=84.6, gpqa=32.3, ifeval=62.5, lcb=21.6, gsm8k=80.6 — 유실됐던 log_cluster s60 자리를 채움. TR-GMP s60 최고(41508, 81.0)보다 근소 우위, ALPS 원샷 s60(719634, 83.2)과는 math500 기준 거의 동률. 평가 중 첫 시도가 TRANSFORMERS_OFFLINE=1/HF_DATASETS_OFFLINE=1 때문에 allenai/ai2_arc를 못 받아와 zero-shot 단계에서 크래시(학습 자체는 2048스텝 정상 완료, 체크포인트는 로컬에 안전하게 저장됨) — offline 플래그 제거하고 scripts/eval_full.py로 별도 재평가해서 복구. ifeval도 langdetect 패키지 누락으로 한 번 더 실패했다가 설치 후 재실행으로 채움. s70(lr=1e-4)는 같은 B200 단일-GPU 경로로 진행 중.",
         "ALPS→SFT NTP+KD+OPKD 8B s70(2026-08-21, 1xB200 single-GPU, 위 s60과 동일 경로) lr=1e-4 완료: math500=73.6, gpqa=29.3, ifeval=43.8, lcb=13.1, gsm8k=72.3 — 유실됐던 log_cluster s70 자리도 채움. TR-GMP s70 최고(41510, 76.6)보다는 낮지만 ALPS 원샷 s70(719635, 52.0)은 크게 앞섬 — s60까지 보였던 'TR-GMP와 거의 동률' 패턴이 s70에서는 TR-GMP 쪽으로 약간 벌어짐(1.7B/4B에서 봤던 sparsity 커질수록 global 배치가 유리해지는 패턴과 일치). 이번엔 offline 플래그 버그를 안 만남 — s60 재평가 때 ai2_arc가 이미 공유 HF 캐시에 남아있어서 학습+평가+HF 업로드가 한 번에 크래시 없이 끝남(단, 종료 시 NCCL/UCX segfault는 있었으나 업로드 이후라 무해).",
+        "TR-GMP 8B 2:4(N24) 재도전 시도(2026-08-21, 1xB200)는 dense에서 시작해 스텝 375/2048에서 CUDA OOM(174GB/178GB 사용 중)으로 실패 — TR-GMP는 매 mask_interval(32스텝)마다 트러스트리전 이진탐색(최대 16회 반복)을 도는데, 그때마다 전체 파라미터 Fisher importance 계산 + 후보 마스크로 재forward(old_logits/cand_logits 두 번, full-vocab)까지 겹쳐서 고정마스크 학습보다 메모리 피크가 훨씬 높음(코드상 `_compute_tr_kl`의 두 forward가 `torch.no_grad()`로 안 감싸져 있어서 불필요하게 backward용 activation까지 저장하는 것도 한몫 — 아직 패치 안 함). 이 설정 재시도는 보류하고, 대신 이미 있던 ALPS 2:4 원샷 체크포인트(719641/724504)에 고정마스크 NTP+KD+OPKD 복구학습만 얹은 ALPS→SFT 2:4를 1xB200에서 새로 완료: math500=82.0, gpqa=38.9, ifeval=59.5, lcb=16.4, gsm8k=78.5 — 같은 job의 ALPS 원샷(79.0)보다 뚜렷이 개선, N24의 SparseGPT(57.2)는 크게 앞섬. unstructured s50 ALPS→SFT(85.4, job 728889)와 비교하면 2:4 제약 때문에 -3.4점 정도 손해 보는 수준 — 1.7B에서 봤던 'N:M 제약이 원샷 배치를 크게 제한한다'는 패턴이 SFT 이후에도 어느 정도 남아있음을 시사.",
       ],
       "S50": [
         {
@@ -4245,6 +4246,31 @@ const DB = {
           "wt2": 18.73,
           "c4": 29.75,
           "steps": null
+        },
+        {
+          "badge": "alpssft",
+          "name": "ALPS→SFT NTP+KD+OPKD",
+          "sub": "nostrip8192 40k, 2:4 semi-structured, 1xB200 single-GPU (vLLM in-process, no FSDP) · lr=1e-4 · ALPS mask from job 719641/724504 · 2026-08-21 (hub repo name says s50pct -- sparsity_ratio=0.5 for 2:4 too, auto-naming quirk, same as the ALPS one-shot row above)",
+          "wbid": "jchxvi6f",
+          "wb_project": "reasoning_qwen3_8b_nostrip8192",
+          "hf": "cosmos1030/gmp-kd3e-1-s50pct-lr1e-4_20260821_153039",
+          "math": 82.0,
+          "gpqa": 38.9,
+          "ifeval": 59.5,
+          "lcb": 16.4,
+          "gsm8k": 78.5,
+          "arcc": 49.7,
+          "arce": 77.6,
+          "boolq": 83.1,
+          "hella": 64.9,
+          "ob": 37.8,
+          "piqa": 73.4,
+          "race": 38.9,
+          "rte": 75.8,
+          "wino": 66.7,
+          "wt2": 9.85,
+          "c4": null,
+          "steps": 2048
         }
       ]
     }
