@@ -492,7 +492,7 @@ def main(argv):
                 )
             print(f"[DBG main] rank={local_rank} dataset loaded, loading teacher", flush=True)
             gmp_teacher = None
-            if getattr(FLAGS, 'gmp_kd_lambda', 0.0) > 0 or getattr(FLAGS, 'gmp_hidden_lambda', 0.0) > 0 or getattr(FLAGS, 'gmp_onpolicy_kd_lambda', 0.0) > 0 or getattr(FLAGS, 'gmp_anchor_kd_lambda', 0.0) > 0 or getattr(FLAGS, 'gmp_teacher_seqkd', False):
+            if getattr(FLAGS, 'gmp_kd_lambda', 0.0) > 0 or getattr(FLAGS, 'gmp_hidden_lambda', 0.0) > 0 or getattr(FLAGS, 'gmp_onpolicy_kd_lambda', 0.0) > 0 or getattr(FLAGS, 'gmp_anchor_kd_lambda', 0.0) > 0 or getattr(FLAGS, 'gmp_teacher_seqkd', False) or getattr(FLAGS, 'gmp_blockwise_squarehead', False):
                 print(f"[DBG main] rank={local_rank} get_llm teacher start", flush=True)
                 gmp_teacher = get_llm(_teacher_model_path, FLAGS.seqlen)
                 print(f"[DBG main] rank={local_rank} get_llm teacher done, .to(device)", flush=True)
@@ -1008,7 +1008,12 @@ if __name__ == '__main__':
     flags.DEFINE_bool('gmp_use_fsdp', False, 'Wrap GMP model with FSDP for multi-GPU training (requires torchrun / accelerate launch).')
     flags.DEFINE_bool('gmp_pgd', False, 'Enable PGD projection after each optimizer step: re-project mask using Fisher saliency (v_t*w^2), logging pgd/revivals and pgd/prunings.')
     flags.DEFINE_bool('gmp_ste', False, 'Straight-through estimator masking: forward computes weight*mask (sparsity respected), backward passes gradient straight through unmasked -- param.data is never hard-reset, so Adam accumulates masked weights\' true trajectory (used with --gmp_pgd so revival/importance scoring sees a multi-step signal instead of a one-step-from-zero snapshot).')
-    flags.DEFINE_float('gmp_pgd_max_swap_frac', 0.0, 'Trust-region cap on PGD mask churn per step, as a fraction of total masked params (0 = unlimited, PGD projects onto the full top-k set every step regardless of how many positions that flips). When capped, only the most-confident revivals/prunings are applied each step; the rest are re-evaluated next step.')
+    flags.DEFINE_float('gmp_pgd_max_swap_frac', 0.0, 'Trust-region cap on PGD mask churn per step, as a fraction of total masked params (0 = unlimited, PGD projects onto the full top-k set every step regardless of how many positions that flips). When capped, only the most-confident revivals/prunings are applied each step; the rest are re-evaluated next step. Ignored if --gmp_pgd_kl_budget > 0.')
+    flags.DEFINE_float('gmp_pgd_kl_budget', 0.0, 'Alternative to --gmp_pgd_max_swap_frac: gate PGD prunings per step by measured self-KL instead of a fixed count. Bisects the number of (lowest-importance) prune candidates accepted this step so that self-KL(pre-prune || post-prune), measured on a small cached calibration batch, stays within this budget. Revive count is always set equal to the accepted prune count (existing invariant), so revival volume is bounded for free by the same search -- revival itself is never separately KL-checked since a masked weight is architecturally zero until it grows via later gradient steps, so its instantaneous swap has no measurable effect. 0 = disabled (use --gmp_pgd_max_swap_frac or uncapped instead). Only implemented for unstructured PGD (sparsity_type=unstructured), not yet for N:M.')
+    flags.DEFINE_bool('gmp_pgd_kl_share', False, 'Cheaper alternative to --gmp_pgd_kl_budget: instead of measuring a fresh self-KL every PGD step (extra forward passes each step), reuse TR-GMP\'s own already-measured KL from its once-per-mask_interval growth check. Derives this window\'s PGD swap_frac as (1 - kl_spent/gmp_tr_kl_threshold) / gmp_mask_interval -- full TR budget unused this window means PGD gets a whole window\'s worth of swap room spread over its steps; TR using its full budget means PGD gets none. Requires --gmp_tr_enabled=true (needs a real TR-GMP growth check to share from). Takes priority over --gmp_pgd_max_swap_frac when both are set; ignored if --gmp_pgd_kl_budget > 0.')
+    flags.DEFINE_integer('gmp_pgd_kl_calib_size', 4, 'Number of sequences in the small calibration batch used by --gmp_pgd_kl_budget, refreshed every gmp_mask_interval steps (not every PGD step) to amortize data-loading cost.')
+    flags.DEFINE_integer('gmp_pgd_kl_calib_seqlen', 512, 'Sequence length to truncate the --gmp_pgd_kl_budget calibration batch to -- deliberately much shorter than the real training seqlen, since this check only needs to be a cheap proxy, not a faithful reproduction of training-time behavior.')
+    flags.DEFINE_integer('gmp_pgd_kl_bisect_iters', 6, 'Bisection iterations for --gmp_pgd_kl_budget\'s per-step search over how many prune candidates to accept (each iteration costs one extra small-batch forward pass, so kept short unlike the 48-iteration threshold searches elsewhere that need no forward pass at all).')
     flags.DEFINE_float('gmp_dpo_lambda', 0.0, 'Weight for DPO loss (0 = disabled).')
     flags.DEFINE_float('gmp_dpo_beta', 0.1, 'DPO beta (temperature).')
     flags.DEFINE_integer('gmp_dpo_n_pairs', 1024, 'Number of chosen pairs to pre-generate.')
@@ -1042,8 +1047,8 @@ if __name__ == '__main__':
                       'NOT comparable across layers, use with --gmp_pruning_scope=layer only).')
     flags.DEFINE_enum('gmp_fisher_source', 'adam', ['adam', 'opd_empirical'],
                       'Fisher source for TR saliency: adam=exp_avg_sq (default), opd_empirical=grad^2 on OPD cal_batch.')
-    flags.DEFINE_enum('gmp_pruning_scope', 'global', ['global', 'layer'],
-                      'Pruning scope: global=single threshold across all layers, layer=per-layer threshold (each layer hits target sparsity exactly).')
+    flags.DEFINE_enum('gmp_pruning_scope', 'global', ['global', 'layer', 'block'],
+                      'Pruning scope: global=single threshold across all layers, layer=per-layer threshold (each layer hits target sparsity exactly), block=per-block-of-layers threshold (each group of --gmp_blockwise_init_block/current block_size consecutive decoder layers gets its own independent threshold; only meaningful with --gmp_blockwise_squarehead=true, whose block_size this scope reuses -- non-layer params (embeddings, final norm) are pooled into their own group). Not yet implemented under FSDP.')
     flags.DEFINE_string('gmp_save_path', '/home1/doyoonkim/projects/elsa/models', 'Directory to save GMP pruned model.')
     flags.DEFINE_enum('gmp_base_optimizer', 'adamw', ['adamw', 'activation_metric_pgd'],
                       'Base optimizer for GMP training. activation_metric_pgd projects the gradient step onto the '
@@ -1059,8 +1064,36 @@ if __name__ == '__main__':
     flags.DEFINE_float('gmp_kd_lambda', 0.0, 'KD loss weight for GMP (0 = NTP only).')
     flags.DEFINE_float('gmp_kd_temperature', 2.0, 'Temperature for GMP token-level KD.')
     flags.DEFINE_integer('gmp_kd_topk', 0, 'Top-K for KD KL divergence (0 = full vocab).')
+    flags.DEFINE_integer('gmp_kl_chunk_size', 0, 'Chunk the sequence dimension into pieces of this many tokens when computing full-vocab KL loss (0 = disabled, compute the whole sequence at once). Full-vocab log-softmax tensors at seqlen=8192 are ~5GB each in fp32 regardless of GPU count (not FSDP-sharded) -- fits an 80GB card but OOMs a 40GB one; chunking trades a Python loop for a bounded peak at the same total FLOPs.')
     flags.DEFINE_bool('gmp_kd_only', False, 'Use KD loss only (no NTP loss).')
     flags.DEFINE_float('gmp_hidden_lambda', 0.0, 'Weight for final hidden matching loss vs dense teacher.')
+    flags.DEFINE_boolean('gmp_blockwise_squarehead', False,
+                          'Anchor-based SquareHead-style per-layer distillation loss (Kurtic et al., '
+                          '"Sparse Fine-tuning for Inference Acceleration of Large Language Models", '
+                          'arxiv.org/abs/2310.06927, code at github.com/IST-DASLab/SparseFinetuning) with '
+                          'ADAPTIVE anchor spacing (block size): starts at gmp_blockwise_init_block '
+                          '(1 = anchor every layer, matching the paper exactly) and widens by '
+                          'gmp_blockwise_widen_factor (fewer anchors, more inter-layer compensation '
+                          'freedom for the layers between surviving anchors) whenever TR-GMP\'s own '
+                          'trust-region growth stalls completely (no delta accepted down to '
+                          'gmp_tr_delta_min). Requires --gmp_tr_enabled=true and a teacher model. The '
+                          'accept/reject decision for growth itself is UNCHANGED -- still output-level '
+                          'KL via _tr_mask_update on a fresh calibration batch every call, never the '
+                          'blockwise loss value itself (that would be circular: the model was just '
+                          'directly optimized to minimize it, so a low value there says nothing about '
+                          'generalization, only about fitting the calibration batch it was computed on).')
+    flags.DEFINE_float('gmp_blockwise_hardness', 1.0, 'Weight of the blockwise SquareHead loss term.')
+    flags.DEFINE_integer('gmp_blockwise_init_block', 1,
+                          'Initial anchor spacing for --gmp_blockwise_squarehead (1 = every layer).')
+    flags.DEFINE_integer('gmp_blockwise_widen_factor', 2,
+                          'Multiplicative factor for widening block size (fewer anchors) on a TR-GMP stall.')
+    flags.DEFINE_bool('gmp_blockwise_delay_global_signal', False,
+                       'Hold NTP/KD/OPKD lambdas at 0 (SquareHead loss alone drives training AND Fisher '
+                       'importance) until block_size widens all the way to every decoder layer (no more '
+                       'widening possible), then switch NTP/KD/OPKD back on at their configured lambdas. '
+                       'Tests whether local per-layer distillation is sufficient on its own to keep growth '
+                       'safe -- with NTP/KD/OPKD always on, TR-GMP\'s KL check is trivially satisfied and '
+                       'widening was observed to basically never fire. Requires --gmp_blockwise_squarehead=true.')
     flags.DEFINE_bool('gmp_hidden_only', False, 'Use final hidden matching loss only (no NTP, no logit KD).')
     flags.DEFINE_string('gmp_hidden_mode', 'cosine', 'Loss for hidden matching: cosine (default), nmse, or mse.')
     flags.DEFINE_string('gmp_hidden_mask', 'cot', 'Mask for hidden matching: cot (labels!=-100) or all (attention_mask, prompt+CoT).')
@@ -1088,6 +1121,8 @@ if __name__ == '__main__':
     flags.DEFINE_float('gmp_tr_delta_min', 0.005, 'TR-GMP: minimum sparsity step size; line search stops halving below this.')
     flags.DEFINE_string('gmp_tr_kl_reduce', 'mean', "TR-GMP: KL aggregation over tokens — 'mean' or 'quantile'.")
     flags.DEFINE_float('gmp_tr_kl_quantile', 0.95, 'TR-GMP: quantile level when gmp_tr_kl_reduce=quantile.')
+    flags.DEFINE_bool('gmp_cubic_log_kl', False, 'Cubic-schedule (--gmp_tr_enabled=false) diagnostic: measure KL(old||candidate) at every mask-update boundary using the same _compute_tr_kl the TR path uses to accept/reject growth -- purely logged (cubic/kl_before_after, cubic/sparsity), never gates the update. For a fair cubic-vs-trust-region comparison: how far outside a TR budget does the cubic schedule\'s forced growth actually land.')
+    flags.DEFINE_enum('gmp_growth_schedule', 'cubic', ['cubic', 'cosine'], 'Fixed sparsity ramp shape used when --gmp_tr_enabled=false (ignored otherwise): \'cubic\' (fast start, slow finish) or \'cosine\' (slow start/end, steepest in the middle). Reaches --sparsity_ratio at step (steps - gmp_sparse_train_steps).')
     flags.DEFINE_string('gmp_milestone_sparsities', '', 'Comma-separated sparsity checkpoints (e.g. "0.5,0.6,0.7"). Saves model at each level; post-hoc eval runs after training.')
     flags.DEFINE_boolean('gmp_pcg_correct', False, 'TR-GMP: after every mask update, apply an ALPS-style PCG backsolve (mask fixed, no ADMM search) using the dense teacher as reconstruction target -- lib/gmp_trainer.py _pcg_correct_masked_weights. Non-FSDP only.')
     flags.DEFINE_integer('gmp_pcg_maxiter', 5, 'Max conjugate-gradient iterations per layer for gmp_pcg_correct (kept small since this runs every mask update).')
