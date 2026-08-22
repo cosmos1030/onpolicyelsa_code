@@ -3434,6 +3434,16 @@ def globalprune_gmp(
                 _opkd_standalone_pool = _opkd_broadcast_pool(_opkd_standalone_pool, is_distributed, device)
                 _opkd_standalone_pool_ptr = 0
                 _opkd_refilled_pre_mask = True
+                # Defrag before _tr_mask_update's own big allocations (candidate
+                # masks, KL forward passes) start -- the vLLM wake/generate/sleep
+                # cycle just above leaves the caching allocator fragmented on
+                # this single co-located GPU, and growth's own peak was
+                # observed to hit a genuine CUDA OOM (NCCL all_reduce inside
+                # _tr_mask_update) right at this boundary otherwise. Same
+                # end-of-block empty_cache() already used further down, just
+                # moved earlier so it covers the actual peak instead of only
+                # cleaning up after it.
+                torch.cuda.empty_cache()
 
             if step <= dense_warmup_steps:
                 pass  # dense warmup: no mask update or apply
