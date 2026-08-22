@@ -2684,6 +2684,7 @@ def globalprune_gmp(
     _opkd_vllm_params = None
     _opkd_standalone_pool: list = []
     _opkd_standalone_pool_ptr: int = 0
+    _opkd_refilled_pre_mask = False  # set True once the OPKD pool has been refilled at least once (see below) -- initialized here so the gmp_pgd_kl_budget calibration-batch bootstrap (which reads this before step 1's own mask_interval block ever runs) doesn't hit an UnboundLocalError
     _opkd_prev_delta = None  # {name: (positions, old_values)} — prev-mask weight delta for OPKD teacher
     if use_onpolicy:
         import os as _os
@@ -3321,9 +3322,25 @@ def globalprune_gmp(
         step += 1
 
         def _refresh_pgd_kl_cal_batch():
+            # Prefer real OPKD rollouts, matching _tr_mask_update's own
+            # calibration-source choice (see the "Use OPKD rollouts as
+            # calibration if available, else fall back to prompt_iter" branch
+            # below) -- until this fix, PGD's kl_budget calibration always
+            # used raw prompt-dataset text regardless of rollout availability,
+            # measuring self-KL against a different data distribution than
+            # the TR growth check it's meant to share a trust-region budget
+            # with.
             if is_main_process:
-                _batch = _pgd_kl_calib_batch(
-                    prompt_iter, pgd_kl_calib_size, pgd_kl_calib_seqlen, str(device))
+                if _opkd_refilled_pre_mask and _opkd_standalone_pool:
+                    _n_cal = min(pgd_kl_calib_size, len(_opkd_standalone_pool))
+                    _pool_items = [
+                        {'full_seq': item['full_seq'][:, :pgd_kl_calib_seqlen], 'prompt_len': item['prompt_len']}
+                        for item in _opkd_standalone_pool[:_n_cal]
+                    ]
+                    _batch = _opkd_pool_to_batch(_pool_items, str(device))
+                else:
+                    _batch = _pgd_kl_calib_batch(
+                        prompt_iter, pgd_kl_calib_size, pgd_kl_calib_seqlen, str(device))
             else:
                 _batch = None
             if fsdp_model is not None and _FSDP_AVAILABLE:
