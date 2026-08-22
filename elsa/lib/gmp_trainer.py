@@ -3413,14 +3413,27 @@ def globalprune_gmp(
                         elif not _in_fsdp_refill:
                             _sync_opkd_weights_to_vllm(model, _opkd_vllm_engine)
                 if is_main_process and _opkd_vllm_engine is not None:
+                    # DEBUG: device-wide (not just this process's PyTorch
+                    # allocator view) free/total memory at each stage of the
+                    # vLLM wake/generate/sleep cycle -- diagnosing a
+                    # reproducible NCCL "CUDA failure: out of memory" right
+                    # after this cycle at every mask_interval boundary.
+                    _dbg_f0, _dbg_t0 = torch.cuda.mem_get_info()
+                    logging.info(f"  [DBG mem] pre-wake: free={_dbg_f0/1e9:.2f}GB / total={_dbg_t0/1e9:.2f}GB (step={step})")
                     _n_pool = mask_interval * grad_accum
                     _pool_batches = [next(prompt_iter) for _ in range(_n_pool)]
                     _vllm_inputs = [
                         _TokensPrompt(prompt_token_ids=b['input_ids'][0][:int(b['prompt_len'].item())].tolist())
                         for b in _pool_batches
                     ]
+                    _dbg_f1, _ = torch.cuda.mem_get_info()
+                    logging.info(f"  [DBG mem] post-wake: free={_dbg_f1/1e9:.2f}GB (step={step})")
                     _vllm_outs = _opkd_vllm_engine.generate(_vllm_inputs, _opkd_vllm_params)
+                    _dbg_f2, _ = torch.cuda.mem_get_info()
+                    logging.info(f"  [DBG mem] post-generate: free={_dbg_f2/1e9:.2f}GB (step={step})")
                     _opkd_vllm_sleep(_opkd_vllm_engine)
+                    _dbg_f3, _ = torch.cuda.mem_get_info()
+                    logging.info(f"  [DBG mem] post-sleep: free={_dbg_f3/1e9:.2f}GB (step={step})")
                     if fsdp_model is None:
                         _reload_optimizer_state(optimizer, device)
                     _opkd_standalone_pool = []
@@ -3474,6 +3487,8 @@ def globalprune_gmp(
                         _wanda_batch = _cal_batch
                     fisher.capture_wanda_stats(fsdp_model if fsdp_model is not None else model, _wanda_batch, str(device))
                 _sp_before_tr = maskmgr.current_sparsity()
+                _dbg_f4, _ = torch.cuda.mem_get_info()
+                logging.info(f"  [DBG mem] pre-tr_mask_update: free={_dbg_f4/1e9:.2f}GB (step={step})")
                 current_sparsity, tr_delta, tr_reached, _tr_mask_delta, _tr_kl_spent = _tr_mask_update(
                     maskmgr, fisher, fsdp_model, model, _cal_batch,
                     final_sparsity=final_sparsity,
