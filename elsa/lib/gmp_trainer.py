@@ -4478,12 +4478,15 @@ def globalprune_gmp(
                         return _kl
 
                     _pgd_k_lo, _pgd_k_hi = 0, _n_prune_cand
+                    _pgd_kl_at_k_lo = 0.0  # k=0 -> KL trivially 0, matches _pgd_kl_at's own k<=0 short-circuit
                     for _ in range(pgd_kl_bisect_iters):
                         if _pgd_k_hi <= _pgd_k_lo:
                             break
                         _pgd_k_mid = (_pgd_k_lo + _pgd_k_hi + 1) // 2
-                        if _pgd_kl_at(_pgd_k_mid) <= pgd_kl_budget:
+                        _pgd_kl_mid = _pgd_kl_at(_pgd_k_mid)
+                        if _pgd_kl_mid <= pgd_kl_budget:
                             _pgd_k_lo = _pgd_k_mid
+                            _pgd_kl_at_k_lo = _pgd_kl_mid
                         else:
                             _pgd_k_hi = _pgd_k_mid - 1
                     _k_actual = _pgd_k_lo
@@ -4491,10 +4494,15 @@ def globalprune_gmp(
                         sum(v.sum().item() for v in _revive_cand.values()), dtype=torch.long, device=_pgd_dev)
                     if _pgd_use_fsdp:
                         _dist.all_reduce(_n_revive_cand_dbg_t, op=_dist.ReduceOp.SUM)
+                    _pgd_kl_at_full = _pgd_kl_at(_n_prune_cand)  # KL if pure/uncapped PGD had applied ALL prune_cand -- not visited by the bisection itself (which only ever tests interior midpoints, never the range's own endpoints), so this is one extra forward pass purely for this reference number.
                     logging.info(f"  [pgd_kl_budget] n_prune_cand={_n_prune_cand} n_revive_cand={int(_n_revive_cand_dbg_t.item())} "
-                                 f"k_actual={_k_actual} kl_at(k_actual)={_pgd_kl_at(_k_actual):.6f} "
-                                 f"kl_at(n_prune_cand)={_pgd_kl_at(_n_prune_cand):.6f} budget={pgd_kl_budget} "
+                                 f"k_actual={_k_actual} kl_at(k_actual)={_pgd_kl_at_k_lo:.6f} "
+                                 f"kl_at(n_prune_cand)={_pgd_kl_at_full:.6f} budget={pgd_kl_budget} "
                                  f"pre_sparsity={maskmgr.current_sparsity():.4f} (step={step})")
+                    if use_wandb and is_main_process:
+                        wandb.log({"pgd/kl_at_k_actual": _pgd_kl_at_k_lo, "pgd/kl_at_full_pgd": _pgd_kl_at_full,
+                                   "pgd/kl_budget": pgd_kl_budget,
+                                   "pgd/k_actual": _k_actual, "pgd/n_prune_cand": _n_prune_cand, "step": step})
                     _sel_prune = _pgd_topk_mask_from_vals(_prune_vals, _prune_vlo, _prune_vhi, _k_actual, _pgd_dev, _pgd_use_fsdp, False)
                     del _prune_vals
                     _sel_revive = (_pgd_topk_mask(_pgd_imps, _revive_cand, _k_actual, True, _pgd_dev, _pgd_use_fsdp, _pgd_lo, _pgd_hi)
