@@ -2507,8 +2507,12 @@ def globalprune_gmp(
     pgd_kl_calib_size = max(1, getattr(FLAGS, 'gmp_pgd_kl_calib_size', 4))
     pgd_kl_calib_seqlen = max(1, getattr(FLAGS, 'gmp_pgd_kl_calib_seqlen', 512))
     pgd_kl_bisect_iters = max(1, getattr(FLAGS, 'gmp_pgd_kl_bisect_iters', 6))
+    pgd_skip_growth_step = getattr(FLAGS, 'gmp_pgd_skip_growth_step', False)  # skip PGD on the exact step growth just fired, so the model trains at least one step under the mask growth decided before PGD can touch it again
     _pgd_kl_cal_batch = None  # small/short batch, refreshed every mask_interval steps (see below), reused every PGD step in between
     _pgd_scratch   = {}  # name -> preallocated fp32 buffer, reused in-place every PGD step (see below)
+    pgd_debug_repeat_swap = getattr(FLAGS, 'gmp_pgd_debug_repeat_swap', False)  # diagnostic: track what fraction of each step's flips are positions that ALSO flipped within the last gmp_pgd_debug_repeat_window steps (are the same weights repeatedly swapping back and forth, or is a growing set of distinct weights each swapping once)
+    pgd_debug_repeat_window = getattr(FLAGS, 'gmp_pgd_debug_repeat_window', 5)
+    _pgd_last_flip_step = {}  # name -> int64 tensor, step index each position last flipped (revive or prune), -1e9 sentinel = never
     # ── STE mode (opt-in, --gmp_ste=true) ───────────────────────────────────
     # Replaces the earlier shadow-weight-replay approach entirely (removed --
     # mathematically the two give the same accumulated trajectory for a plain
@@ -4221,7 +4225,8 @@ def globalprune_gmp(
         # needed. Falls back to fisher.importance() unchanged for any other
         # saliency mode (spa/wanda/magnitude/sqrt_fisher), which this
         # in-place path does not special-case.
-        if pgd_enabled and step > dense_warmup_steps and not math.isnan(grad_norm) and not math.isinf(grad_norm):
+        if (pgd_enabled and step > dense_warmup_steps and not math.isnan(grad_norm) and not math.isinf(grad_norm)
+                and not (pgd_skip_growth_step and step % mask_interval == 0)):
             _pgd_revivals = 0
             _pgd_prunings = 0
             _pgd_use_fsdp = _FSDP_AVAILABLE and fsdp_model is not None
@@ -4598,6 +4603,9 @@ def globalprune_gmp(
                                    if _k_actual > 0 else {n: torch.zeros_like(m) for n, m in maskmgr.masks.items()})
                     _sel_prune = (_pgd_topk_mask(_pgd_imps, _prune_cand, _k_actual, False, _pgd_dev, _pgd_use_fsdp, _pgd_lo, _pgd_hi)
                                   if _k_actual > 0 else {n: torch.zeros_like(m) for n, m in maskmgr.masks.items()})
+                    if pgd_debug_repeat_swap:
+                        _pgd_repeat_flips = 0
+                        _pgd_total_flips = 0
                     for _n in maskmgr.named_params:
                         _old = maskmgr.masks[_n]
                         _new = _old.clone()
@@ -4605,7 +4613,28 @@ def globalprune_gmp(
                             _new = (_new | _sel_revive[_n]) & ~_sel_prune[_n]
                         _pgd_revivals += int((_new & ~_old).sum().item())
                         _pgd_prunings += int((~_new & _old).sum().item())
+                        if pgd_debug_repeat_swap:
+                            # int8 countdown-TTL instead of an int64 absolute-step
+                            # tensor -- storing a full-model-sized int64 per param
+                            # (~1.4B params x 8 bytes = ~11GB, held permanently
+                            # once any growth event first populates it) was
+                            # observed to OOM the very next KD forward pass on a
+                            # tight 80GB budget. TTL only ever needs values in
+                            # [0, pgd_debug_repeat_window], so int8 is 8x smaller.
+                            _flipped = _new != _old
+                            if _n not in _pgd_last_flip_step:
+                                _pgd_last_flip_step[_n] = torch.zeros_like(_old, dtype=torch.int8)
+                            else:
+                                _pgd_last_flip_step[_n] = torch.clamp(_pgd_last_flip_step[_n] - 1, min=0)
+                            _recent = _pgd_last_flip_step[_n] > 0
+                            _pgd_repeat_flips += int((_flipped & _recent).sum().item())
+                            _pgd_total_flips += int(_flipped.sum().item())
+                            _pgd_last_flip_step[_n] = torch.where(
+                                _flipped, torch.full_like(_pgd_last_flip_step[_n], pgd_debug_repeat_window), _pgd_last_flip_step[_n])
                         maskmgr.masks[_n] = _new
+                    if pgd_debug_repeat_swap and use_wandb and is_main_process:
+                        wandb.log({"pgd/repeat_swap_frac": (_pgd_repeat_flips / _pgd_total_flips) if _pgd_total_flips > 0 else 0.0,
+                                   "pgd/total_flips": _pgd_total_flips, "step": step})
                 maskmgr.apply(fsdp_model)
                 del _pgd_imps, _pgd_desired
                 torch.cuda.empty_cache()
