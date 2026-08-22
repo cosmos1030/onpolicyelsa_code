@@ -4468,9 +4468,33 @@ def globalprune_gmp(
                     _prune_cand  = {_n: (~_pgd_desired[_n]) & maskmgr.masks[_n] for _n in maskmgr.named_params}
                     _n_prune_cand_t = torch.tensor(
                         sum(v.sum().item() for v in _prune_cand.values()), dtype=torch.long, device=_pgd_dev)
+                    _n_revive_cand_t = torch.tensor(
+                        sum(v.sum().item() for v in _revive_cand.values()), dtype=torch.long, device=_pgd_dev)
                     if _pgd_use_fsdp:
                         _dist.all_reduce(_n_prune_cand_t, op=_dist.ReduceOp.SUM)
+                        _dist.all_reduce(_n_revive_cand_t, op=_dist.ReduceOp.SUM)
                     _n_prune_cand = int(_n_prune_cand_t.item())
+                    _n_revive_cand = int(_n_revive_cand_t.item())
+                    # BUGFIX: the bisection below used to search k in
+                    # [0, _n_prune_cand] and then apply that SAME k to both
+                    # prune and revive selection, assuming revive_cand is at
+                    # least as large as whatever k the KL search picks. That
+                    # assumption fails hard right after a growth event (or at
+                    # step 1, before any growth has run at all): revive_cand
+                    # can be far smaller than prune_cand (e.g. step 1, mask
+                    # still all-kept, revive_cand==0 while prune_cand is
+                    # huge from fisher*weight^2==0 ties -- see the "already
+                    # keep-count-conserving by construction" comment on the
+                    # fully-uncapped branch above for the same root cause).
+                    # _pgd_topk_mask can't select more than exist, so revive
+                    # silently comes up short of k while prune hits it
+                    # exactly -- observed empirically as sparsity oscillating
+                    # between ~1% and ~25% every single step. Bound the
+                    # bisection's own search range by min(prune_cand,
+                    # revive_cand) so k_actual can never exceed what's
+                    # actually revivable, making the applied swap
+                    # keep-count-conserving by construction again.
+                    _n_prune_cand = min(_n_prune_cand, _n_revive_cand)
 
                     # Build the expensive log-space state ONCE (same candidate
                     # set for every bisection iteration -- only k changes), and
@@ -4507,12 +4531,8 @@ def globalprune_gmp(
                         else:
                             _pgd_k_hi = _pgd_k_mid - 1
                     _k_actual = _pgd_k_lo
-                    _n_revive_cand_dbg_t = torch.tensor(
-                        sum(v.sum().item() for v in _revive_cand.values()), dtype=torch.long, device=_pgd_dev)
-                    if _pgd_use_fsdp:
-                        _dist.all_reduce(_n_revive_cand_dbg_t, op=_dist.ReduceOp.SUM)
                     _pgd_kl_at_full = _pgd_kl_at(_n_prune_cand)  # KL if pure/uncapped PGD had applied ALL prune_cand -- not visited by the bisection itself (which only ever tests interior midpoints, never the range's own endpoints), so this is one extra forward pass purely for this reference number.
-                    logging.info(f"  [pgd_kl_budget] n_prune_cand={_n_prune_cand} n_revive_cand={int(_n_revive_cand_dbg_t.item())} "
+                    logging.info(f"  [pgd_kl_budget] n_prune_cand={_n_prune_cand} n_revive_cand={_n_revive_cand} "
                                  f"k_actual={_k_actual} kl_at(k_actual)={_pgd_kl_at_k_lo:.6f} "
                                  f"kl_at(n_prune_cand)={_pgd_kl_at_full:.6f} budget={pgd_kl_budget} "
                                  f"pre_sparsity={maskmgr.current_sparsity():.4f} (step={step})")
