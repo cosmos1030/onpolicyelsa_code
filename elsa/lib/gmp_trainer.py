@@ -1315,7 +1315,22 @@ class GradualMaskManager:
         zeros = sum((~m).sum().item() for m in self.masks.values())
         try:
             import torch.distributed as _dist
-            if _dist.is_available() and _dist.is_initialized():
+            # world_size > 1 (not just is_initialized()) -- vLLM's in-process
+            # LLM() engine initializes the DEFAULT process group as a side
+            # effect of its own TP=1 setup even for a single-GPU job with no
+            # real multi-rank training, making is_initialized() true when
+            # there is nothing to actually reduce across. Worse, that shared
+            # default group is also touched by vLLM's own internal (size-1,
+            # still real) NCCL usage, which its sleep-mode CuMemAllocator can
+            # leave in a bad state -- an all_reduce here was observed to fail
+            # ("NCCL WARN Cuda failure 'out of memory'") on every call from
+            # step 1 onward in single-GPU runs, silently swallowed by this
+            # try/except, until an unwrapped all_reduce elsewhere hit the same
+            # corrupted state and crashed the process. A world_size==1
+            # all_reduce is a mathematical no-op anyway, so skipping it here
+            # changes nothing for real multi-GPU runs and removes an entirely
+            # unnecessary (and apparently unsafe) NCCL call for single-GPU ones.
+            if _dist.is_available() and _dist.is_initialized() and _dist.get_world_size() > 1:
                 # NCCL requires CUDA tensor — get device from masks
                 _dev = next(iter(self.masks.values())).device if self.masks else 'cpu'
                 t = torch.tensor([total, zeros], dtype=torch.long, device=_dev)
@@ -1785,7 +1800,8 @@ def _pgd_kl_calib_batch(prompt_iter, n: int, seqlen: int, device: str) -> dict:
 @torch.no_grad()
 def _compute_tr_kl(model: nn.Module, cal_batch: dict, cand_masks: dict,
                    maskmgr: 'GradualMaskManager', device: str,
-                   kl_reduce: str = 'mean', kl_quantile: float = 0.95) -> float:
+                   kl_reduce: str = 'mean', kl_quantile: float = 0.95,
+                   ref_cache: dict = None) -> float:
     """Compute KL(old || cand) over valid token positions.
 
     kl_reduce: 'mean' (default) or 'quantile' (uses kl_quantile percentile).
@@ -1797,18 +1813,37 @@ def _compute_tr_kl(model: nn.Module, cal_batch: dict, cand_masks: dict,
     forward passes built a full autograd graph for nothing, roughly doubling
     the peak activation memory this function needs on top of the training
     step's own forward/backward.
+
+    ref_cache: optional dict for callers that invoke this repeatedly in a
+    bisection loop over `cand_masks` with the SAME model/maskmgr.masks/
+    cal_batch each time (TR-GMP's own delta search, PGD's kl_budget search).
+    `old_lp`/`valid` depend only on maskmgr.masks (the CURRENT mask, unchanged
+    across such a loop) and cal_batch, never on cand_masks -- so recomputing
+    the "old" forward pass on every iteration is pure waste. Pass the same
+    dict across all iterations of one search to compute it once and reuse it;
+    pass None (default) for a one-off call.
     """
     input_ids = cal_batch['input_ids'].to(device)
     attn_mask = cal_batch['attention_mask'].to(device)
-    # labels may be absent (prompt-only / OPKD rollout batches)
-    if 'labels' in cal_batch:
-        labels = cal_batch['labels'].to(device)
-        valid  = (labels[:, 1:] != -100)  # [B, T-1]
-    else:
-        valid  = (attn_mask[:, 1:] == 1)  # [B, T-1]
 
-    with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-        old_logits = model(input_ids=input_ids, attention_mask=attn_mask).logits.detach()
+    if ref_cache is not None and 'old_lp' in ref_cache:
+        old_lp = ref_cache['old_lp']
+        valid  = ref_cache['valid']
+    else:
+        # labels may be absent (prompt-only / OPKD rollout batches)
+        if 'labels' in cal_batch:
+            labels = cal_batch['labels'].to(device)
+            valid  = (labels[:, 1:] != -100)  # [B, T-1]
+        else:
+            valid  = (attn_mask[:, 1:] == 1)  # [B, T-1]
+
+        with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+            old_logits = model(input_ids=input_ids, attention_mask=attn_mask).logits.detach()
+        old_lp = F.log_softmax(old_logits[:, :-1, :], dim=-1)  # [B, T-1, V] bf16
+        del old_logits
+        if ref_cache is not None:
+            ref_cache['old_lp'] = old_lp
+            ref_cache['valid']  = valid
 
     # Temporarily zero newly-pruned weights (old_mask=True & cand_mask=False)
     saved = {}
@@ -1829,9 +1864,8 @@ def _compute_tr_kl(model: nn.Module, cal_batch: dict, cand_masks: dict,
         return 0.0, None
 
     # Keep in bfloat16 and delete logits immediately after log_softmax to avoid
-    # materializing 5 × [B,T,V] float32 tensors simultaneously (~1.86 GB peak).
-    old_lp  = F.log_softmax(old_logits[:, :-1, :], dim=-1)   # [B, T-1, V] bf16
-    del old_logits
+    # materializing multiple [B,T,V] float32 tensors simultaneously.
+    # (old_lp was already computed above -- fresh or from ref_cache.)
     cand_lp = F.log_softmax(cand_logits[:, :-1, :], dim=-1)  # [B, T-1, V] bf16
     del cand_logits
     old_p   = old_lp.exp()
@@ -2032,7 +2066,7 @@ def _pcg_correct_masked_weights(model: nn.Module, teacher_model: nn.Module,
                  f"max relative weight shift {worst_resid_ratio:.4f}")
     if use_wandb:
         wandb.log({"train/pcg_layers_corrected": n_corrected,
-                   "train/pcg_max_relative_shift": worst_resid_ratio, "step": global_step})
+                   "train/pcg_max_relative_shift": worst_resid_ratio}, step=global_step)
 
 
 @torch.no_grad()
@@ -2169,7 +2203,7 @@ def _pcg_correct_masked_weights_sequential(model: nn.Module, teacher_model: nn.M
                  f"max relative weight shift {worst_resid_ratio:.4f}")
     if use_wandb:
         wandb.log({"train/pcg_seq_layers_corrected": n_corrected_total,
-                   "train/pcg_seq_max_relative_shift": worst_resid_ratio, "step": global_step})
+                   "train/pcg_seq_max_relative_shift": worst_resid_ratio}, step=global_step)
 
 
 def _tr_mask_update(maskmgr: 'GradualMaskManager', fisher: 'FisherAccumulator',
@@ -2192,7 +2226,11 @@ def _tr_mask_update(maskmgr: 'GradualMaskManager', fisher: 'FisherAccumulator',
     _tr_dist = None
     try:
         import torch.distributed as _td
-        if _td.is_available() and _td.is_initialized():
+        # world_size > 1, not just is_initialized() -- see the matching note
+        # in GradualMaskManager.current_sparsity() above for why is_initialized()
+        # alone is unsafe here (vLLM's in-process engine can leave a default
+        # process group initialized even for a real single-GPU job).
+        if _td.is_available() and _td.is_initialized() and _td.get_world_size() > 1:
             _tr_dist = _td
     except Exception:
         pass
@@ -2246,6 +2284,11 @@ def _tr_mask_update(maskmgr: 'GradualMaskManager', fisher: 'FisherAccumulator',
     last_accepted_delta = 0.0
     last_kl             = float('inf')
     prev_accepted       = False  # True if the previous iter was accepted
+    # maskmgr.masks (the "old"/reference side of every _compute_tr_kl call
+    # below) is never mutated during this loop -- only after it ends -- so
+    # the reference forward pass is identical across all `i`. Cache it once
+    # instead of recomputing on every iteration (same math, fewer forwards).
+    _tr_kl_ref_cache = {}
 
     for i in range(max_iters):
         if _tr_dist:
@@ -2257,7 +2300,8 @@ def _tr_mask_update(maskmgr: 'GradualMaskManager', fisher: 'FisherAccumulator',
             _tr_dist.barrier()
             logging.info(f"  [BARRIER] after candidate_masks iter {i} (rank={_tr_rank})")
         kl, kl_vals = _compute_tr_kl(model, cal_batch, cand, maskmgr, device,
-                                      kl_reduce=kl_reduce, kl_quantile=kl_quantile)
+                                      kl_reduce=kl_reduce, kl_quantile=kl_quantile,
+                                      ref_cache=_tr_kl_ref_cache)
         if _tr_dist:
             _tr_dist.barrier()
             logging.info(f"  [BARRIER] after _compute_tr_kl iter {i} (rank={_tr_rank})")
@@ -2408,9 +2452,12 @@ def globalprune_gmp(
             is_fsdp = True
             logging.info("FSDP detected — enabling summon_full_params for mask updates")
 
-    # Distributed state (DDP or FSDP)
+    # Distributed state (DDP or FSDP). world_size > 1, not just
+    # is_initialized() -- see the note in GradualMaskManager.current_sparsity()
+    # for why is_initialized() alone is unsafe (vLLM's in-process engine can
+    # leave a default process group initialized even for a real single-GPU job).
     import torch.distributed as _dist
-    is_distributed = _dist.is_available() and _dist.is_initialized()
+    is_distributed = _dist.is_available() and _dist.is_initialized() and _dist.get_world_size() > 1
     local_rank = _dist.get_rank() if is_distributed else 0
     world_size = _dist.get_world_size() if is_distributed else 1
     is_main_process = (local_rank == 0)
@@ -2513,6 +2560,7 @@ def globalprune_gmp(
     pgd_debug_repeat_swap = getattr(FLAGS, 'gmp_pgd_debug_repeat_swap', False)  # diagnostic: track what fraction of each step's flips are positions that ALSO flipped within the last gmp_pgd_debug_repeat_window steps (are the same weights repeatedly swapping back and forth, or is a growing set of distinct weights each swapping once)
     pgd_debug_repeat_window = getattr(FLAGS, 'gmp_pgd_debug_repeat_window', 5)
     _pgd_last_flip_step = {}  # name -> int64 tensor, step index each position last flipped (revive or prune), -1e9 sentinel = never
+    _pgd_last_k_actual = 0  # warm-start anchor for gmp_pgd_kl_budget's bisection (see below) -- last step's accepted k, so a persistently-collapsed (k=0) or persistently-generous regime converges in 1-2 forward passes instead of always spending the full bisect_iters budget
     # ── STE mode (opt-in, --gmp_ste=true) ───────────────────────────────────
     # Replaces the earlier shadow-weight-replay approach entirely (removed --
     # mathematically the two give the same accumulated trajectory for a plain
@@ -2718,6 +2766,18 @@ def globalprune_gmp(
                 # GPU footprint isn't permanently resident on a single shared
                 # GPU (see _opkd_vllm_sleep/_opkd_vllm_wake call sites below).
                 enable_sleep_mode=True,
+                # This engine is always tensor_parallel_size=1 (single GPU) --
+                # vLLM's custom-all-reduce plugin exists purely to coordinate
+                # multiple GPUs and is a no-op for TP=1, but it still sets up
+                # its own NCCL/IPC machinery by default (disable_custom_all_
+                # reduce=False). Repeated "NCCL WARN Cuda failure 'out of
+                # memory'" messages were observed starting from step 1 (long
+                # before any real memory pressure), most from this engine
+                # co-existing with the training process's own NCCL usage on
+                # the same device -- disabling it removes an entirely
+                # unnecessary source of GPU-side NCCL/IPC state for a
+                # single-GPU engine.
+                disable_custom_all_reduce=True,
             )
             _opkd_vllm_params = _VLLMSamplingParams(
                 max_tokens=onpolicy_max_new,
@@ -3371,13 +3431,19 @@ def globalprune_gmp(
 
         # periodic mask update (freeze mask after pruning_end_steps)
         if step % mask_interval == 0:
-            # Refresh the small/short calibration batch used by PGD's
-            # per-step self-KL gate (--gmp_pgd_kl_budget), reused unchanged
-            # for every PGD step until the next mask_interval boundary --
-            # amortizes data-loading cost across the whole window instead of
-            # re-sampling every single step.
-            if pgd_enabled and pgd_kl_budget > 0:
-                _pgd_kl_cal_batch = _refresh_pgd_kl_cal_batch()
+            # NOTE: _refresh_pgd_kl_cal_batch() used to be called right here,
+            # BEFORE the vLLM wake below -- this was the one extra GPU
+            # allocation (.to(device) on the calib batch) that plain TR-GMP
+            # (no PGD) never does at this point in the step. That extra
+            # allocation immediately before vLLM's sleep-mode wake/remap is
+            # the likely trigger for a reproducible NCCL "CUDA out of memory"
+            # at every mask_interval boundary when cudagraphs are enabled
+            # (cudagraph capture holds fixed pointers that can conflict with
+            # CuMemAllocator's remap on wake if the allocator layout shifts).
+            # Moved to AFTER the OPKD pool refill (below) as a debug/fix
+            # attempt -- also incidentally more correct, since it now sees
+            # THIS window's freshly-refilled _opkd_standalone_pool instead of
+            # the previous window's stale one.
 
             # Pruning-aware DPO: snapshot ref BEFORE mask update.
             # ref = π_{k-1} (pre-mask stable policy)
@@ -3457,6 +3523,14 @@ def globalprune_gmp(
                 # moved earlier so it covers the actual peak instead of only
                 # cleaning up after it.
                 torch.cuda.empty_cache()
+
+            # Refresh the small/short calibration batch used by PGD's
+            # per-step self-KL gate (--gmp_pgd_kl_budget), reused unchanged
+            # for every PGD step until the next mask_interval boundary --
+            # amortizes data-loading cost across the whole window instead of
+            # re-sampling every single step.
+            if pgd_enabled and pgd_kl_budget > 0:
+                _pgd_kl_cal_batch = _refresh_pgd_kl_cal_batch()
 
             if step <= dense_warmup_steps:
                 pass  # dense warmup: no mask update or apply
@@ -3563,7 +3637,7 @@ def globalprune_gmp(
                                      f"{tr_delta_init} (step={step})")
                     _sp_at_last_widen = current_sparsity
                     if use_wandb and is_main_process:
-                        wandb.log({"train/block_size": _block_size, "step": step})
+                        wandb.log({"train/block_size": _block_size}, step=step)
                 # Once block_size can't widen any further (fully expanded --
                 # degenerates to output-only anchoring, same ceiling as plain
                 # TR-GMP), switch the global losses back on for good. One-way
@@ -3588,7 +3662,7 @@ def globalprune_gmp(
                     _opkd_prev_delta = _tr_mask_delta
                 if use_wandb:
                     wandb.log({"train/sparsity": current_sparsity,
-                               "train/tr_delta": tr_delta, "step": step})
+                               "train/tr_delta": tr_delta}, step=step)
                 if tr_reached:
                     logging.info(f"TR-GMP: target sparsity {final_sparsity} reached at step {step}, "
                                  f"switching to sparse training (mask frozen) for remaining steps.")
@@ -3620,7 +3694,7 @@ def globalprune_gmp(
                                                        kl_quantile=tr_kl_quantile)
                         if use_wandb and is_main_process:
                             wandb.log({"cubic/kl_before_after": _cubic_kl,
-                                       "cubic/sparsity": current_sparsity, "step": step})
+                                       "cubic/sparsity": current_sparsity}, step=step)
                         maskmgr.masks = _cand_masks
                         maskmgr.apply(fsdp_model)
                     else:
@@ -3649,8 +3723,7 @@ def globalprune_gmp(
                         import wandb as _wandb
                         _wandb.log({"train/delta_T_mean": _delta_mean,
                                     "train/delta_T_std":  _delta_std,
-                                    "train/delta_T_pos_rate": _delta_pos,
-                                    "step": step})
+                                    "train/delta_T_pos_rate": _delta_pos}, step=step)
 
             # OPKD vLLM pool refill AFTER mask update (only when TR-GMP is off)
             if use_onpolicy and not _opkd_refilled_pre_mask:
@@ -4531,6 +4604,13 @@ def globalprune_gmp(
                     _prune_vals, _prune_vlo, _prune_vhi = _pgd_build_topk_vals(
                         _pgd_imps, _prune_cand, False, _pgd_lo, _pgd_hi)
 
+                    # maskmgr.masks doesn't change across this whole bisection
+                    # search (only after it's done, when the winning k is
+                    # applied) -- same invariant as TR's own search above --
+                    # so the reference forward pass is cacheable across every
+                    # _pgd_kl_at() call, including the extra kl_at_full call.
+                    _pgd_kl_ref_cache = {}
+
                     def _pgd_kl_at(k):
                         """Self-KL if the k lowest-importance prune candidates were applied on top of the CURRENT mask."""
                         if k <= 0:
@@ -4540,12 +4620,47 @@ def globalprune_gmp(
                                        for _n in maskmgr.named_params}
                         _kl, _ = _compute_tr_kl(fsdp_model if fsdp_model is not None else model,
                                                  _pgd_kl_cal_batch, _cand_masks, maskmgr, str(device),
-                                                 kl_reduce=tr_kl_reduce, kl_quantile=tr_kl_quantile)
+                                                 kl_reduce=tr_kl_reduce, kl_quantile=tr_kl_quantile,
+                                                 ref_cache=_pgd_kl_ref_cache)
                         return _kl
 
-                    _pgd_k_lo, _pgd_k_hi = 0, _n_prune_cand
-                    _pgd_kl_at_k_lo = 0.0  # k=0 -> KL trivially 0, matches _pgd_kl_at's own k<=0 short-circuit
-                    for _ in range(pgd_kl_bisect_iters):
+                    # Warm-started search: instead of always bisecting the full
+                    # [0, n_prune_cand] range from scratch (wasting forward
+                    # passes re-discovering "still 0" or "still huge" every
+                    # step when consecutive steps' true answers are close),
+                    # probe near last step's accepted k first, then expand
+                    # (doubling) or fall back to plain bisection as needed.
+                    # Same worst-case cost as the old unconditional bisection
+                    # (bounded by pgd_kl_bisect_iters), strictly cheaper
+                    # whenever the answer is persistently near last step's --
+                    # e.g. a persistently-collapsed (k=0) regime converges in
+                    # 1 forward pass instead of spending the full budget
+                    # rediscovering 0 every single step.
+                    _pgd_k_lo, _pgd_kl_at_k_lo = 0, 0.0  # k=0 -> KL trivially 0
+                    _pgd_k_hi = _n_prune_cand
+                    _pgd_iters_left = pgd_kl_bisect_iters
+                    _pgd_probe = min(max(_pgd_last_k_actual, 1), _n_prune_cand) if _n_prune_cand > 0 else 0
+                    if _pgd_probe > 0 and _pgd_iters_left > 0:
+                        _pgd_kl_probe = _pgd_kl_at(_pgd_probe)
+                        _pgd_iters_left -= 1
+                        if _pgd_kl_probe <= pgd_kl_budget:
+                            _pgd_k_lo, _pgd_kl_at_k_lo = _pgd_probe, _pgd_kl_probe
+                            _pgd_step = _pgd_probe
+                            while _pgd_k_lo < _n_prune_cand and _pgd_iters_left > 0:
+                                _pgd_step = min(_pgd_step * 2, _n_prune_cand - _pgd_k_lo)
+                                _pgd_cand = _pgd_k_lo + _pgd_step
+                                _pgd_kl_cand = _pgd_kl_at(_pgd_cand)
+                                _pgd_iters_left -= 1
+                                if _pgd_kl_cand <= pgd_kl_budget:
+                                    _pgd_k_lo, _pgd_kl_at_k_lo = _pgd_cand, _pgd_kl_cand
+                                else:
+                                    _pgd_k_hi = _pgd_cand - 1
+                                    break
+                            else:
+                                _pgd_k_hi = _pgd_k_lo  # ran out of iters while still expanding successfully
+                        else:
+                            _pgd_k_hi = _pgd_probe - 1
+                    for _ in range(_pgd_iters_left):
                         if _pgd_k_hi <= _pgd_k_lo:
                             break
                         _pgd_k_mid = (_pgd_k_lo + _pgd_k_hi + 1) // 2
@@ -4556,7 +4671,8 @@ def globalprune_gmp(
                         else:
                             _pgd_k_hi = _pgd_k_mid - 1
                     _k_actual = _pgd_k_lo
-                    _pgd_kl_at_full = _pgd_kl_at(_n_prune_cand)  # KL if pure/uncapped PGD had applied ALL prune_cand -- not visited by the bisection itself (which only ever tests interior midpoints, never the range's own endpoints), so this is one extra forward pass purely for this reference number.
+                    _pgd_last_k_actual = _k_actual
+                    _pgd_kl_at_full = _pgd_kl_at(_n_prune_cand)  # KL if pure/uncapped PGD had applied ALL prune_cand -- not visited by the search itself, so this is one extra forward pass purely for this reference number.
                     logging.info(f"  [pgd_kl_budget] n_prune_cand={_n_prune_cand} n_revive_cand={_n_revive_cand} "
                                  f"k_actual={_k_actual} kl_at(k_actual)={_pgd_kl_at_k_lo:.6f} "
                                  f"kl_at(n_prune_cand)={_pgd_kl_at_full:.6f} budget={pgd_kl_budget} "
@@ -4564,7 +4680,7 @@ def globalprune_gmp(
                     if use_wandb and is_main_process:
                         wandb.log({"pgd/kl_at_k_actual": _pgd_kl_at_k_lo, "pgd/kl_at_full_pgd": _pgd_kl_at_full,
                                    "pgd/kl_budget": pgd_kl_budget,
-                                   "pgd/k_actual": _k_actual, "pgd/n_prune_cand": _n_prune_cand, "step": step})
+                                   "pgd/k_actual": _k_actual, "pgd/n_prune_cand": _n_prune_cand}, step=step)
                     _sel_prune = _pgd_topk_mask_from_vals(_prune_vals, _prune_vlo, _prune_vhi, _k_actual, _pgd_dev, _pgd_use_fsdp, False)
                     del _prune_vals
                     _sel_revive = (_pgd_topk_mask(_pgd_imps, _revive_cand, _k_actual, True, _pgd_dev, _pgd_use_fsdp, _pgd_lo, _pgd_hi)
@@ -4704,7 +4820,7 @@ def globalprune_gmp(
                         maskmgr.masks[_n] = _new
                     if pgd_debug_repeat_swap and use_wandb and is_main_process:
                         wandb.log({"pgd/repeat_swap_frac": (_pgd_repeat_flips / _pgd_total_flips) if _pgd_total_flips > 0 else 0.0,
-                                   "pgd/total_flips": _pgd_total_flips, "step": step})
+                                   "pgd/total_flips": _pgd_total_flips}, step=step)
                 maskmgr.apply(fsdp_model)
                 del _pgd_imps, _pgd_desired
                 torch.cuda.empty_cache()
@@ -4717,8 +4833,7 @@ def globalprune_gmp(
                     _pgd_revivals, _pgd_prunings = int(_pgd_rv_t[0].item()), int(_pgd_rv_t[1].item())
 
             if use_wandb and is_main_process:
-                wandb.log({"pgd/revivals": _pgd_revivals, "pgd/prunings": _pgd_prunings,
-                           "step": step})
+                wandb.log({"pgd/revivals": _pgd_revivals, "pgd/prunings": _pgd_prunings}, step=step)
 
         # ── Gradient conflict measurement (OPKD vs IPO on same sequence) ──────
         if (measure_grad_conflict and not filter_grad_conflict
