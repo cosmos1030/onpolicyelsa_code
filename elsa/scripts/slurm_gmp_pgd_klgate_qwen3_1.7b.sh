@@ -1,0 +1,162 @@
+#!/bin/bash
+#SBATCH --job-name=gmp_pgd_klgate_1.7b
+#SBATCH --partition=A100-80GB
+#SBATCH --qos=hpgpu
+#SBATCH --gres=gpu:1
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=80G
+#SBATCH --time=3-00:00:00
+#SBATCH --exclude=n3,n42,n46,n51,n54,n60,n77,n80,n87,n91,n61,n64,n31,n19
+#SBATCH --output=/home1/doyoonkim/projects/elsa/logs/gmp_pgd_klgate_1.7b_%j.out
+exec 2>&1
+
+# Same as slurm_gmp_tr_ntpkd_opkd_qwen3_1.7b_pgd.sh (real TR-GMP KL-gated
+# growth every mask_interval + --gmp_pgd=true per-step reprojection) but
+# with the per-step reprojection now ALSO KL-gated instead of uncapped:
+# --gmp_pgd_kl_budget bisects how many (lowest-importance) prune candidates
+# to accept each step so that self-KL(pre||post-prune), measured on a small
+# cached calibration batch, stays within budget -- revive count is always
+# set equal to the accepted prune count (existing invariant), so revival
+# volume is bounded for free by the same search. Replaces the earlier
+# --gmp_pgd_max_swap_frac fixed-count cap (see gmp_trainer.py), which
+# limited churn RATE but not whether that churn was actually safe -- a
+# cosine-schedule + swap_frac-capped variant tried first underperformed both
+# uncapped PGD and this KL-gated design at every sparsity level tested.
+#
+# Usage: sbatch slurm_gmp_pgd_klgate_qwen3_1.7b.sh <SPARSITY> <KL_BUDGET> <KL_THRESHOLD> [OPD_GEN_LEN] [MASK_INTERVAL] [LR_SCHEDULER] [STEPS] [POST_TARGET_STEPS] [LR] [DATA_PATH] [SEQLEN] [GRAD_CKPT] [WANDB_PROJECT]
+# e.g.: sbatch slurm_gmp_pgd_klgate_qwen3_1.7b.sh 0.5 0.001 0.02 256 32 cosine 2048 0 1e-4 \
+#         /home1/doyoonkim/projects/elsa/data/ot3_fineweb_40k_qwen3_nostrip_8192.jsonl 8192 true reasoning_qwen3_1.7b_nostrip8192
+
+SPARSITY=${1:?"Usage: <SPARSITY> <KL_BUDGET> <KL_THRESHOLD> [OPD_GEN_LEN] [MASK_INTERVAL] [LR_SCHEDULER] [STEPS] [POST_TARGET_STEPS] [LR] [DATA_PATH] [SEQLEN] [GRAD_CKPT] [WANDB_PROJECT]"}
+KL_BUDGET=${2:?"Usage: <SPARSITY> <KL_BUDGET> <KL_THRESHOLD> [OPD_GEN_LEN] [MASK_INTERVAL] [LR_SCHEDULER] [STEPS] [POST_TARGET_STEPS] [LR] [DATA_PATH] [SEQLEN] [GRAD_CKPT] [WANDB_PROJECT]"}
+KL_THRESHOLD=${3:-0.02}
+OPD_GEN_LEN=${4:-256}
+MASK_INTERVAL=${5:-32}
+LR_SCHEDULER=${6:-cosine}
+STEPS=${7:-2048}
+POST_TARGET_STEPS=${8:-0}
+LR=${9:-1e-4}
+DATA_PATH_ARG=${10:-/home1/doyoonkim/projects/elsa/data/ot3_fineweb_40k_qwen3_nostrip_8192.jsonl}
+SEQLEN=${11:-8192}
+GRAD_CKPT=${12:-true}
+WANDB_PROJECT=${13:-reasoning_qwen3_1.7b_nostrip8192}
+SALIENCY=${14:-fisher}
+PRUNING_SCOPE=${15:-global}
+LOSS_WEIGHTS=${16:-0.33,0.33,0.33}  # NTP,KD,OPKD -- e.g. 0,0.5,0.5 to drop NTP and split KD/OPKD evenly
+SPARSITY_TYPE=${17:-unstructured}   # unstructured | 2:4 | 4:8
+L1_LAMBDA=${18:-0.0}                # gmp_l1_lambda -- structured-L1 pre-shrink for N:M endgame (0=off)
+ROLLOUT_INTERVAL=${19:-${MASK_INTERVAL}}  # gmp_onpolicy_kd_interval -- defaults to mask_interval (old behavior); set lower (e.g. half) to refresh the on-policy rollout more often than the mask changes, for staleness sensitivity checks under PGD
+KD_NSAMPLES=${20:-0}  # gmp_kd_nsamples -- 0 = full dataset (production); set small (e.g. 256) for fast debug/smoke-test tokenization instead of the full 40k-sample cache build
+CALIB_SIZE=${21:-4}  # gmp_pgd_kl_calib_size -- number of sequences in PGD's self-KL calibration batch (default 4). Larger dilutes the influence of any single near-deterministic/high-confidence token that would otherwise dominate the mean KL and collapse k_actual to 0.
+NTP_LAMBDA=$(echo "$LOSS_WEIGHTS" | cut -d, -f1)
+KD_LAMBDA=$(echo "$LOSS_WEIGHTS" | cut -d, -f2)
+OPKD_LAMBDA=$(echo "$LOSS_WEIGHTS" | cut -d, -f3)
+KD_ONLY=$(python3 -c "print('true' if float('${NTP_LAMBDA}')==0.0 else 'false')")
+SPARSITY_PCT=$(python3 -c "print(int(${SPARSITY}*100))")
+
+PYTHON=/home1/doyoonkim/miniconda3/envs/rac/bin/python
+MODEL="/home1/doyoonkim/.cache/huggingface/hub/models--Qwen--Qwen3-1.7B/snapshots/70d244cc86ccca08cf5af4e1e306ecf908b1ad5e"
+DATA_PATH="$DATA_PATH_ARG"
+OPD_PROMPT_PATH="/home1/doyoonkim/projects/elsa/data/ot3_fineweb_200k_qwen3_opdprompts.jsonl"
+
+LOCAL_JOB_BASE="/local-data/user-data/${USER}/job_${SLURM_JOB_ID}"
+mkdir -p "$LOCAL_JOB_BASE/wandb"
+mkdir -p /home1/doyoonkim/projects/elsa/logs
+
+export WANDB_DIR="$LOCAL_JOB_BASE/wandb"
+export WANDB_RUN_ID_OUTPUT="$LOCAL_JOB_BASE/wandb_run_id"
+export WANDB_SERVICE_WAIT=300
+export WANDB_INIT_TIMEOUT=120
+export TMPDIR=/tmp
+export HF_TOKEN=$(cat ~/.hf_token 2>/dev/null || echo "")
+export WANDB_API_KEY=$(grep WANDB_API_KEY ~/.bashrc | cut -d'=' -f2 | tail -1)
+# NOTE: expandable_segments is incompatible with vLLM's CuMemAllocator,
+# which the OPKD vLLM engine now requires (enable_sleep_mode=True, added in
+# the 2026-08-13 log_cluster pull) -- LLM(...) hard-asserts on this at
+# load_model() time if set. Use max_split_size_mb instead -- a different
+# fragmentation mitigation the CuMemAllocator assertion doesn't check for
+# (it only greps for the literal string "expandable_segments:True") --
+# leaving fragmentation completely unmitigated caused a real OOM after
+# ~760 steps (720073: 26GB reserved-but-unallocated, 4.64GB request denied).
+export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:256
+export TOKENIZERS_PARALLELISM=false
+export VLLM_USE_V1=0
+# Disables vLLM's background usage-reporting thread (report_usage() ->
+# _report_continuous_usage, a `while True: time.sleep(600)` loop) --
+# observed to cause a rare but reproducible interpreter-level crash
+# ("Fatal Python error: none_dealloc: deallocating None") deep into
+# training (e.g. step ~1650/2048), always right at a vLLM wake_up()
+# call. Not needed for a research training loop.
+export VLLM_NO_USAGE_STATS=1
+export VLLM_HOST_IP=127.0.0.1
+export TRITON_CACHE_DIR=/tmp/triton_cache_${USER}
+export HF_DATASETS_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+
+echo "=== TR-GMP NTP+KD+OPKD(0.33/0.33/0.33) Qwen3-1.7B s${SPARSITY_PCT} PGD-KL-budget(self-KL per step<=${KL_BUDGET}, tr_kl=${KL_THRESHOLD}) lr=${LR} mask_interval=${MASK_INTERVAL} rollout_interval=${ROLLOUT_INTERVAL} lr_scheduler=${LR_SCHEDULER} steps=${STEPS} post_target_steps=${POST_TARGET_STEPS} saliency=${SALIENCY} (OT80/FW20) ==="
+echo "NODE=$(hostname)  JOB=$SLURM_JOB_ID"
+nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
+
+if ! curl -s --connect-timeout 10 https://api.wandb.ai/healthz > /dev/null 2>&1; then
+    echo "ERROR: No internet on $(hostname). Exiting."
+    exit 1
+fi
+
+cd /home1/doyoonkim/projects/elsa
+
+$PYTHON main.py \
+    --model="$MODEL" \
+    --dataset=mixed_cot \
+    --data_path="$DATA_PATH" \
+    --sparsity_ratio=${SPARSITY} \
+    --sparsity_type=${SPARSITY_TYPE} \
+    --gmp_l1_lambda=${L1_LAMBDA} \
+    --do_gmp=true \
+    --steps=${STEPS} \
+    --gmp_post_target_steps=${POST_TARGET_STEPS} \
+    --gmp_batch_size=1 \
+    --gmp_grad_accum=8 \
+    --lr=${LR} \
+    --lr_scheduler=${LR_SCHEDULER} \
+    --lr_warmup_steps=256 \
+    --gmp_warmup_ratio=0.05 \
+    --gmp_mask_interval=${MASK_INTERVAL} \
+    --gmp_fisher_beta=0.999 \
+    --gmp_saliency=${SALIENCY} \
+    --gmp_pruning_scope=${PRUNING_SCOPE} \
+    --seqlen=${SEQLEN} \
+    --gmp_gradient_checkpointing=${GRAD_CKPT} \
+    --gmp_max_prompt_len=512 \
+    --gmp_kd_only=${KD_ONLY} \
+    --kd_nsamples=${KD_NSAMPLES} \
+    --gmp_ntp_lambda=${NTP_LAMBDA} \
+    --gmp_kd_lambda=${KD_LAMBDA} \
+    --gmp_onpolicy_kd_lambda=${OPKD_LAMBDA} \
+    --gmp_onpolicy_kd_interval=${ROLLOUT_INTERVAL} \
+    --gmp_onpolicy_max_new_tokens=${OPD_GEN_LEN} \
+    --gmp_opkd_prev_mask_teacher=false \
+    --gmp_opkd_vllm_gpu_mem=0.15 \
+    --gmp_prompt_path="$OPD_PROMPT_PATH" \
+    --gmp_tr_enabled=true \
+    --gmp_tr_delta_init=0.05 \
+    --gmp_tr_delta_min=0.001 \
+    --gmp_tr_kl_threshold=${KL_THRESHOLD} \
+    --gmp_tr_kl_reduce=mean \
+    --gmp_pgd=true \
+    --gmp_pgd_kl_budget=${KL_BUDGET} \
+    --gmp_pgd_kl_calib_size=${CALIB_SIZE} \
+    --gmp_pgd_skip_growth_step=true \
+    --gmp_save_path=/home1/doyoonkim/projects/elsa/models \
+    --save_model=true \
+    --push_to_hub=true \
+    --eval_math500=false \
+    --eval_full_bench=true \
+    --eval_zero_shot=true \
+    --wandb=true \
+    --wandb_project=${WANDB_PROJECT} \
+    --run_name_suffix="${RUN_TAG:+${RUN_TAG}_}pgd_klbudget${KL_BUDGET}_skipgrowth_lr${LR}_mi${MASK_INTERVAL}_ro${ROLLOUT_INTERVAL}_kl${KL_THRESHOLD}_${PRUNING_SCOPE}scope_$(basename "$DATA_PATH" .jsonl)" \
+    --seed=42
+
+echo "##### END #####"
