@@ -1,4 +1,22 @@
 import time
+import gc
+# Raise the cyclic GC's generation-0 threshold way above the default (700)
+# so it collects far less often. Mitigation for a rare (~1-in-10 to 1-in-15
+# long PGD/OPKD runs, seen at random points hundreds-to-thousands of steps
+# in), hard-crashing bug where Python's automatic garbage collector firing
+# in the middle of a vLLM C-extension call (its own generate()/scheduler
+# internals, or an allocator callback) hits a borrowed/mismanaged reference
+# and the interpreter aborts with "Fatal Python error: none_dealloc:
+# deallocating None" or a segfault. Reference counting (which handles the
+# overwhelming majority of Python object lifetimes, including all plain
+# tensor/dict/list churn in this codebase) is completely unaffected --
+# only cyclic-reference collection is throttled, so this does not disable
+# GC, just makes it fire far less often (and thus far less likely to land
+# inside vLLM's C code at a bad moment). Not a fix for the underlying vLLM
+# bug -- see scripts/patch_vllm_cumem_sleep.py for the two bugs of this
+# same general class that ARE fixed; this is a blast-radius reduction for
+# whatever's left.
+gc.set_threshold(100_000, 500, 500)
 import numpy as np
 import torch
 from transformers import AutoTokenizer
@@ -1022,6 +1040,7 @@ if __name__ == '__main__':
     flags.DEFINE_bool('gmp_pgd_skip_growth_step', False, 'Skip the PGD reprojection on the exact step where TR-GMP/cubic growth just updated the mask (step % gmp_mask_interval == 0), so PGD only touches the mask during the recovery steps in between growth events instead of immediately re-touching whatever growth just decided in the same step. Do not combine with gmp_mask_interval=1 (growth fires every step there, so this would disable PGD entirely).')
     flags.DEFINE_bool('gmp_pgd_debug_repeat_swap', False, 'Diagnostic (fully-uncapped PGD path only): log what fraction of each step\'s revive/prune flips are positions that ALSO flipped within the last gmp_pgd_debug_repeat_window steps -- tests whether PGD churn is a small set of weights repeatedly swapping back and forth (unstable near-threshold weights) vs. a growing set of distinct weights each swapping once.')
     flags.DEFINE_integer('gmp_pgd_debug_repeat_window', 5, 'Lookback window (steps) for gmp_pgd_debug_repeat_swap\'s repeat-flip detection.')
+    flags.DEFINE_bool('gmp_pgd_debug_importance_hist', False, 'Diagnostic: every 5 steps, dump the fisher*weight^2 importance distribution\'s quantiles + local density near each quantile to check where the pruning threshold sits. Off by default -- costs a real GPU sync + CPU transfer + torch.quantile over up to 10M sampled values every 5th step (measured ~3s/occurrence, i.e. ~0.6s/step amortized) for a value that\'s purely informational.')
     flags.DEFINE_float('gmp_dpo_lambda', 0.0, 'Weight for DPO loss (0 = disabled).')
     flags.DEFINE_float('gmp_dpo_beta', 0.1, 'DPO beta (temperature).')
     flags.DEFINE_integer('gmp_dpo_n_pairs', 1024, 'Number of chosen pairs to pre-generate.')

@@ -1845,13 +1845,20 @@ def _compute_tr_kl(model: nn.Module, cal_batch: dict, cand_masks: dict,
             ref_cache['old_lp'] = old_lp
             ref_cache['valid']  = valid
 
-    # Temporarily zero newly-pruned weights (old_mask=True & cand_mask=False)
+    # Temporarily zero newly-pruned weights (old_mask=True & cand_mask=False).
+    # No `.any()` skip-if-empty check here on purpose: boolean-mask indexing
+    # with an all-False mask is already a correct no-op (selects/writes zero
+    # elements), and `.any()` forces a GPU->CPU sync to read the Python bool
+    # -- with ~200 Linear-weight tensors in a 1.7B model, that's ~200 sync
+    # round-trips *per call*, measured at ~1.6s total (dominating this
+    # function's wall-clock far more than the actual forward pass, which is
+    # why truncating the calibration seqlen barely moved the per-call cost).
+    # Skipping the check removes those syncs entirely for the same result.
     saved = {}
     for name, param in maskmgr.named_params.items():
         newly_pruned = maskmgr.masks[name] & ~cand_masks[name]
-        if newly_pruned.any():
-            saved[name] = (newly_pruned, param.data[newly_pruned].clone())
-            param.data[newly_pruned] = 0.0
+        saved[name] = (newly_pruned, param.data[newly_pruned].clone())
+        param.data[newly_pruned] = 0.0
 
     with torch.amp.autocast('cuda', dtype=torch.bfloat16):
         cand_logits = model(input_ids=input_ids, attention_mask=attn_mask).logits.detach()
@@ -2558,6 +2565,7 @@ def globalprune_gmp(
     _pgd_kl_cal_batch = None  # small/short batch, refreshed every mask_interval steps (see below), reused every PGD step in between
     _pgd_scratch   = {}  # name -> preallocated fp32 buffer, reused in-place every PGD step (see below)
     pgd_debug_repeat_swap = getattr(FLAGS, 'gmp_pgd_debug_repeat_swap', False)  # diagnostic: track what fraction of each step's flips are positions that ALSO flipped within the last gmp_pgd_debug_repeat_window steps (are the same weights repeatedly swapping back and forth, or is a growing set of distinct weights each swapping once)
+    pgd_debug_importance_hist = getattr(FLAGS, 'gmp_pgd_debug_importance_hist', False)  # diagnostic: dump the importance distribution's quantile/density every 5 steps (off by default -- ~0.6s/step amortized cost for a purely informational value)
     pgd_debug_repeat_window = getattr(FLAGS, 'gmp_pgd_debug_repeat_window', 5)
     _pgd_last_flip_step = {}  # name -> int64 tensor, step index each position last flipped (revive or prune), -1e9 sentinel = never
     _pgd_last_k_actual = 0  # warm-start anchor for gmp_pgd_kl_budget's bisection (see below) -- last step's accepted k, so a persistently-collapsed (k=0) or persistently-generous regime converges in 1-2 forward passes instead of always spending the full bisect_iters budget
@@ -4390,7 +4398,7 @@ def globalprune_gmp(
                 # (hypothesis for why low-sparsity PGD churn never settles),
                 # and to track how that density evolves over training instead
                 # of a single snapshot.
-                if step % 5 == 0 and is_main_process:
+                if pgd_debug_importance_hist and step % 5 == 0 and is_main_process:
                     _dbg_cap_per_t = 200000
                     _dbg_parts = []
                     for _v in _pgd_imps.values():
@@ -4415,7 +4423,6 @@ def globalprune_gmp(
                         import wandb as _wandb
                         _wandb.log({f"dbg/imp_q{int(_q*100)}_band_cnt": int(((_dbg_all >= _v*0.99) & (_dbg_all <= _v*1.01)).sum().item())
                                     for _q, _v in zip(_dbg_qs, _dbg_vals.tolist())}, step=step)
-
                 # n_keep / n_total — one all_reduce for FSDP
                 _pgd_stats = torch.tensor(
                     [sum(maskmgr.masks[n].sum().item() for n in _pgd_imps),
@@ -4562,6 +4569,8 @@ def globalprune_gmp(
                 # bounds how fast newly-revived capacity can drift the
                 # policy between OPKD rollout-pool refreshes).
                 elif pgd_kl_budget > 0 and _pgd_kl_cal_batch is not None:
+                    import time as _time_dbg
+                    torch.cuda.synchronize(); _t_klb0 = _time_dbg.time()
                     _revive_cand = {_n: _pgd_desired[_n] & ~maskmgr.masks[_n] for _n in maskmgr.named_params}
                     _prune_cand  = {_n: (~_pgd_desired[_n]) & maskmgr.masks[_n] for _n in maskmgr.named_params}
                     _n_prune_cand_t = torch.tensor(
@@ -4610,11 +4619,14 @@ def globalprune_gmp(
                     # so the reference forward pass is cacheable across every
                     # _pgd_kl_at() call, including the extra kl_at_full call.
                     _pgd_kl_ref_cache = {}
+                    _pgd_kl_at_calls = [0]
+                    _pgd_kl_at_time = [0.0]
 
                     def _pgd_kl_at(k):
                         """Self-KL if the k lowest-importance prune candidates were applied on top of the CURRENT mask."""
                         if k <= 0:
                             return 0.0
+                        torch.cuda.synchronize(); _t_call0 = _time_dbg.time()
                         _sel = _pgd_topk_mask_from_vals(_prune_vals, _prune_vlo, _prune_vhi, k, _pgd_dev, _pgd_use_fsdp, False)
                         _cand_masks = {_n: (maskmgr.masks[_n] & ~_sel[_n]) if _n in _pgd_imps else maskmgr.masks[_n]
                                        for _n in maskmgr.named_params}
@@ -4622,6 +4634,9 @@ def globalprune_gmp(
                                                  _pgd_kl_cal_batch, _cand_masks, maskmgr, str(device),
                                                  kl_reduce=tr_kl_reduce, kl_quantile=tr_kl_quantile,
                                                  ref_cache=_pgd_kl_ref_cache)
+                        torch.cuda.synchronize()
+                        _pgd_kl_at_calls[0] += 1
+                        _pgd_kl_at_time[0] += _time_dbg.time() - _t_call0
                         return _kl
 
                     # Warm-started search: instead of always bisecting the full
@@ -4673,6 +4688,8 @@ def globalprune_gmp(
                     _k_actual = _pgd_k_lo
                     _pgd_last_k_actual = _k_actual
                     _pgd_kl_at_full = _pgd_kl_at(_n_prune_cand)  # KL if pure/uncapped PGD had applied ALL prune_cand -- not visited by the search itself, so this is one extra forward pass purely for this reference number.
+                    logging.info(f"  [DBG kl_at_timing] calls={_pgd_kl_at_calls[0]} total_forward_time={_pgd_kl_at_time[0]:.3f}s "
+                                 f"avg_per_call={(_pgd_kl_at_time[0]/max(1,_pgd_kl_at_calls[0])):.3f}s (step={step})")
                     logging.info(f"  [pgd_kl_budget] n_prune_cand={_n_prune_cand} n_revive_cand={_n_revive_cand} "
                                  f"k_actual={_k_actual} kl_at(k_actual)={_pgd_kl_at_k_lo:.6f} "
                                  f"kl_at(n_prune_cand)={_pgd_kl_at_full:.6f} budget={pgd_kl_budget} "
