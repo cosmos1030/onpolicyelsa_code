@@ -2562,6 +2562,7 @@ def globalprune_gmp(
     pgd_kl_calib_seqlen = max(1, getattr(FLAGS, 'gmp_pgd_kl_calib_seqlen', 512))
     pgd_kl_bisect_iters = max(1, getattr(FLAGS, 'gmp_pgd_kl_bisect_iters', 6))
     pgd_skip_growth_step = getattr(FLAGS, 'gmp_pgd_skip_growth_step', False)  # skip PGD on the exact step growth just fired, so the model trains at least one step under the mask growth decided before PGD can touch it again
+    pgd_interval = max(1, getattr(FLAGS, 'gmp_pgd_interval', 1))  # only run PGD's reprojection every Nth step (default 1 = every step, prior behavior) -- decouples PGD's own cadence from mask_interval's growth cadence
     _pgd_kl_cal_batch = None  # small/short batch, refreshed every mask_interval steps (see below), reused every PGD step in between
     _pgd_scratch   = {}  # name -> preallocated fp32 buffer, reused in-place every PGD step (see below)
     pgd_debug_repeat_swap = getattr(FLAGS, 'gmp_pgd_debug_repeat_swap', False)  # diagnostic: track what fraction of each step's flips are positions that ALSO flipped within the last gmp_pgd_debug_repeat_window steps (are the same weights repeatedly swapping back and forth, or is a growing set of distinct weights each swapping once)
@@ -4349,6 +4350,7 @@ def globalprune_gmp(
         # saliency mode (spa/wanda/magnitude/sqrt_fisher), which this
         # in-place path does not special-case.
         if (pgd_enabled and step > dense_warmup_steps and not math.isnan(grad_norm) and not math.isinf(grad_norm)
+                and step % pgd_interval == 0
                 and not (pgd_skip_growth_step and step % mask_interval == 0)):
             _pgd_revivals = 0
             _pgd_prunings = 0
