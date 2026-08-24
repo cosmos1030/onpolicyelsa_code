@@ -18,8 +18,9 @@ def _to_np_f32(x: torch.Tensor) -> np.ndarray:
     return x.detach().cpu().to(torch.float32).numpy()
 
 def get_llm(
-    model_name:str, 
-    seqlen:int=2048
+    model_name:str,
+    seqlen:int=2048,
+    attn_implementation:str=None,
 )-> AutoModelForCausalLM:
     """
     Load the model from huggingface hub or local directory.
@@ -27,10 +28,22 @@ def get_llm(
     Args:
         Model_name: str, directly from huggingface hub, or the directory of the model.
         seqlen: int, the maximum sequence length for the model.
+        attn_implementation: override the default flash_attention_2/sdpa choice.
+            Pass 'sdpa' for gmp_batch_size>1 training on B200/Blackwell -- flash-attn
+            2.8.3's backward returns NaN there whenever gradient checkpointing
+            (activation recompute) is combined with batch_size>=2 (isolated via
+            torch.autograd.detect_anomaly against real tokenized data: reproduces with
+            grad checkpointing on, batch>=2, regardless of padding/masking/sequence
+            content; does NOT reproduce with grad checkpointing off, or at batch=1).
+            SDPA sidesteps it entirely (verified: 8 real-data steps, bs=2, seqlen=8192,
+            grad checkpointing on -- zero NaN, peak mem 62.5GiB). flash_attention_2
+            stays the default since it's confirmed stable for batch_size=1 (the
+            common case) and typically faster/leaner than SDPA when it isn't hitting
+            this bug.
     Returns:
         model: AutoModelForCausalLM, the model loaded from huggingface hub.
     """
-    attn_impl = "flash_attention_2" if torch.cuda.is_available() else "sdpa"
+    attn_impl = attn_implementation or ("flash_attention_2" if torch.cuda.is_available() else "sdpa")
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         low_cpu_mem_usage=True,

@@ -1740,6 +1740,40 @@ def _sync_opkd_weights_to_vllm(model: nn.Module, vllm_engine) -> None:
             vllm_state[name].data.copy_(param.data.to(vllm_state[name].dtype))
 
 
+def _opkd_flatten_pool_batches(pool_batches: list) -> tuple:
+    """Flatten dataloader batches (each holding up to gmp_batch_size prompts,
+    all sharing one prompt_len) into one vLLM input per individual prompt,
+    plus (batch_idx, row_idx, prompt_len) metadata to pair each vLLM output
+    back to its row of origin. Needed because indexing row 0 only (the old
+    behavior) silently dropped every other row in the batch when
+    gmp_batch_size > 1, then mismatched shapes when re-assembling full_seq
+    against the whole batch's input_ids.
+    """
+    from vllm.inputs import TokensPrompt as _TokensPrompt
+    vllm_inputs = []
+    flat_meta = []
+    for _bi, _pb in enumerate(pool_batches):
+        _plen = int(_pb['prompt_len'].item())
+        _bsz = _pb['input_ids'].shape[0]
+        for _ri in range(_bsz):
+            vllm_inputs.append(_TokensPrompt(prompt_token_ids=_pb['input_ids'][_ri][:_plen].tolist()))
+            flat_meta.append((_bi, _ri, _plen))
+    return vllm_inputs, flat_meta
+
+
+def _opkd_build_pool_from_outputs(pool_batches: list, flat_meta: list, vllm_outs: list) -> list:
+    """Pair flattened vLLM outputs (see _opkd_flatten_pool_batches) back to
+    their originating (batch, row), producing one {"full_seq", "prompt_len"}
+    entry per individual prompt regardless of gmp_batch_size."""
+    pool = []
+    for (_bi, _ri, _plen), _vo in zip(flat_meta, vllm_outs):
+        _p_ids = pool_batches[_bi]['input_ids'][_ri:_ri + 1, :_plen].cpu()
+        _gen_ids = torch.tensor([_vo.outputs[0].token_ids], dtype=torch.long)
+        _full_seq = torch.cat([_p_ids, _gen_ids], dim=1)
+        pool.append({"full_seq": _full_seq, "prompt_len": _plen})
+    return pool
+
+
 def _opkd_broadcast_pool(pool: list, is_distributed: bool, device) -> list:
     """Broadcast OPKD rollout pool from rank 0 to all ranks.
 
@@ -2817,18 +2851,10 @@ def globalprune_gmp(
         if is_main_process:
             _n_pool = mask_interval * grad_accum
             _pool_batches = [next(prompt_iter) for _ in range(_n_pool)]
-            _vllm_inputs = [
-                _TokensPrompt(prompt_token_ids=b['input_ids'][0][:int(b['prompt_len'].item())].tolist())
-                for b in _pool_batches
-            ]
+            _vllm_inputs, _flat_meta = _opkd_flatten_pool_batches(_pool_batches)
             _vllm_outs = _opkd_vllm_engine.generate(_vllm_inputs, _opkd_vllm_params)
             _opkd_vllm_sleep(_opkd_vllm_engine)
-            for _pb, _vo in zip(_pool_batches, _vllm_outs):
-                _plen = int(_pb['prompt_len'].item())
-                _p_ids = _pb['input_ids'][:, :_plen].cpu()
-                _gen_ids = torch.tensor([_vo.outputs[0].token_ids], dtype=torch.long)
-                _full_seq = torch.cat([_p_ids, _gen_ids], dim=1)
-                _opkd_standalone_pool.append({"full_seq": _full_seq, "prompt_len": _plen})
+            _opkd_standalone_pool.extend(_opkd_build_pool_from_outputs(_pool_batches, _flat_meta, _vllm_outs))
             logging.info(f"  OPKD vLLM: initial pool filled with {len(_opkd_standalone_pool)} rollouts")
         logging.info(f"[rank {local_rank}] pre-broadcast: pool={len(_opkd_standalone_pool)}")
         _opkd_standalone_pool = _opkd_broadcast_pool(_opkd_standalone_pool, is_distributed, device)
@@ -3339,8 +3365,13 @@ def globalprune_gmp(
             _bwd_ctx = (model.no_sync()
                         if is_fsdp and micro_step < grad_accum - 1
                         else nullcontext())
-            with _bwd_ctx:
-                loss.backward()
+            import os as _os_dbg
+            if _os_dbg.environ.get('GMP_ANOMALY_DEBUG'):
+                with _bwd_ctx, torch.autograd.detect_anomaly():
+                    loss.backward()
+            else:
+                with _bwd_ctx:
+                    loss.backward()
             accum_loss += loss.item()
 
         # anchored KD contributes to the NTP optimizer step
@@ -3497,10 +3528,7 @@ def globalprune_gmp(
                     logging.info(f"  [DBG mem] pre-wake: free={_dbg_f0/1e9:.2f}GB / total={_dbg_t0/1e9:.2f}GB (step={step})")
                     _n_pool = mask_interval * grad_accum
                     _pool_batches = [next(prompt_iter) for _ in range(_n_pool)]
-                    _vllm_inputs = [
-                        _TokensPrompt(prompt_token_ids=b['input_ids'][0][:int(b['prompt_len'].item())].tolist())
-                        for b in _pool_batches
-                    ]
+                    _vllm_inputs, _flat_meta = _opkd_flatten_pool_batches(_pool_batches)
                     _dbg_f1, _ = torch.cuda.mem_get_info()
                     logging.info(f"  [DBG mem] post-wake: free={_dbg_f1/1e9:.2f}GB (step={step})")
                     _vllm_outs = _opkd_vllm_engine.generate(_vllm_inputs, _opkd_vllm_params)
@@ -3511,13 +3539,7 @@ def globalprune_gmp(
                     logging.info(f"  [DBG mem] post-sleep: free={_dbg_f3/1e9:.2f}GB (step={step})")
                     if fsdp_model is None:
                         _reload_optimizer_state(optimizer, device)
-                    _opkd_standalone_pool = []
-                    for _pb, _vo in zip(_pool_batches, _vllm_outs):
-                        _plen = int(_pb['prompt_len'].item())
-                        _p_ids = _pb['input_ids'][:, :_plen].cpu()
-                        _gen_ids = torch.tensor([_vo.outputs[0].token_ids], dtype=torch.long)
-                        _full_seq = torch.cat([_p_ids, _gen_ids], dim=1)
-                        _opkd_standalone_pool.append({"full_seq": _full_seq, "prompt_len": _plen})
+                    _opkd_standalone_pool = _opkd_build_pool_from_outputs(_pool_batches, _flat_meta, _vllm_outs)
                     logging.info(f"  OPKD vLLM pool refilled (pre-mask): {len(_opkd_standalone_pool)} rollouts (step={step})")
                 _opkd_standalone_pool = _opkd_broadcast_pool(_opkd_standalone_pool, is_distributed, device)
                 _opkd_standalone_pool_ptr = 0
@@ -3753,21 +3775,12 @@ def globalprune_gmp(
                 if is_main_process and _opkd_vllm_engine is not None:
                     _n_pool = mask_interval * grad_accum
                     _pool_batches = [next(prompt_iter) for _ in range(_n_pool)]
-                    _vllm_inputs = [
-                        _TokensPrompt(prompt_token_ids=b['input_ids'][0][:int(b['prompt_len'].item())].tolist())
-                        for b in _pool_batches
-                    ]
+                    _vllm_inputs, _flat_meta = _opkd_flatten_pool_batches(_pool_batches)
                     _vllm_outs = _opkd_vllm_engine.generate(_vllm_inputs, _opkd_vllm_params)
                     _opkd_vllm_sleep(_opkd_vllm_engine)
                     if fsdp_model is None:
                         _reload_optimizer_state(optimizer, device)
-                    _opkd_standalone_pool = []
-                    for _pb, _vo in zip(_pool_batches, _vllm_outs):
-                        _plen = int(_pb['prompt_len'].item())
-                        _p_ids = _pb['input_ids'][:, :_plen].cpu()
-                        _gen_ids = torch.tensor([_vo.outputs[0].token_ids], dtype=torch.long)
-                        _full_seq = torch.cat([_p_ids, _gen_ids], dim=1)
-                        _opkd_standalone_pool.append({"full_seq": _full_seq, "prompt_len": _plen})
+                    _opkd_standalone_pool = _opkd_build_pool_from_outputs(_pool_batches, _flat_meta, _vllm_outs)
                     logging.info(f"  OPKD vLLM pool refilled: {len(_opkd_standalone_pool)} rollouts (step={step})")
                 _opkd_standalone_pool = _opkd_broadcast_pool(_opkd_standalone_pool, is_distributed, device)
                 _opkd_standalone_pool_ptr = 0
@@ -4542,11 +4555,100 @@ def globalprune_gmp(
                             sum(v.sum().item() for v in _revive_cand.values()), dtype=torch.long, device=_pgd_dev)
                         if _pgd_use_fsdp:
                             _dist.all_reduce(_n_revive_cand_t, op=_dist.ReduceOp.SUM)
-                        _k_actual = min(_pgd_k_prune, int(_n_elig_t.item()), int(_n_revive_cand_t.item()))
-                        _sel_prune = (_pgd_topk_mask(_pgd_imps, _eligible_prune, _k_actual, False, _pgd_dev, _pgd_use_fsdp, _pgd_lo, _pgd_hi)
-                                      if _k_actual > 0 else {n: torch.zeros_like(m) for n, m in maskmgr.masks.items()})
-                        _sel_revive = (_pgd_topk_mask(_pgd_imps, _revive_cand, _k_actual, True, _pgd_dev, _pgd_use_fsdp, _pgd_lo, _pgd_hi)
-                                       if _k_actual > 0 else {n: torch.zeros_like(m) for n, m in maskmgr.masks.items()})
+                        _n_elig = int(_n_elig_t.item())
+                        _n_revive_cand = int(_n_revive_cand_t.item())
+                        # N:M-aware self-KL bisection (--gmp_pgd_kl_budget):
+                        # same bisection machinery as the unstructured
+                        # --gmp_pgd_kl_budget branch below, but the candidate
+                        # set to bisect over is _eligible_prune (N:M
+                        # group-capped -- see _pgd_nm_pre_target) instead of a
+                        # raw unstructured prune_cand set, so the accepted
+                        # swap can never exceed a group's remaining prune
+                        # budget. Revive count == accepted prune count, same
+                        # invariant as everywhere else in this file.
+                        if pgd_kl_budget > 0 and _pgd_kl_cal_batch is not None:
+                            _n_prune_cand_nm = min(_n_elig, _n_revive_cand)
+                            _prune_vals, _prune_vlo, _prune_vhi = _pgd_build_topk_vals(
+                                _pgd_imps, _eligible_prune, False, _pgd_lo, _pgd_hi)
+                            _pgd_kl_ref_cache = {}
+
+                            def _pgd_kl_at_nm(k):
+                                """Self-KL if the k lowest-importance N:M-eligible prune candidates were applied on top of the CURRENT mask."""
+                                if k <= 0:
+                                    return 0.0
+                                _sel = _pgd_topk_mask_from_vals(_prune_vals, _prune_vlo, _prune_vhi, k, _pgd_dev, _pgd_use_fsdp, False)
+                                _cand_masks = {_n: (maskmgr.masks[_n] & ~_sel[_n]) if _n in _pgd_imps else maskmgr.masks[_n]
+                                               for _n in maskmgr.named_params}
+                                _kl, _ = _compute_tr_kl(fsdp_model if fsdp_model is not None else model,
+                                                         _pgd_kl_cal_batch, _cand_masks, maskmgr, str(device),
+                                                         kl_reduce=tr_kl_reduce, kl_quantile=tr_kl_quantile,
+                                                         ref_cache=_pgd_kl_ref_cache)
+                                return _kl
+
+                            # Warm-started bisection -- identical shape to the
+                            # unstructured branch's search below (probe near
+                            # last step's accepted k, expand or fall back to
+                            # plain bisection), just reusing _pgd_kl_at_nm.
+                            _pgd_k_lo, _pgd_kl_at_k_lo = 0, 0.0
+                            _pgd_k_hi = _n_prune_cand_nm
+                            _pgd_iters_left = pgd_kl_bisect_iters
+                            _pgd_probe = min(max(_pgd_last_k_actual, 1), _n_prune_cand_nm) if _n_prune_cand_nm > 0 else 0
+                            if _pgd_probe > 0 and _pgd_iters_left > 0:
+                                _pgd_kl_probe = _pgd_kl_at_nm(_pgd_probe)
+                                _pgd_iters_left -= 1
+                                if _pgd_kl_probe <= pgd_kl_budget:
+                                    _pgd_k_lo, _pgd_kl_at_k_lo = _pgd_probe, _pgd_kl_probe
+                                    _pgd_step = _pgd_probe
+                                    while _pgd_k_lo < _n_prune_cand_nm and _pgd_iters_left > 0:
+                                        _pgd_step = min(_pgd_step * 2, _n_prune_cand_nm - _pgd_k_lo)
+                                        _pgd_cand = _pgd_k_lo + _pgd_step
+                                        _pgd_kl_cand = _pgd_kl_at_nm(_pgd_cand)
+                                        _pgd_iters_left -= 1
+                                        if _pgd_kl_cand <= pgd_kl_budget:
+                                            _pgd_k_lo, _pgd_kl_at_k_lo = _pgd_cand, _pgd_kl_cand
+                                        else:
+                                            _pgd_k_hi = _pgd_cand - 1
+                                            break
+                                    else:
+                                        _pgd_k_hi = _pgd_k_lo
+                                else:
+                                    _pgd_k_hi = _pgd_probe - 1
+                            for _ in range(_pgd_iters_left):
+                                if _pgd_k_hi <= _pgd_k_lo:
+                                    break
+                                _pgd_k_mid = (_pgd_k_lo + _pgd_k_hi + 1) // 2
+                                _pgd_kl_mid = _pgd_kl_at_nm(_pgd_k_mid)
+                                if _pgd_kl_mid <= pgd_kl_budget:
+                                    _pgd_k_lo = _pgd_k_mid
+                                    _pgd_kl_at_k_lo = _pgd_kl_mid
+                                else:
+                                    _pgd_k_hi = _pgd_k_mid - 1
+                            _k_actual = _pgd_k_lo
+                            _pgd_last_k_actual = _k_actual
+                            logging.info(f"  [pgd_kl_budget][nm] n_elig={_n_elig} n_revive_cand={_n_revive_cand} "
+                                         f"k_actual={_k_actual} kl_at(k_actual)={_pgd_kl_at_k_lo:.6f} "
+                                         f"budget={pgd_kl_budget} pre_sparsity={maskmgr.current_sparsity():.4f} (step={step})")
+                            if use_wandb and is_main_process:
+                                wandb.log({"pgd/kl_at_k_actual": _pgd_kl_at_k_lo, "pgd/kl_budget": pgd_kl_budget,
+                                           "pgd/k_actual": _k_actual, "pgd/n_prune_cand": _n_prune_cand_nm}, step=step)
+                            _sel_prune = _pgd_topk_mask_from_vals(_prune_vals, _prune_vlo, _prune_vhi, _k_actual, _pgd_dev, _pgd_use_fsdp, False)
+                            del _prune_vals
+                            _sel_revive = (_pgd_topk_mask(_pgd_imps, _revive_cand, _k_actual, True, _pgd_dev, _pgd_use_fsdp, _pgd_lo, _pgd_hi)
+                                           if _k_actual > 0 else {n: torch.zeros_like(m) for n, m in maskmgr.masks.items()})
+                        else:
+                            _k_actual = min(_pgd_k_prune, _n_elig, _n_revive_cand)
+                            # Trust-region cap for N:M PGD (--gmp_pgd_kl_share /
+                            # --gmp_pgd_max_swap_frac), used only when
+                            # --gmp_pgd_kl_budget is unset -- same cap formula
+                            # as the unstructured swap_frac branch below.
+                            if pgd_kl_share or pgd_max_swap_frac > 0:
+                                _effective_swap_frac = _pgd_dynamic_swap_frac if pgd_kl_share else pgd_max_swap_frac
+                                _pgd_cap = max(1, round(_effective_swap_frac * _pgd_stats[1].item()))
+                                _k_actual = min(_k_actual, _pgd_cap)
+                            _sel_prune = (_pgd_topk_mask(_pgd_imps, _eligible_prune, _k_actual, False, _pgd_dev, _pgd_use_fsdp, _pgd_lo, _pgd_hi)
+                                          if _k_actual > 0 else {n: torch.zeros_like(m) for n, m in maskmgr.masks.items()})
+                            _sel_revive = (_pgd_topk_mask(_pgd_imps, _revive_cand, _k_actual, True, _pgd_dev, _pgd_use_fsdp, _pgd_lo, _pgd_hi)
+                                           if _k_actual > 0 else {n: torch.zeros_like(m) for n, m in maskmgr.masks.items()})
                         for _n in maskmgr.named_params:
                             _old = maskmgr.masks[_n]
                             _new = _old.clone()
@@ -5086,7 +5188,7 @@ def _collate(batch, pad_token_id=0):
             t = b[k]
             if isinstance(t, list):
                 t = torch.tensor(t, dtype=torch.long)
-            pad_val = -100 if k == 'labels' else pad_token_id
+            pad_val = -100 if k == 'labels' else (0 if k == 'attention_mask' else pad_token_id)
             pad_len = max_len - t.shape[0]
             if pad_len > 0:
                 t = torch.cat([t, torch.full((pad_len,), pad_val, dtype=t.dtype)])
