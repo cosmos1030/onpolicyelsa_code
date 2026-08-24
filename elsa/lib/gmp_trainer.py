@@ -4583,6 +4583,21 @@ def globalprune_gmp(
                                                          _pgd_kl_cal_batch, _cand_masks, maskmgr, str(device),
                                                          kl_reduce=tr_kl_reduce, kl_quantile=tr_kl_quantile,
                                                          ref_cache=_pgd_kl_ref_cache)
+                                if _pgd_use_fsdp:
+                                    # _compute_tr_kl's forward pass is an FSDP collective (all_gather
+                                    # per unit), but `_kl` itself is computed locally per rank -- any
+                                    # floating-point discrepancy between ranks near the budget boundary
+                                    # (all_gather concatenation order, etc.) would make the bisection
+                                    # loop below take a DIFFERENT NUMBER of iterations (and therefore a
+                                    # different number of these collective forward calls) per rank,
+                                    # deadlocking every rank on the resulting mismatched call sequence.
+                                    # Broadcast rank 0's value so every rank's loop makes byte-identical
+                                    # decisions -- verified this was the actual cause of a real hang
+                                    # (both FSDP jobs stuck forever at the same PGD step, CPU-spinning).
+                                    import torch.distributed as _dist
+                                    _kl_t = torch.tensor([_kl], dtype=torch.float64, device=_pgd_dev)
+                                    _dist.broadcast(_kl_t, src=0)
+                                    _kl = _kl_t.item()
                                 return _kl
 
                             # Warm-started bisection -- identical shape to the
@@ -4738,6 +4753,18 @@ def globalprune_gmp(
                                                  _pgd_kl_cal_batch, _cand_masks, maskmgr, str(device),
                                                  kl_reduce=tr_kl_reduce, kl_quantile=tr_kl_quantile,
                                                  ref_cache=_pgd_kl_ref_cache)
+                        if _pgd_use_fsdp:
+                            # See the matching comment in _pgd_kl_at_nm: _kl is computed
+                            # locally per rank but _compute_tr_kl's forward pass is an FSDP
+                            # collective, so any rank-to-rank float discrepancy near the
+                            # budget boundary would desync the bisection loop's iteration
+                            # count across ranks and deadlock on the mismatched collective
+                            # call sequence. Broadcast rank 0's value so every rank decides
+                            # identically.
+                            import torch.distributed as _dist
+                            _kl_t = torch.tensor([_kl], dtype=torch.float64, device=_pgd_dev)
+                            _dist.broadcast(_kl_t, src=0)
+                            _kl = _kl_t.item()
                         torch.cuda.synchronize()
                         _pgd_kl_at_calls[0] += 1
                         _pgd_kl_at_time[0] += _time_dbg.time() - _t_call0
