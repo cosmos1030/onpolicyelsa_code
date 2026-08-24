@@ -27,6 +27,7 @@ SPARSITY=${1:?"Usage: <SPARSITY> [STEPS] [LR] [SPARSITY_TYPE]"}
 STEPS=${2:-2048}
 LR=${3:-1e-4}
 SPARSITY_TYPE=${4:-unstructured}
+PGD_INTERVAL=${5:-1}  # gmp_pgd_interval -- run PGD's uncapped reprojection only every Nth step instead of every step. Default 1 = every step (original behavior). Every prior attempt at PGD_INTERVAL=1 here crashed around step ~1650-1700 (Fatal Python error: none_dealloc / segfault, a GC-timing bug inside vLLM's C extension -- see scripts/patch_vllm_cumem_sleep.py) despite the mi=8/16/32 main sweep (which reprojects far less often) rarely hitting it -- try a larger value here to cut this script's per-step object/tensor churn proportionally.
 SPARSE_TRAIN_STEPS=$((STEPS - 1))
 SPARSITY_PCT=$(python3 -c "print(int(${SPARSITY}*100))")
 
@@ -106,6 +107,7 @@ $PYTHON main.py \
     --gmp_tr_enabled=false \
     --gmp_growth_schedule=cubic \
     --gmp_pgd=true \
+    --gmp_pgd_interval=${PGD_INTERVAL} \
     --gmp_save_path=/home1/doyoonkim/projects/elsa/models \
     --save_model=true \
     --push_to_hub=true \
