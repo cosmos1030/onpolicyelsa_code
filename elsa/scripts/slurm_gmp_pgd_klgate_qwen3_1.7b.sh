@@ -50,6 +50,7 @@ L1_LAMBDA=${18:-0.0}                # gmp_l1_lambda -- structured-L1 pre-shrink 
 ROLLOUT_INTERVAL=${19:-${MASK_INTERVAL}}  # gmp_onpolicy_kd_interval -- defaults to mask_interval (old behavior); set lower (e.g. half) to refresh the on-policy rollout more often than the mask changes, for staleness sensitivity checks under PGD
 KD_NSAMPLES=${20:-0}  # gmp_kd_nsamples -- 0 = full dataset (production); set small (e.g. 256) for fast debug/smoke-test tokenization instead of the full 40k-sample cache build
 CALIB_SIZE=${21:-4}  # gmp_pgd_kl_calib_size -- number of sequences in PGD's self-KL calibration batch (default 4). Larger dilutes the influence of any single near-deterministic/high-confidence token that would otherwise dominate the mean KL and collapse k_actual to 0.
+DEBUG_IMPORTANCE_HIST=${22:-false}  # gmp_pgd_debug_importance_hist -- purely diagnostic (dumps fisher*weight^2 quantile/density every 5 steps), costs ~0.6s/step amortized. Off by default; set true only when actively debugging PGD churn/threshold placement.
 NTP_LAMBDA=$(echo "$LOSS_WEIGHTS" | cut -d, -f1)
 KD_LAMBDA=$(echo "$LOSS_WEIGHTS" | cut -d, -f2)
 OPKD_LAMBDA=$(echo "$LOSS_WEIGHTS" | cut -d, -f3)
@@ -147,6 +148,7 @@ $PYTHON main.py \
     --gmp_pgd=true \
     --gmp_pgd_kl_budget=${KL_BUDGET} \
     --gmp_pgd_kl_calib_size=${CALIB_SIZE} \
+    --gmp_pgd_debug_importance_hist=${DEBUG_IMPORTANCE_HIST} \
     --gmp_pgd_skip_growth_step=true \
     --gmp_save_path=/home1/doyoonkim/projects/elsa/models \
     --save_model=true \
