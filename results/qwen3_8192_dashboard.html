@@ -2394,7 +2394,8 @@ const DB = {
         "dyncalib(EMA/self-gen calib) seqlen=2048 fair-comparison(731552/731845, static ALPS 710127와 seqlen 완전히 일치) 완료: math500=85.0(static 86.2 대비 -1.2), gpqa=36.4(-6.5), ifeval=66.5(-1.3), lcb=14.6(-5.5), gsm8k=79.9(-2.4), wt2/c4는 거의 동률 — seqlen 맞춰 공정 비교한 결과 dyncalib(EMA/self-gen refresh) 방식이 static ALPS보다 낫지 않고 전반적으로 소폭 열세로 확인됨.",
         "TR-GMP NTP+KD+OPKD, PGD self-KL budget(ao850trx/dirj26py/z3pyr7rx, 1×B200 컨테이너, lr=5e-5(s50/s60)·1e-4(s70), mi=32, tr_kl=0.02, --gmp_pgd_kl_budget=0.02 --gmp_pgd_skip_growth_step=true): 기존 uncapped/max_swap_frac PGD(733812 계열)와 달리 매 스텝 self-KL(pre||post-prune)을 작은 calibration batch로 측정해 예산 안에서만 prune/revive 개수를 bisection하는 새 메커니즘. s50 math500=87.2, s60=81.2, s70=68.0 — 세 sparsity 전부 안정적으로 학습 완료(NaN 없음, HF push 성공). 이 배치 도중 batch_size>1(로컬 배치 2)로 처리량을 올리려다 이 B200 컨테이너(flash-attn 2.8.3 + torch 2.7.1+cu128)에서만 나는 버그를 발견함: gradient checkpointing(activation recompute) + batch_size≥2 조합이 flash-attn backward에서 결정적으로 NaN을 내는 걸 torch.autograd.detect_anomaly로 격리 확인(패딩/varlen/데이터 내용과는 무관, attn_implementation='sdpa'로 우회하면 해결됨 — lib/utils.py get_llm()에 반영). 다만 이번 4개 런은 결국 안정성 우선으로 로컬 배치 1 + flash-attn 그대로 돌림. 같은 레시피의 2:4(N:M) 버전은 --gmp_pgd_kl_budget이 원래 N:M 미구현이던 걸 gmp_trainer.py에 새로 구현(_eligible_prune 기반 group-capped bisection)해서 처음 실전 투입 중, 진행 중.",
         "위 2:4 N:M kl_budget 첫 실전 런(eyv3mlfj) 완료: math500=64.6 — 같은 세팅 unstructured s50(87.2)보다는 낮지만 기존 uncapped-PGD 2:4(736212, 56.2)보다는 높음, ALPS 2:4 원샷(65.6)과는 거의 동률. NaN/크래시 없이 안정적으로 끝남 — N:M-aware self-KL bisection이 실전에서도 정상 작동함을 확인.",
-        "PGD 빈도 ablation 착수: 지금까지 PGD는 매 optimizer step마다 돌았는데(growth는 --gmp_mask_interval=32마다만), GraNet(VITA-Group, NeurIPS'21) 코드를 참고해보니 그쪽은 growth event 자체가 --update-frequency(예: 1000 step)마다 훨씬 드물게 크게 일어나는 설계라 대비되길래, 새로 --gmp_pgd_interval 플래그를 추가(gmp_trainer.py, 기본값 1=매 스텝, 기존 동작 그대로)해서 --gmp_pgd_interval=8(8스텝마다만 PGD)로 나머지는 위와 동일 세팅(mi=32, kl_budget=0.02) unstructured s50/s60/s70 + 2:4 4개를 재실행 중. self-KL budget이 이미 매 이벤트당 churn 크기를 캡하고 있어서, 빈도를 낮춰도(즉 이벤트당 조금 더 크게, 덜 자주) 총 churn량이 비슷하게 수렴하는지 vs 매 스텝 촘촘한 캡이 더 나은지 비교 예정."
+        "PGD 빈도 ablation 착수: 지금까지 PGD는 매 optimizer step마다 돌았는데(growth는 --gmp_mask_interval=32마다만), GraNet(VITA-Group, NeurIPS'21) 코드를 참고해보니 그쪽은 growth event 자체가 --update-frequency(예: 1000 step)마다 훨씬 드물게 크게 일어나는 설계라 대비되길래, 새로 --gmp_pgd_interval 플래그를 추가(gmp_trainer.py, 기본값 1=매 스텝, 기존 동작 그대로)해서 --gmp_pgd_interval=8(8스텝마다만 PGD)로 나머지는 위와 동일 세팅(mi=32, kl_budget=0.02) unstructured s50/s60/s70 + 2:4 4개를 재실행 중. self-KL budget이 이미 매 이벤트당 churn 크기를 캡하고 있어서, 빈도를 낮춰도(즉 이벤트당 조금 더 크게, 덜 자주) 총 churn량이 비슷하게 수렴하는지 vs 매 스텝 촘촘한 캡이 더 나은지 비교 예정.",
+        "PGD 빈도 ablation(pgd_interval=8) 결과: 3w6q8hdw/cuj96q25/eddurngl/3zf5xodk 4개 전부 NaN 없이 완료. math500 기준 pgd_interval=1(매 스텝) 대비 s50 87.2→86.8(-0.4), s60 81.2→81.6(+0.4), s70 68.0→68.0(동일), 2:4 64.6→64.0(-0.6) — 전부 오차범위 안이라 사실상 무차이. 즉 self-KL budget이 이미 이벤트당 churn을 캡하고 있으면 PGD를 8배 덜 자주 돌려도(매 스텝→8스텝마다) 성능 손해가 없다는 게 확인됨 — 매 스텝 self-KL bisection이 가장 비싼 연산이라는 걸 감안하면(다른 세션 커밋 메시지 기준 ~5s/step) 실질적인 학습 속도 이득. 앞으로는 pgd_interval=8을 기본값으로 써도 될 것 같음."
       ],
       "S50": [
         {
@@ -2815,6 +2816,31 @@ const DB = {
           "wt2": 11.0,
           "c4": null,
           "steps": 2048
+        },
+        {
+          "badge": "tropkd",
+          "name": "TR-GMP NTP+KD+OPKD (PGD, self-KL budget, pgd_interval=8)",
+          "sub": "nostrip8192 · lr=5e-5 mi=32 tr_kl=0.02, PGD self-KL budget=0.02 skip-growth-step, PGD reprojects only every 8 steps (growth still every 32) · 1×B200 container (flash-attn, bs=1)",
+          "wbid": "3w6q8hdw",
+          "wb_project": "reasoning_qwen3_4b_nostrip8192",
+          "hf": "cosmos1030/gmp-kd3e-1-s50pct-lr5e-5_20260824_204908",
+          "math": 86.8,
+          "gpqa": 47.0,
+          "ifeval": 73.0,
+          "lcb": 24.6,
+          "gsm8k": 84.2,
+          "arcc": 51.5,
+          "arce": 77.9,
+          "boolq": 83.8,
+          "hella": 64.3,
+          "ob": 40.0,
+          "piqa": 73.1,
+          "race": 40.9,
+          "rte": 72.2,
+          "wino": 64.9,
+          "wt2": 10.89,
+          "c4": null,
+          "steps": 2048
         }
       ],
       "S60": [
@@ -3212,6 +3238,31 @@ const DB = {
           "rte": 72.2,
           "wino": 61.9,
           "wt2": 13.3,
+          "c4": null,
+          "steps": 2048
+        },
+        {
+          "badge": "tropkd",
+          "name": "TR-GMP NTP+KD+OPKD (PGD, self-KL budget, pgd_interval=8)",
+          "sub": "nostrip8192 · lr=5e-5 mi=32 tr_kl=0.02, PGD self-KL budget=0.02 skip-growth-step, PGD reprojects only every 8 steps (growth still every 32) · 1×B200 container (flash-attn, bs=1)",
+          "wbid": "cuj96q25",
+          "wb_project": "reasoning_qwen3_4b_nostrip8192",
+          "hf": "cosmos1030/gmp-kd3e-1-s60pct-lr5e-5_20260824_205132",
+          "math": 81.6,
+          "gpqa": 38.4,
+          "ifeval": 59.1,
+          "lcb": 21.6,
+          "gsm8k": 79.8,
+          "arcc": 44.1,
+          "arce": 72.1,
+          "boolq": 82.8,
+          "hella": 57.8,
+          "ob": 37.6,
+          "piqa": 70.9,
+          "race": 38.9,
+          "rte": 68.6,
+          "wino": 62.4,
+          "wt2": 13.35,
           "c4": null,
           "steps": 2048
         }
@@ -3635,6 +3686,31 @@ const DB = {
           "wt2": 17.07,
           "c4": null,
           "steps": 2048
+        },
+        {
+          "badge": "tropkd",
+          "name": "TR-GMP NTP+KD+OPKD (PGD, self-KL budget, pgd_interval=8)",
+          "sub": "nostrip8192 · lr=1e-4 mi=32 tr_kl=0.02, PGD self-KL budget=0.02 skip-growth-step, PGD reprojects only every 8 steps (growth still every 32) · 1×B200 container (flash-attn, bs=1)",
+          "wbid": "eddurngl",
+          "wb_project": "reasoning_qwen3_4b_nostrip8192",
+          "hf": "cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260824_210546",
+          "math": 68.0,
+          "gpqa": 31.3,
+          "ifeval": 38.1,
+          "lcb": 4.9,
+          "gsm8k": 69.3,
+          "arcc": 39.0,
+          "arce": 63.1,
+          "boolq": 78.9,
+          "hella": 50.4,
+          "ob": 32.2,
+          "piqa": 66.1,
+          "race": 37.2,
+          "rte": 63.9,
+          "wino": 58.7,
+          "wt2": 16.67,
+          "c4": null,
+          "steps": 2048
         }
       ],
       "N24": [
@@ -4033,6 +4109,31 @@ const DB = {
           "rte": 71.5,
           "wino": 60.5,
           "wt2": 12.41,
+          "c4": null,
+          "steps": 2048
+        },
+        {
+          "badge": "tropkd",
+          "name": "TR-GMP NTP+KD+OPKD (PGD, self-KL budget, pgd_interval=8)",
+          "sub": "nostrip8192, 2:4 semi-structured (no lasso) · lr=1e-4 mi=32 tr_kl=0.02, PGD self-KL budget=0.02 skip-growth-step, PGD reprojects only every 8 steps (growth still every 32) · 1×B200 container (flash-attn, bs=1)",
+          "wbid": "3zf5xodk",
+          "wb_project": "reasoning_qwen3_4b_nostrip8192",
+          "hf": "cosmos1030/gmp-kd3e-1-s50pct-lr1e-4_20260824_211520",
+          "math": 64.0,
+          "gpqa": 30.3,
+          "ifeval": 42.0,
+          "lcb": 10.1,
+          "gsm8k": 72.7,
+          "arcc": 43.3,
+          "arce": 71.1,
+          "boolq": 77.4,
+          "hella": 58.1,
+          "ob": 37.8,
+          "piqa": 73.4,
+          "race": 36.9,
+          "rte": 68.6,
+          "wino": 60.9,
+          "wt2": 12.51,
           "c4": null,
           "steps": 2048
         }
