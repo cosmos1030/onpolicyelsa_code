@@ -4973,6 +4973,16 @@ def globalprune_gmp(
                             _pgd_last_flip_step[_n] = torch.where(
                                 _flipped, torch.full_like(_pgd_last_flip_step[_n], pgd_debug_repeat_window), _pgd_last_flip_step[_n])
                         maskmgr.masks[_n] = _new
+                    # This branch (pgd_kl_budget<=0, not N:M) previously applied
+                    # this swap with zero logging -- silent to the point that a
+                    # 128-step pilot run's complete absence of any "[pgd*]" log
+                    # line was first (wrongly) read as "PGD never fired" instead
+                    # of "this is the one branch that doesn't log". Mirroring the
+                    # elif branch's log line here so uncapped PGD is as
+                    # observable as the KL-gated path.
+                    if is_main_process:
+                        logging.info(f"  [pgd_uncapped] applied revivals={_pgd_revivals} prunings={_pgd_prunings} "
+                                     f"post_sparsity={maskmgr.current_sparsity():.4f} (step={step})")
                     if pgd_debug_repeat_swap and use_wandb and is_main_process:
                         wandb.log({"pgd/repeat_swap_frac": (_pgd_repeat_flips / _pgd_total_flips) if _pgd_total_flips > 0 else 0.0,
                                    "pgd/total_flips": _pgd_total_flips}, step=step)
