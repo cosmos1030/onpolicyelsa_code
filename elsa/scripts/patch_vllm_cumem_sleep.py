@@ -37,7 +37,23 @@ Adding torch.cuda.synchronize() right before gc.collect()/empty_cache() is a
 pure wait -- it cannot change results, only close the race window by
 guaranteeing the other allocator's pending CUDA work is done before we free.
 
-Both patches are no-ops for a plain single-allocator vLLM deployment (a
+Fix 3 (not upstream -- ELSA-local): symmetric counterpart to Fix 2, on the
+wake_up() side. wake_up() does a raw driver-level cuMemMap/cuMemSetAccess
+(create_and_map()) and a raw libcudart.cudaMemcpy() on bare pointers -- like
+sleep()'s unmap_and_release()/empty_cache(), neither goes through PyTorch's
+caching allocator or its stream bookkeeping, so neither is ordered against
+the co-located training model's in-flight kernels on the same GPU/CUDA
+context. Bracketing the wake_up() loop with torch.cuda.synchronize() closes
+the race window on both sides: the pre-sync ensures no training kernel is
+still touching memory while the driver remaps address space back in, and the
+post-sync ensures the raw memcpy has actually finished before the caller
+resumes issuing training-side kernels that may depend on it. Found
+2026-08-24 after Fix 2 alone did not fully eliminate a residual, sporadic
+(~1/9 runs) segfault -- e.g. surfacing later inside an unrelated
+torch.nn.functional.kl_div call, consistent with async-reported GPU memory
+corruption rather than a Python-level bug.
+
+All three patches are no-ops for a plain single-allocator vLLM deployment (a
 normal vLLM server owning its whole GPU) -- they only matter for this
 co-located, memory-shared setup.
 """
@@ -124,6 +140,54 @@ def main() -> int:
         src = src.replace(old_tail, new_tail, 1)
         changed = True
         print(f"[fix 2] applied to {path}")
+
+    # --- Fix 3: synchronize() bracketing wake_up()'s create_and_map/cudaMemcpy loop ---
+    if re.search(r"def wake_up.*?\n(?:.*\n){0,6}?\s*torch\.cuda\.synchronize\(\)\s*\n\s*for ptr, data in self\.pointer_to_data\.items\(\):", src, re.DOTALL):
+        print(f"[fix 3] already applied in {path}")
+    else:
+        old_wake_head = (
+            "        for ptr, data in self.pointer_to_data.items():\n"
+            "            if tags is None or data.tag in tags:\n"
+            "                handle = data.handle\n"
+            "                create_and_map(handle)\n"
+            "                if data.cpu_backup_tensor is not None:\n"
+            "                    cpu_backup_tensor = data.cpu_backup_tensor\n"
+            "                    if cpu_backup_tensor is not None:\n"
+            "                        size_in_bytes = cpu_backup_tensor.numel(\n"
+            "                        ) * cpu_backup_tensor.element_size()\n"
+            "                        cpu_ptr = cpu_backup_tensor.data_ptr()\n"
+            "                        libcudart.cudaMemcpy(ptr, cpu_ptr, size_in_bytes)\n"
+            "                        data.cpu_backup_tensor = None\n"
+        )
+        if src.count(old_wake_head) != 1:
+            print(f"[fix 3] FAILED: expected wake_up() body text not found (or not unique) "
+                  f"in {path}. Aborting without changes.", file=sys.stderr)
+            return 1
+        new_wake_head = (
+            "        # Manually patched (not upstream, see scripts/patch_vllm_cumem_sleep.py,\n"
+            "        # Fix 3): symmetric counterpart to sleep()'s synchronize(). Neither\n"
+            "        # create_and_map() (raw cuMemMap) nor the raw cudaMemcpy below go\n"
+            "        # through PyTorch's caching allocator or stream bookkeeping, so\n"
+            "        # neither is ordered against the co-located training model's\n"
+            "        # in-flight kernels on the same GPU/CUDA context.\n"
+            "        torch.cuda.synchronize()\n"
+            "        for ptr, data in self.pointer_to_data.items():\n"
+            "            if tags is None or data.tag in tags:\n"
+            "                handle = data.handle\n"
+            "                create_and_map(handle)\n"
+            "                if data.cpu_backup_tensor is not None:\n"
+            "                    cpu_backup_tensor = data.cpu_backup_tensor\n"
+            "                    if cpu_backup_tensor is not None:\n"
+            "                        size_in_bytes = cpu_backup_tensor.numel(\n"
+            "                        ) * cpu_backup_tensor.element_size()\n"
+            "                        cpu_ptr = cpu_backup_tensor.data_ptr()\n"
+            "                        libcudart.cudaMemcpy(ptr, cpu_ptr, size_in_bytes)\n"
+            "                        data.cpu_backup_tensor = None\n"
+            "        torch.cuda.synchronize()\n"
+        )
+        src = src.replace(old_wake_head, new_wake_head, 1)
+        changed = True
+        print(f"[fix 3] applied to {path}")
 
     if changed:
         open(path, "w").write(src)

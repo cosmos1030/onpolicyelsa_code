@@ -13,10 +13,17 @@
 exec 2>&1
 
 # lighteval-only eval — resumes existing wandb run
-# Usage: sbatch slurm_lighteval_only.sh <MODEL_PATH> <WANDB_RUN_ID>
+# Usage: sbatch slurm_lighteval_only.sh <MODEL_PATH> <WANDB_RUN_ID> [BENCHMARKS] [PROFILE]
+# BENCHMARKS: optional comma-separated subset (e.g. ifeval) to re-run just
+#   one benchmark that failed in the original run, instead of redoing all.
+# PROFILE: quick (default, matches every sweep job's original 8192-budget
+#   eval_profile=quick) or official/full.
 
-MODEL_PATH=${1:?"Usage: sbatch slurm_lighteval_only.sh <MODEL_PATH> <WANDB_RUN_ID>"}
-WANDB_RUN_ID=${2:?"Usage: sbatch slurm_lighteval_only.sh <MODEL_PATH> <WANDB_RUN_ID>"}
+MODEL_PATH=${1:?"Usage: sbatch slurm_lighteval_only.sh <MODEL_PATH> <WANDB_RUN_ID> [BENCHMARKS] [PROFILE]"}
+WANDB_RUN_ID=${2:?"Usage: sbatch slurm_lighteval_only.sh <MODEL_PATH> <WANDB_RUN_ID> [BENCHMARKS] [PROFILE]"}
+BENCHMARKS=${3:-}
+PROFILE=${4:-quick}
+WANDB_PROJECT=${5:-reasoning_qwen3_1.7b}
 
 PYTHON=/home1/doyoonkim/miniconda3/envs/rac/bin/python
 
@@ -43,12 +50,14 @@ cd /home1/doyoonkim/projects/elsa
 
 $PYTHON scripts/eval_full.py \
     --model_path "$MODEL_PATH" \
-    --wandb_project reasoning_qwen3_1.7b \
+    --wandb_project "$WANDB_PROJECT" \
     --wandb_run_id "$WANDB_RUN_ID" \
     --method auto \
     --skip_ppl \
     --skip_zeroshot \
     --gpu_util 0.85 \
-    --tp_size 1
+    --tp_size 1 \
+    --profile "$PROFILE" \
+    ${BENCHMARKS:+--benchmarks="$BENCHMARKS"}
 
 echo "##### END #####"
