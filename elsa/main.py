@@ -1132,7 +1132,14 @@ if __name__ == '__main__':
     flags.DEFINE_string('gmp_hidden_mask', 'cot', 'Mask for hidden matching: cot (labels!=-100) or all (attention_mask, prompt+CoT).')
     flags.DEFINE_string('gmp_hidden_layers', 'final', 'Layer scope: final (last layer only) or anneal_all_to_final (coarse-to-fine).')
     flags.DEFINE_float('gmp_onpolicy_kd_lambda', 0.0, 'Weight for on-policy KD loss in GMP (0 = disabled).')
-    flags.DEFINE_integer('gmp_onpolicy_kd_interval', 1, 'Optimizer steps between on-policy KD generations.')
+    flags.DEFINE_integer('gmp_onpolicy_kd_interval', 1, 'Optimizer steps between on-policy KD generations. '
+                          'NOTE: while the vLLM rollout pool is active (the normal on-policy KD path), this flag does NOT '
+                          'control how often fresh rollouts are generated -- the pool is refilled once every '
+                          '--gmp_mask_interval steps (mask_interval * grad_accum rollouts at a time, see gmp_trainer.py\'s '
+                          '"OPKD vLLM pool refilled" block) and drawn down one batch per step until exhausted, regardless '
+                          'of this value. This flag only gates (a) the grad-conflict-filter snapshot check, and (b) a '
+                          'fallback "force a generation this step" trigger used when the pool path is not in effect. '
+                          'Real staleness of on-policy rollouts is bounded by --gmp_mask_interval, not by this flag.')
     flags.DEFINE_integer('gmp_onpolicy_max_new_tokens', 256, 'Max new tokens for on-policy student generation.')
     flags.DEFINE_integer('gmp_onpolicy_kd_topk', 0, 'Top-K for on-policy KL divergence (0 = full vocab).')
     flags.DEFINE_float('gmp_onpolicy_temperature', 0.6, 'Sampling temperature for on-policy generation.')

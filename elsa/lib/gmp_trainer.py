@@ -2768,7 +2768,14 @@ def globalprune_gmp(
             collate_fn=collate_prompts(tokenizer.pad_token_id or 0),
         )
         prompt_iter = _infinite(_prompt_loader)
-        logging.info(f"  On-policy KD: lambda={onpolicy_lambda}, interval={onpolicy_interval}, "
+        # `interval` printed here is gmp_onpolicy_kd_interval, which does NOT govern
+        # rollout freshness while the vLLM pool path is active (the normal case) --
+        # the pool is refilled once every gmp_mask_interval steps regardless of this
+        # value (see the "OPKD vLLM pool refilled" log line for the value that
+        # actually matters). Logged anyway since it does gate the grad-conflict-filter
+        # snapshot and the no-pool fallback path.
+        logging.info(f"  On-policy KD: lambda={onpolicy_lambda}, interval={onpolicy_interval} (vLLM-pool cadence is "
+                     f"gmp_mask_interval={mask_interval}, not this value), "
                      f"max_new_tokens={onpolicy_max_new}, topk={onpolicy_topk}")
 
     _opkd_vllm_engine = None
