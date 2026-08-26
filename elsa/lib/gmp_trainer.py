@@ -2596,6 +2596,7 @@ def globalprune_gmp(
     pgd_kl_calib_seqlen = max(1, getattr(FLAGS, 'gmp_pgd_kl_calib_seqlen', 512))
     pgd_kl_bisect_iters = max(1, getattr(FLAGS, 'gmp_pgd_kl_bisect_iters', 6))
     pgd_skip_growth_step = getattr(FLAGS, 'gmp_pgd_skip_growth_step', False)  # skip PGD on the exact step growth just fired, so the model trains at least one step under the mask growth decided before PGD can touch it again
+    pgd_post_target_only = getattr(FLAGS, 'gmp_pgd_post_target_only', False)  # isolate PGD's post-target-maintenance role from its during-growth-ramp role -- see gate check at the main PGD condition below
     pgd_interval = max(1, getattr(FLAGS, 'gmp_pgd_interval', 1))  # only run PGD's reprojection every Nth step (default 1 = every step, prior behavior) -- decouples PGD's own cadence from mask_interval's growth cadence
     _pgd_kl_cal_batch = None  # small/short batch, refreshed every mask_interval steps (see below), reused every PGD step in between
     _pgd_scratch   = {}  # name -> preallocated fp32 buffer, reused in-place every PGD step (see below)
@@ -4371,7 +4372,8 @@ def globalprune_gmp(
         # in-place path does not special-case.
         if (pgd_enabled and step > dense_warmup_steps and not math.isnan(grad_norm) and not math.isinf(grad_norm)
                 and step % pgd_interval == 0
-                and not (pgd_skip_growth_step and step % mask_interval == 0)):
+                and not (pgd_skip_growth_step and step % mask_interval == 0)
+                and (not pgd_post_target_only or tr_reached or fixed_mask or not tr_enabled)):
             _pgd_revivals = 0
             _pgd_prunings = 0
             _pgd_use_fsdp = _FSDP_AVAILABLE and fsdp_model is not None
