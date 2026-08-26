@@ -2499,7 +2499,8 @@ const DB = {
         "PGD 빈도 ablation 착수: 지금까지 PGD는 매 optimizer step마다 돌았는데(growth는 --gmp_mask_interval=32마다만), GraNet(VITA-Group, NeurIPS'21) 코드를 참고해보니 그쪽은 growth event 자체가 --update-frequency(예: 1000 step)마다 훨씬 드물게 크게 일어나는 설계라 대비되길래, 새로 --gmp_pgd_interval 플래그를 추가(gmp_trainer.py, 기본값 1=매 스텝, 기존 동작 그대로)해서 --gmp_pgd_interval=8(8스텝마다만 PGD)로 나머지는 위와 동일 세팅(mi=32, kl_budget=0.02) unstructured s50/s60/s70 + 2:4 4개를 재실행 중. self-KL budget이 이미 매 이벤트당 churn 크기를 캡하고 있어서, 빈도를 낮춰도(즉 이벤트당 조금 더 크게, 덜 자주) 총 churn량이 비슷하게 수렴하는지 vs 매 스텝 촘촘한 캡이 더 나은지 비교 예정.",
         "PGD 빈도 ablation(pgd_interval=8) 결과: 3w6q8hdw/cuj96q25/eddurngl/3zf5xodk 4개 전부 NaN 없이 완료. math500 기준 pgd_interval=1(매 스텝) 대비 s50 87.2→86.8(-0.4), s60 81.2→81.6(+0.4), s70 68.0→68.0(동일), 2:4 64.6→64.0(-0.6) — 전부 오차범위 안이라 사실상 무차이. 즉 self-KL budget이 이미 이벤트당 churn을 캡하고 있으면 PGD를 8배 덜 자주 돌려도(매 스텝→8스텝마다) 성능 손해가 없다는 게 확인됨 — 매 스텝 self-KL bisection이 가장 비싼 연산이라는 걸 감안하면(다른 세션 커밋 메시지 기준 ~5s/step) 실질적인 학습 속도 이득. 앞으로는 pgd_interval=8을 기본값으로 써도 될 것 같음.",
         "GRPO / IPO 사후-파인튜닝 실험 9건 추가 (pruning-induced overthinking 분석 후속): (1) TR-GMP-s70(job 41346, 69.6%) 위에 GRPO 200 steps(OpenThoughts3-math 20k, lighteval accuracy+format+length-conditional-on-correct 리워드, vLLM 0.8.4 격리 env) — math500 69.6→70.8, gpqa 동일, ifeval +6.3, gsm8k +6.3, 전 벤치마크 저하 없음. 같은 체크포인트에 IPO(UltraFeedback-binarized, LoRA, lr=5e-6)도 math500 69.6→72.4, gpqa +5.5로 개선. (2) ALPS→SFT-s70-lr1e-4(job 719771, 66.2%)에 IPO lr 스윕 3개(1e-6/5e-6/2e-5): lr≤5e-6은 math500 66.2→67.4로 소폭 개선(gpqa/lcb/gsm8k도 대체로 개선), lr=2e-5는 math500 57.2·gsm8k 51.2·ifeval 12.4로 전 벤치마크 붕괴 — IPO가 lr에 매우 민감함을 확인. (3) s50/s60 TR-GMP·ALPS→SFT 각 최고 체크포인트에 IPO(lr=5e-6) 적용: s50은 math500 기준 두 계열 다 소폭 개선(+0.6)이지만 ifeval/gsm8k는 뚜렷이 개선(+3~5pp), gpqa만 소폭 하락. s60은 TR-GMP는 math500만 소폭 하락(-1.2)하고 gpqa/ifeval/gsm8k는 개선되는 반면, ALPS→SFT-s60은 거의 전 벤치마크에서 flat~소폭 하락(유일하게 순이득이 불분명한 조합). GRPO/IPO ablation(length reward 제거) 실험 진행 중 — 결과 나오면 반영 예정. 상세 학습곡선/paired-length 분석은 별도 아티팩트(GRPO Overthinking Fix, https://claude.ai/code/artifact/7a52933b-952b-47c8-a77e-87882221f8b7) 참조.",
-        "1.7B에서 돌던 8-job PGD-KL-gate 스윕(mi=32, kl_budget=999로 사실상 uncapped이지만 self-KL 로깅용으로 큰 값을 준 트릭 — 진짜 uncapped 분기가 KL을 안 재는 버그를 우회, pgd_interval=8)을 4B로 이식해 이 B200 컨테이너에서 재현. 처음엔 README의 'GPU 1장' 기술을 믿고 순차 큐로 시작했으나 실제로는 B200 4장이 전부 유휴 상태였음을 확인, GPU당 1잡씩 진짜 4-way 병렬(b200_scripts/run_gmp_pgd_klgate_4b_parallel.sh, CUDA_VISIBLE_DEVICES 핀닝)로 전환. wave1(growth 중 PGD 상시 작동, p6aoj9p1/sx0kxtia/b33zm2nt/zdddu9jf) 4건 전부 학습 2048step+lighteval 5종+zero-shot 9종+HF push까지 정상 완료: s50=85.0, s60=79.2, s70=71.0, s50(2:4)=68.8 — 같은 mi=32 조건의 이전 kl_budget=0.02(진짜 캡, ao850trx/dirj26py/z3pyr7rx) 대비 s50/s60/s70 전부 소폭 열세(87.2→85.0, 81.2→79.2, 68.0→71.0만 근소 우세)로 사실상 오차범위 내 — kl_budget=999(로깅용 트릭)가 실질적으로 uncapped PGD와 동등하게 작동한다는 걸 시사. 특이사항: 4개 잡 전부 학습·eval·HF업로드가 끝난 '직후' 파이썬 인터프리터 종료 단계에서 CUDA allocator 관련 크래시(c10::Error 'Trying to free a pointer not allocated here' 2건, Segmentation fault 1건, 전부 core dumped) — 실제 산출물(체크포인트/eval결과/wandb)에는 영향 없는 teardown-only 크래시로 확인, 다만 이 B200 4-way 병렬 실행에서 처음 관측된 패턴이라 원인 미조사(vLLM CuMemAllocator + 동시 프로세스 조합 의심). wave2(post_target_only=true 4건, 같은 세팅에 growth 완료 후에만 PGD 작동) 진행 중."
+        "1.7B에서 돌던 8-job PGD-KL-gate 스윕(mi=32, kl_budget=999로 사실상 uncapped이지만 self-KL 로깅용으로 큰 값을 준 트릭 — 진짜 uncapped 분기가 KL을 안 재는 버그를 우회, pgd_interval=8)을 4B로 이식해 이 B200 컨테이너에서 재현. 처음엔 README의 'GPU 1장' 기술을 믿고 순차 큐로 시작했으나 실제로는 B200 4장이 전부 유휴 상태였음을 확인, GPU당 1잡씩 진짜 4-way 병렬(b200_scripts/run_gmp_pgd_klgate_4b_parallel.sh, CUDA_VISIBLE_DEVICES 핀닝)로 전환. wave1(growth 중 PGD 상시 작동, p6aoj9p1/sx0kxtia/b33zm2nt/zdddu9jf) 4건 전부 학습 2048step+lighteval 5종+zero-shot 9종+HF push까지 정상 완료: s50=85.0, s60=79.2, s70=71.0, s50(2:4)=68.8 — 같은 mi=32 조건의 이전 kl_budget=0.02(진짜 캡, ao850trx/dirj26py/z3pyr7rx) 대비 s50/s60/s70 전부 소폭 열세(87.2→85.0, 81.2→79.2, 68.0→71.0만 근소 우세)로 사실상 오차범위 내 — kl_budget=999(로깅용 트릭)가 실질적으로 uncapped PGD와 동등하게 작동한다는 걸 시사. 특이사항: 4개 잡 전부 학습·eval·HF업로드가 끝난 '직후' 파이썬 인터프리터 종료 단계에서 CUDA allocator 관련 크래시(c10::Error 'Trying to free a pointer not allocated here' 2건, Segmentation fault 1건, 전부 core dumped) — 실제 산출물(체크포인트/eval결과/wandb)에는 영향 없는 teardown-only 크래시로 확인, 다만 이 B200 4-way 병렬 실행에서 처음 관측된 패턴이라 원인 미조사(vLLM CuMemAllocator + 동시 프로세스 조합 의심). wave2(post_target_only=true 4건, 같은 세팅에 growth 완료 후에만 PGD 작동) 진행 중.",
+        "wave2(post_target_only=true, pbhk3dgr/x620bou3/v30a61kd/2gg9bqyx) 4건 전부 완료: s50=86.0, s60=79.2, s70=70.2, s50(2:4)=55.2 — wave1(PGD가 growth 중에도 상시 작동, 85.0/79.2/71.0/68.8)과 비교하면 unstructured 3개는 사실상 무차이(±1점 이내, s60은 79.2로 완전 동일)인 반면, **2:4만 크게 갈림**(55.2 vs 68.8, -13.6) — post_target_only=true는 growth 램프 도중(아직 목표 sparsity 도달 전) PGD 재투영을 꺼두는데, N:M 제약 하에서는 growth 중간 단계의 PGD 재투영이 unstructured보다 훨씬 중요한 역할을 하는 것으로 보임(그룹 단위 정확히 2개 유지해야 하는 제약 때문에 growth 도중에도 그룹별 재배치가 꼭 필요한 듯). unstructured에서는 반대로 self-KL budget이 이미 event당 churn을 캡하고 있어서 growth-중 PGD를 꺼도(post_target_only) 손해가 거의 없다는 걸 시사 — pgd_interval=8 ablation에서 봤던 'budget이 이미 캡하고 있으면 빈도를 줄여도 무차이' 패턴과 궤를 같이 함."
       ],
       "S50": [
         {
@@ -2995,6 +2996,31 @@ const DB = {
           "wt2": 10.85,
           "c4": null,
           "steps": 2048
+        },
+        {
+          "badge": "tropkd",
+          "name": "TR-GMP NTP+KD+OPKD (PGD, self-KL budget, pgd_interval=8, post_target_only)",
+          "sub": "nostrip8192 · lr=5e-5 mi=32 tr_kl=0.01, --gmp_pgd_kl_budget=999 (uncapped, logged), pgd_interval=8, --gmp_pgd_post_target_only=true (PGD only reprojects once growth reaches final_sparsity) · 1×B200 container, 4-GPU parallel batch",
+          "wbid": "pbhk3dgr",
+          "wb_project": "reasoning_qwen3_4b_nostrip8192",
+          "hf": "cosmos1030/gmp-kd3e-1-s50pct-lr5e-5_20260827_055110",
+          "math": 86.0,
+          "gpqa": 39.4,
+          "ifeval": 70.1,
+          "lcb": 23.9,
+          "gsm8k": 83.6,
+          "arcc": 50.2,
+          "arce": 77.5,
+          "boolq": 84.0,
+          "hella": 64.6,
+          "ob": 39.8,
+          "piqa": 73.5,
+          "race": 40.0,
+          "rte": 70.4,
+          "wino": 65.7,
+          "wt2": 10.84,
+          "c4": null,
+          "steps": 2048
         }
       ],
       "S60": [
@@ -3467,6 +3493,31 @@ const DB = {
           "rte": 70.0,
           "wino": 64.8,
           "wt2": 12.39,
+          "c4": null,
+          "steps": 2048
+        },
+        {
+          "badge": "tropkd",
+          "name": "TR-GMP NTP+KD+OPKD (PGD, self-KL budget, pgd_interval=8, post_target_only)",
+          "sub": "nostrip8192 · lr=1e-4 mi=32 tr_kl=0.02, --gmp_pgd_kl_budget=999 (uncapped, logged), pgd_interval=8, --gmp_pgd_post_target_only=true (PGD only reprojects once growth reaches final_sparsity) · 1×B200 container, 4-GPU parallel batch",
+          "wbid": "x620bou3",
+          "wb_project": "reasoning_qwen3_4b_nostrip8192",
+          "hf": "cosmos1030/gmp-kd3e-1-s60pct-lr1e-4_20260827_060409",
+          "math": 79.2,
+          "gpqa": 33.8,
+          "ifeval": 49.9,
+          "lcb": 15.7,
+          "gsm8k": 80.6,
+          "arcc": 46.6,
+          "arce": 74.9,
+          "boolq": 83.4,
+          "hella": 58.9,
+          "ob": 39.0,
+          "piqa": 71.2,
+          "race": 38.3,
+          "rte": 70.0,
+          "wino": 63.2,
+          "wt2": 12.37,
           "c4": null,
           "steps": 2048
         }
@@ -4054,6 +4105,31 @@ const DB = {
           "wt2": 17.74,
           "c4": null,
           "steps": 2048
+        },
+        {
+          "badge": "tropkd",
+          "name": "TR-GMP NTP+KD+OPKD (PGD, self-KL budget, pgd_interval=8, post_target_only)",
+          "sub": "nostrip8192 · lr=1e-4 mi=32 tr_kl=0.02, --gmp_pgd_kl_budget=999 (uncapped, logged), pgd_interval=8, --gmp_pgd_post_target_only=true (PGD only reprojects once growth reaches final_sparsity) · 1×B200 container, 4-GPU parallel batch",
+          "wbid": "v30a61kd",
+          "wb_project": "reasoning_qwen3_4b_nostrip8192",
+          "hf": "cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260827_060349",
+          "math": 70.2,
+          "gpqa": 28.3,
+          "ifeval": 38.1,
+          "lcb": 5.6,
+          "gsm8k": 71.3,
+          "arcc": 38.9,
+          "arce": 61.7,
+          "boolq": 79.3,
+          "hella": 50.1,
+          "ob": 31.8,
+          "piqa": 67.1,
+          "race": 36.7,
+          "rte": 71.5,
+          "wino": 57.5,
+          "wt2": 16.26,
+          "c4": null,
+          "steps": 2048
         }
       ],
       "N24": [
@@ -4477,6 +4553,31 @@ const DB = {
           "rte": 69.7,
           "wino": 62.4,
           "wt2": 11.94,
+          "c4": null,
+          "steps": 2048
+        },
+        {
+          "badge": "tropkd",
+          "name": "TR-GMP NTP+KD+OPKD (PGD, self-KL budget, pgd_interval=8, post_target_only)",
+          "sub": "nostrip8192, 2:4 semi-structured · lr=1e-4 mi=32 tr_kl=0.02, --gmp_pgd_kl_budget=999 (uncapped, logged), pgd_interval=8, --gmp_pgd_post_target_only=true (PGD only reprojects once growth reaches final_sparsity) · 1×B200 container, 4-GPU parallel batch",
+          "wbid": "2gg9bqyx",
+          "wb_project": "reasoning_qwen3_4b_nostrip8192",
+          "hf": "cosmos1030/gmp-kd3e-1-s50pct-lr1e-4_20260827_060353",
+          "math": 55.2,
+          "gpqa": 27.8,
+          "ifeval": 31.4,
+          "lcb": 4.1,
+          "gsm8k": 64.7,
+          "arcc": 42.9,
+          "arce": 69.7,
+          "boolq": 78.4,
+          "hella": 57.8,
+          "ob": 35.8,
+          "piqa": 72.3,
+          "race": 37.0,
+          "rte": 73.6,
+          "wino": 60.9,
+          "wt2": 13.49,
           "c4": null,
           "steps": 2048
         }
