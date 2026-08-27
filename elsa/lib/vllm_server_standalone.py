@@ -63,7 +63,26 @@ def main():
     ap.add_argument('--authkey', required=True)
     args = ap.parse_args()
 
-    os.environ['CUDA_VISIBLE_DEVICES'] = args.cuda_devices
+    # args.cuda_devices is a RELATIVE index (or comma-list) computed by
+    # main.py as if CUDA_VISIBLE_DEVICES were unset (e.g. "0" for
+    # gmp_opkd_vllm_gpu_index=0). Map it through whatever CUDA_VISIBLE_DEVICES
+    # this subprocess already inherited from its parent -- blindly overwriting
+    # with the raw relative index (the old behavior) silently re-expands
+    # visibility to ALL physical GPUs and always lands on physical GPU0,
+    # which is invisible/harmless for a single job with no outer restriction
+    # (SLURM jobs, or this container running one job at a time) but collides
+    # multiple concurrent jobs' vLLM sidecars onto the same physical GPU0
+    # when the outer script partitions this container's 4 GPUs across jobs
+    # via CUDA_VISIBLE_DEVICES (e.g. b200_scripts/run_gmp_pgd_klgate_8b_fsdp2gpu_parallel.sh)
+    # -- reproduced live 2026-08-27: two concurrent 8B FSDP jobs' vLLM
+    # sidecars both landed on physical GPU0, OOMing a third process there.
+    _parent_cvd = os.environ.get('CUDA_VISIBLE_DEVICES')
+    if _parent_cvd:
+        _physical = [d.strip() for d in _parent_cvd.split(',') if d.strip()]
+        _selected = [_physical[int(i)] for i in args.cuda_devices.split(',')]
+        os.environ['CUDA_VISIBLE_DEVICES'] = ','.join(_selected)
+    else:
+        os.environ['CUDA_VISIBLE_DEVICES'] = args.cuda_devices
     os.environ.setdefault('VLLM_USE_V1', '0')
     os.environ.setdefault('TOKENIZERS_PARALLELISM', 'false')
     os.environ.setdefault('VLLM_HOST_IP', '127.0.0.1')
