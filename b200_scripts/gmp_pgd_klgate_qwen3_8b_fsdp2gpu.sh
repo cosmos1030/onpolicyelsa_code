@@ -32,15 +32,24 @@
 # Global batch = nproc_per_node(2) x gmp_batch_size(1) x gmp_grad_accum(4) = 8,
 # matching the reference runs ("2×1×4").
 #
-# gmp_opkd_vllm_gpu_mem=0.25 (not the log_cluster script's 0.15): first live
+# gmp_opkd_vllm_gpu_mem=0.20 (not the log_cluster script's 0.15): first live
 # attempt at 0.15 (2026-08-27, s50/s60 concurrent) crashed both jobs inside
 # vLLM's KV-cache init -- "total_gpu_memory(178.35GiB) x 0.15 = 26.75GiB"
 # budget was already short of vLLM's own weights+overhead (~32GB) by
-# ~5.5GiB, before any KV cache. Oddly, the next batch (s70/s50_24, same
-# flags, same host) launched cleanly -- looked timing-sensitive (vLLM's
-# memory profiling racing the co-resident FSDP rank0's initial unsharded
-# weight load on GPU0), not a hard wall, but bumped to 0.25 for headroom
-# rather than relying on that race resolving favorably every time.
+# ~5.5GiB, before any KV cache. That crash turned out to be a different bug
+# (CUDA_VISIBLE_DEVICES escape in vllm_server_standalone.py, fixed same day)
+# colliding two jobs' vLLM sidecars onto physical GPU0 -- once fixed, bumped
+# to 0.25 (44.5GiB) which cleared vLLM's own overhead fine on all 3
+# unstructured jobs. The 2:4 job then OOM'd separately: its FSDP rank0 alone
+# measured ~132GiB at the very first KD forward pass (globalprune_gmp's
+# initial full-vocab KL, gmp_trainer.py:3275) -- unexplained why 2:4's
+# baseline training footprint is so much larger than unstructured's at the
+# same point (candidate N:M group-importance bookkeeping is the suspect,
+# not confirmed) -- combined with vLLM's 44.5GiB that left only ~5GiB free
+# for a single 4.64GiB KD-loss tensor. Dropped to 0.20 (35.7GiB, still
+# clears vLLM's own ~32GiB weights+overhead with thin KV-cache room) to
+# give training more headroom; revisit if 2:4 OOMs again later in the run
+# (would point to genuine growth, not just a tight initial peak).
 
 
 #
@@ -163,7 +172,7 @@ $TORCHRUN --nproc_per_node=2 --master_port=${MASTER_PORT} main.py \
     --gmp_onpolicy_kd_interval=${ROLLOUT_INTERVAL} \
     --gmp_onpolicy_max_new_tokens=${OPD_GEN_LEN} \
     --gmp_opkd_prev_mask_teacher=false \
-    --gmp_opkd_vllm_gpu_mem=0.25 \
+    --gmp_opkd_vllm_gpu_mem=0.20 \
     --gmp_opkd_vllm_gpu_index=0 \
     --gmp_prompt_path="$OPD_PROMPT_PATH" \
     --gmp_tr_enabled=true \
