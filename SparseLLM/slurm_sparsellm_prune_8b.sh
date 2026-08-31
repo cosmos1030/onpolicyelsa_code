@@ -20,7 +20,7 @@ SPARSITY_PCT=$(python3 -c "print(int(${SPARSITY}*100))")
 
 PYTHON=/home1/doyoonkim/miniconda3/envs/rac/bin/python
 MODEL="/home1/doyoonkim/.cache/huggingface/hub/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218"
-DATA="/home1/doyoonkim/projects/elsa/data/ot3_fineweb_200k_qwen3.jsonl"
+DATA="/home1/doyoonkim/projects/elsa/data/ot3_fineweb_40k_qwen3_nostrip_8192.jsonl"  # matched to ALPS calibration set (was ot3_fineweb_200k_qwen3.jsonl, a different/uncleaned file)
 SAVE_BASE="/home1/doyoonkim/projects/elsa/models"
 SAVED_MODEL="${SAVE_BASE}/qwen3_8b_sparsellm_s${SPARSITY_PCT}pct"
 
@@ -76,6 +76,7 @@ $PYTHON qwen3_main.py \
     --gpu_util 0.9 \
     --tp_size 1 \
     --out_base "$LOCAL_JOB_BASE/eval_out" \
+    --profile quick \
     --push_to_hub
 
 EXIT_CODE=$?

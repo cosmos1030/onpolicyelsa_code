@@ -18,15 +18,27 @@ EVAL_FULL_SCRIPT = "/home1/doyoonkim/projects/elsa/scripts/eval_full.py"
 def get_ot_fw(nsamples, seed, seqlen, tokenizer, data_path):
     raw = load_dataset('json', data_files=data_path, split='train')
     random.seed(seed)
-    all_tokens = []
-    for sample in raw:
-        text = sample.get('text', '')
-        if not text:
-            continue
-        tokens = tokenizer(text, return_tensors='pt').input_ids
-        if tokens.shape[1] >= seqlen:
-            all_tokens.append(tokens)
 
+    # Tokenizing docs one at a time in a plain Python loop (the original
+    # approach here) measured at ~44s/300 docs (~100min for a 40k-doc
+    # corpus) -- same per-doc tokenizer() call, just spread across worker
+    # processes via batched .map(num_proc=...) instead of serialized in one
+    # amortizes it ~5x. Ported from ALPS/qwen3_alps.py's get_ot_fw, which hit
+    # and fixed the identical bottleneck on this same calibration data.
+    def _tok_batch(batch):
+        return {'input_ids': [
+            tokenizer(t).input_ids if t else [] for t in batch['text']
+        ]}
+    tokenized = raw.map(
+        _tok_batch, batched=True, batch_size=32, num_proc=16,
+        remove_columns=raw.column_names, desc='Tokenizing calibration docs',
+    )
+
+    all_tokens = []
+    for row in tokenized:
+        ids = row['input_ids']
+        if len(ids) >= seqlen:
+            all_tokens.append(torch.tensor(ids, dtype=torch.long).unsqueeze(0))
     assert len(all_tokens) > 0, "No samples longer than seqlen found"
 
     trainloader = []
@@ -38,14 +50,31 @@ def get_ot_fw(nsamples, seed, seqlen, tokenizer, data_path):
         tar[:, :-1] = -100
         trainloader.append((inp, tar))
 
-    # testenc: concatenate a chunk for PPL eval
-    full = tokenizer(' '.join(s.get('text', '') for s in list(raw)[:500]), return_tensors='pt')
+    # testenc: concatenate a chunk for PPL eval. Original approach here
+    # (join up to 500 raw docs into one string, then tokenize that single
+    # multi-million-char string in one call) hung for 2h19m with 0% GPU util
+    # on the same host-contention-sensitive pattern as the per-doc loop
+    # above, just without multiprocessing available to amortize it. Reuse
+    # the per-doc token ids already computed above instead of re-tokenizing
+    # anything -- concatenate them in dataset order until there's enough.
+    eval_ids = []
+    eval_len = 0
+    target_len = 256 * seqlen
+    for row in tokenized:
+        ids = row['input_ids']
+        if not ids:
+            continue
+        eval_ids.extend(ids)
+        eval_len += len(ids)
+        if eval_len >= target_len:
+            break
+    testenc_ids = torch.tensor(eval_ids, dtype=torch.long).unsqueeze(0)
 
     class TokenizerWrapper:
         def __init__(self, input_ids):
             self.input_ids = input_ids
 
-    return trainloader, TokenizerWrapper(full.input_ids[:, :256 * seqlen])
+    return trainloader, TokenizerWrapper(testenc_ids[:, :256 * seqlen])
 
 
 # ── Model ─────────────────────────────────────────────────────────────────────
@@ -303,6 +332,11 @@ def main():
     parser.add_argument("--gpu_util", type=float, default=0.9)
     parser.add_argument("--tp_size", type=int, default=1)
     parser.add_argument("--out_base", type=str, default="")
+    parser.add_argument('--profile', type=str, default='quick', choices=['official', 'quick'],
+                         help="lighteval profile passed through to eval_full.py: 'quick' (default, 8192 budget, "
+                              "matches the rest of the dashboard) or 'official' (32768 budget). eval_full.py's own "
+                              "default is now also 'quick' -- this flag's default just keeps the two in sync "
+                              "explicitly rather than relying on that.")
     parser.add_argument("--push_to_hub", action="store_true", help="Upload pruned model to HuggingFace Hub after saving")
     parser.add_argument("--hub_model_id", type=str, default=None, help="HF Hub repo id (e.g. username/model-name); auto-generated if not given")
     args = parser.parse_args()
@@ -387,6 +421,7 @@ def main():
                 "--gpu_util", str(args.gpu_util),
                 "--tp_size", str(args.tp_size),
                 "--flops", str(flops),
+                "--profile", args.profile,
             ]
             if args.out_base:
                 cmd += ["--out_base", args.out_base]

@@ -126,7 +126,7 @@ def get_ot_fw(nsamples, seed, seqlen, tokenizer, data_path, pack_short_docs=Fals
 
 # ── Model ─────────────────────────────────────────────────────────────────────
 
-def get_qwen3(model_path):
+def get_qwen3(model_path, seqlen=2048):
     def skip(*args, **kwargs):
         pass
     torch.nn.init.kaiming_uniform_ = skip
@@ -135,7 +135,7 @@ def get_qwen3(model_path):
     model = AutoModelForCausalLM.from_pretrained(
         model_path, torch_dtype='auto', trust_remote_code=True
     )
-    model.seqlen = 2048
+    model.seqlen = seqlen
     return model
 
 
@@ -171,11 +171,75 @@ def _layer_fwd(layer, inp, cache):
     return layer(inp, **kwargs)[0]
 
 
+# ── Corrected-target dense cache ────────────────────────────────────────────
+#
+# Standard ALPS reconstructs, at each layer, X_Q @ W_c -- the DENSE weight
+# applied to the CURRENT (already partially pruned) trajectory. That's not
+# actually "what the dense model would have produced here": the dense model
+# never sees X_Q, it only ever sees its own (uncorrupted) trajectory X_P. This
+# pre-pass runs the fully dense model ONCE (before any layer is touched) and
+# caches each decoder layer's OWN input X_P_i to disk, so the main pruning
+# loop can later re-run each (still-dense-at-that-point) layer a second time
+# on X_P_i to get every submodule's true dense-reference output Y_P, used as
+# the corrected reconstruction target instead of X_Q @ W_c. Layer-input-only
+# (not per-submodule) keeps the cache to ~1GB/layer instead of exploding
+# across every Linear inside the layer.
+@torch.no_grad()
+def cache_dense_layer_inputs(model, dataloader, dev, nsamples, cache_dir):
+    print(f'Caching dense layer inputs to {cache_dir}...')
+    os.makedirs(cache_dir, exist_ok=True)
+    layers = model.model.layers
+
+    model.model.embed_tokens = model.model.embed_tokens.to(dev)
+    if hasattr(model.model, 'rotary_emb'):
+        model.model.rotary_emb = model.model.rotary_emb.to(dev)
+    layers[0] = layers[0].to(dev)
+
+    dtype = next(iter(model.parameters())).dtype
+    inps = torch.zeros((nsamples, model.seqlen, model.config.hidden_size), dtype=dtype, device=dev)
+    cache = {'i': 0, 'attention_mask': None, 'position_ids': None, 'position_embeddings': None}
+
+    Catcher = _make_catcher(inps, cache, nsamples)
+    layers[0] = Catcher(layers[0])
+    for batch in dataloader:
+        try:
+            model(batch[0].to(dev))
+        except ValueError:
+            pass
+    layers[0] = layers[0].module
+
+    layers[0] = layers[0].cpu()
+    model.model.embed_tokens = model.model.embed_tokens.cpu()
+    if hasattr(model.model, 'rotary_emb'):
+        model.model.rotary_emb = model.model.rotary_emb.cpu()
+    torch.cuda.empty_cache()
+
+    outs = torch.zeros_like(inps)
+    for i in range(len(layers)):
+        torch.save(inps.cpu(), os.path.join(cache_dir, f'layer_{i}_X.pt'))
+        layer = layers[i].to(dev)
+        for j in range(nsamples):
+            outs[j] = _layer_fwd(layer, inps[j].unsqueeze(0), cache)
+        layers[i] = layer.cpu()
+        del layer
+        torch.cuda.empty_cache()
+        inps, outs = outs, inps
+    print('Dense layer input cache done.')
+    return cache['attention_mask'], cache['position_ids'], cache['position_embeddings']
+
+
 # ── Pruning ───────────────────────────────────────────────────────────────────
 
 @torch.no_grad()
 def qwen3_sequential(model, dataloader, dev, args):
     print('Starting ALPS on Qwen3...')
+
+    corrected_target = getattr(args, 'corrected_target', False)
+    dense_cache_dir = getattr(args, 'dense_cache_dir', None)
+    nsamples = args.nsamples
+
+    if corrected_target:
+        cache_dense_layer_inputs(model, dataloader, dev, nsamples, dense_cache_dir)
 
     use_cache = model.config.use_cache
     model.config.use_cache = False
@@ -189,7 +253,6 @@ def qwen3_sequential(model, dataloader, dev, args):
     layers[0] = layers[0].to(dev)
 
     dtype = next(iter(model.parameters())).dtype
-    nsamples = args.nsamples
     inps = torch.zeros((nsamples, model.seqlen, model.config.hidden_size), dtype=dtype, device=dev)
     cache = {'i': 0, 'attention_mask': None, 'position_ids': None, 'position_embeddings': None}
 
@@ -226,32 +289,58 @@ def qwen3_sequential(model, dataloader, dev, args):
                 del full[name]
         sequential = [list(full.keys())]
 
+        Xp = None
+        if corrected_target:
+            Xp = torch.load(os.path.join(dense_cache_dir, f'layer_{i}_X.pt')).to(dev)
+
         scd = {}
         for names in sequential:
             subset = {n: full[n] for n in names}
             for name in subset:
                 scd[name] = ALPS_prune(subset[name], nsamples=nsamples, seqlen=model.seqlen)
 
-            def add_batch(name):
+            # `mode['phase']` lets ONE set of hooks serve two different
+            # forward passes through the SAME (still fully dense) layer: 'q'
+            # accumulates H=X_Q^T X_Q as before (and stashes each submodule's
+            # X_Q input for the immediately-following 'p' pass); 'p' -- only
+            # run when corrected_target is on -- feeds the SAME layer the
+            # dense-reference input X_P instead, and uses the resulting
+            # (still-dense-weight) output as Y_P to accumulate the corrected
+            # cross term X_Q^T Y_P.
+            mode = {'phase': 'q'}
+            current_xq = {}
+
+            def make_hook(name):
                 def tmp(_, inp, out):
-                    scd[name].add_batch(inp[0].data, out.data)
+                    if mode['phase'] == 'q':
+                        scd[name].add_batch(inp[0].data, out.data)
+                        if corrected_target:
+                            current_xq[name] = inp[0].data
+                    else:
+                        scd[name].add_target_batch(current_xq[name], out.data)
                 return tmp
 
-            handles = [subset[name].register_forward_hook(add_batch(name)) for name in subset]
+            handles = [subset[name].register_forward_hook(make_hook(name)) for name in subset]
             for j in range(nsamples):
+                mode['phase'] = 'q'
                 _layer_fwd(layer, inps[j].unsqueeze(0), cache)
+                if corrected_target:
+                    mode['phase'] = 'p'
+                    _layer_fwd(layer, Xp[j].unsqueeze(0), cache)
             for h in handles:
                 h.remove()
 
             for name in subset:
                 print(f'  Layer {i} {name}')
-                scd[name].ALPS_admm(sp=args.sp, nm_n=args.nm_n, nm_m=args.nm_m, rho=args.rho)
+                scd[name].ALPS_admm(sp=args.sp, nm_n=args.nm_n, nm_m=args.nm_m, rho=args.rho,
+                                     corrected_target=corrected_target)
                 d1, d2 = scd[name].layer.weight.data.shape
                 nnz = (scd[name].layer.weight.data.abs() > 0).sum().item()
                 tot_params += d1 * d2
                 tot_nnz += nnz
                 scd[name].free()
 
+        del Xp
         for j in range(nsamples):
             outs[j] = _layer_fwd(layer, inps[j].unsqueeze(0), cache)
 
@@ -318,16 +407,31 @@ def qwen3_eval(model, testenc, dev):
     model.lm_head = model.lm_head.to(dev)
 
     testenc = testenc.to(dev)
+    # lm_head(hidden_states) materializes a (1, seqlen, vocab) logits tensor --
+    # at seqlen=8192 and vocab~152k that's ~2.5GB in bf16 BEFORE
+    # CrossEntropyLoss's internal fp32 upcast/softmax roughly doubles it,
+    # which OOM'd a 24GB RTX3090 once seqlen grew past ~4096 (this loop used
+    # to run the whole sequence through lm_head + loss in one shot). Chunk
+    # along the sequence dimension instead -- PPL is a sum of per-token NLL
+    # regardless of how the tokens are grouped for the lm_head/loss call, so
+    # this is numerically identical, just bounded peak memory.
+    ppl_chunk = min(model.seqlen, 2048)
     nlls = []
     for i in range(nsamples):
         hidden_states = inps[i].unsqueeze(0).to(dev)
         if hasattr(model.model, 'norm') and model.model.norm is not None:
             hidden_states = model.model.norm(hidden_states)
-        lm_logits = model.lm_head(hidden_states)
-        shift_logits = lm_logits[:, :-1, :].contiguous()
-        shift_labels = testenc[:, i * model.seqlen:(i + 1) * model.seqlen][:, 1:].to(dev)
-        loss = nn.CrossEntropyLoss()(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
-        nlls.append(loss.float() * model.seqlen)
+        shift_labels_full = testenc[:, i * model.seqlen:(i + 1) * model.seqlen][:, 1:].to(dev)
+        sample_nll = 0.0
+        for c0 in range(0, model.seqlen - 1, ppl_chunk):
+            c1 = min(c0 + ppl_chunk, model.seqlen - 1)
+            lm_logits = model.lm_head(hidden_states[:, c0:c1 + 1, :])
+            shift_logits = lm_logits[:, :-1, :].contiguous()
+            shift_labels = shift_labels_full[:, c0:c1]
+            loss = nn.CrossEntropyLoss()(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+            sample_nll += loss.float() * (c1 - c0)
+            del lm_logits, shift_logits
+        nlls.append(sample_nll)
 
     ppl = torch.exp(torch.stack(nlls).sum() / (nsamples * model.seqlen))
     print(f'PPL: {ppl.item():.4f}')
@@ -347,17 +451,36 @@ if __name__ == '__main__':
                               'self-gen calibration rows shorter than seqlen were silently discarded)')
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--nsamples', type=int, default=128)
+    parser.add_argument('--seqlen', type=int, default=2048,
+                         help='Calibration window length in tokens (was hardcoded to 2048). Longer windows let '
+                              'self-gen/CoT calibration docs (often 8k-16k+ tokens) actually cover mid/late '
+                              'reasoning-trajectory activations instead of only ever seeing the first 2048 tokens.')
     parser.add_argument('--nm_n', type=int, default=0)
     parser.add_argument('--nm_m', type=int, default=0)
     parser.add_argument('--rho', type=float, default=300.0)
     parser.add_argument('--skip_layer_names', type=str, default='',
                          help="comma-separated layer_idx:proj_name pairs to keep dense, e.g. '35:mlp.up_proj' "
                               "or '35:mlp.up_proj,35:mlp.gate_proj'")
+    parser.add_argument('--corrected_target', action='store_true',
+                         help="Reconstruct each layer's OWN dense-reference output (computed by re-running that "
+                              "still-dense layer on the dense model's own trajectory for the same calibration "
+                              "tokens) instead of X_Q @ W_c (the dense weight applied to the current, possibly "
+                              "already-pruned trajectory). Solver (ADMM/top-k/PCG) is unchanged -- only the "
+                              "reconstruction target's linear term (YtX) is replaced. Doubles per-layer forward "
+                              "cost (one pass on the corrupted trajectory for H, one pass on the cached dense "
+                              "trajectory for the target) and needs ~1GB/layer of scratch disk for the dense "
+                              "layer-input cache (see --dense_cache_dir).")
+    parser.add_argument('--dense_cache_dir', type=str, default='',
+                         help='Scratch dir for --corrected_target\'s per-layer dense-input cache (~1GB/layer). '
+                              'Default: a subdir next to this script on real disk (NOT /tmp -- that\'s tmpfs on '
+                              'this cluster and would eat into the SLURM job\'s --mem budget); auto-created, '
+                              'not auto-deleted.')
     parser.add_argument('--save', type=str, default='')
     parser.add_argument('--eval_full', action='store_true', help='Run full eval (PPL+zeroshot+lighteval) after pruning')
-    parser.add_argument('--profile', type=str, default='official', choices=['official', 'quick'],
-                         help="lighteval profile passed through to eval_full.py: 'official' (32768/38912 budget, "
-                              "incl. AIME24/25) or 'quick' (8192 budget, no AIME -- for ranking configs cheaply)")
+    parser.add_argument('--profile', type=str, default='quick', choices=['official', 'quick'],
+                         help="lighteval profile passed through to eval_full.py: 'quick' (default, 8192 budget, "
+                              "matches the rest of the dashboard) or 'official' (32768/38912 budget, incl. "
+                              "AIME24/25)")
     parser.add_argument('--wandb_project', type=str, default='reasoning_qwen3_1.7b')
     parser.add_argument('--run_name', type=str, default='')
     parser.add_argument('--gpu_util', type=float, default=0.9)
@@ -368,7 +491,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
-    model = get_qwen3(args.model)
+    model = get_qwen3(args.model, seqlen=args.seqlen)
     model.eval()
 
     # One-shot calibration is forward-only: ~2*N*tokens (no backward pass),
@@ -389,9 +512,18 @@ if __name__ == '__main__':
         print(f'Skipping (keeping dense): {skip_layer_names}')
     args.skip_layer_names = skip_layer_names
 
+    if args.corrected_target and not args.dense_cache_dir:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        args.dense_cache_dir = os.path.join(script_dir, 'dense_cache_tmp', f'pid{os.getpid()}')
+
     tick = time.time()
     qwen3_sequential(model, dataloader, DEV, args)
     print(f'Pruning time: {time.time() - tick:.1f}s')
+
+    if args.corrected_target and args.dense_cache_dir and os.path.isdir(args.dense_cache_dir):
+        import shutil
+        shutil.rmtree(args.dense_cache_dir, ignore_errors=True)
+        print(f'Cleaned up dense cache dir: {args.dense_cache_dir}')
 
     ppl = qwen3_eval(model, testenc, DEV)
     print(f'Final PPL: {ppl:.4f}')

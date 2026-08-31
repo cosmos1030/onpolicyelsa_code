@@ -444,7 +444,48 @@ def _pgd_topk_mask_from_vals(vals, lo, hi, k, dev, use_fsdp, want_highest):
             else:
                 hi = mid
     thr = lo if want_highest else hi
-    return {n: ((v >= thr) if want_highest else (v <= thr)) for n, v in vals.items()}
+    sel = {n: ((v >= thr) if want_highest else (v <= thr)) for n, v in vals.items()}
+
+    # Tie-breaking: a naive threshold cut can massively overshoot k when many
+    # candidates share the EXACT value at `thr` -- e.g. fisher*weight^2==0
+    # for every weight whose Adam exp_avg_sq is still zero (never touched by
+    # a gradient), very common for a large embedding/lm_head table at early
+    # steps. Verified empirically: step 1 of a gmp_pgd_grow_to_target run
+    # requested k=63 and the naive threshold cut selected 680,136 (a
+    # ~10,800x overshoot, beyond this function's own previously-documented
+    # 15x-460x worst case) -- 680k embedding rows tied at exactly zero
+    # importance, all swept in together since the cut can't split a tied
+    # block. Thin the AT-threshold tie cluster with elementwise random
+    # selection instead (one extra full-tensor boolean compare + one random
+    # draw, done ONCE here -- not per bisection iteration -- so cheap
+    # relative to the 64-iteration search already above) so the total
+    # selected count lands close to k instead of "all-or-nothing" on the
+    # tie. Approximate, not exact (especially under FSDP, where each rank
+    # thins its own local slice of the tie independently without cross-rank
+    # coordination on WHICH elements) -- but for a tie cluster this large
+    # the binomial variance around the target count is tiny (~sqrt(N)
+    # candidates), vastly tighter than accepting the entire tie or none of it.
+    tied = {n: (v == thr) for n, v in vals.items()}
+    n_tied_t = torch.zeros(1, dtype=torch.long, device=dev)
+    for t in tied.values():
+        n_tied_t += t.sum(dtype=torch.long)
+    if use_fsdp:
+        _dist.all_reduce(n_tied_t, op=_dist.ReduceOp.SUM)
+    n_tied = int(n_tied_t.item())
+    if n_tied > 0:
+        n_strict_t = torch.zeros(1, dtype=torch.long, device=dev)
+        for n in vals:
+            n_strict_t += (sel[n] & ~tied[n]).sum(dtype=torch.long)
+        if use_fsdp:
+            _dist.all_reduce(n_strict_t, op=_dist.ReduceOp.SUM)
+        n_strict = int(n_strict_t.item())
+        n_needed = max(0, k - n_strict)
+        if n_needed < n_tied:
+            keep_frac = n_needed / n_tied
+            sel = {n: (sel[n] & ~tied[n]) | (tied[n] & (torch.rand_like(v) < keep_frac))
+                   for n, v in vals.items()}
+        # else n_needed >= n_tied: keep the whole tie cluster (already true in `sel`) -- not an overshoot, k genuinely requires all of it.
+    return sel
 
 
 def _fsdp_gather_flat(local_flat, group=None):
@@ -3151,6 +3192,15 @@ def globalprune_gmp(
     pgd_skip_growth_step = getattr(FLAGS, 'gmp_pgd_skip_growth_step', False)  # skip PGD on the exact step growth just fired, so the model trains at least one step under the mask growth decided before PGD can touch it again
     pgd_post_target_only = getattr(FLAGS, 'gmp_pgd_post_target_only', False)  # isolate PGD's post-target-maintenance role from its during-growth-ramp role -- see gate check at the main PGD condition below
     pgd_interval = max(1, getattr(FLAGS, 'gmp_pgd_interval', 1))  # only run PGD's reprojection every Nth step (default 1 = every step, prior behavior) -- decouples PGD's own cadence from mask_interval's growth cadence
+    pgd_grow_to_target = getattr(FLAGS, 'gmp_pgd_grow_to_target', False)  # PGD-driven growth (no separate TR-GMP growth): _pgd_desired targets final_sparsity directly (instead of matching current keep-count), and revive is no longer forced equal to prune -- revive saturates at min(k, revive_cand) while prune keeps going up to k, so whenever prune_cand > revive_cand (current sparsity < target) the self-KL-gated bisection alone drives net sparsity growth, at whatever pace the budget allows. Once current sparsity reaches target, prune_cand/revive_cand naturally converge and it degrades to pure polish/maintenance -- no separate at-target branch needed (unlike the N:M pre/post-target split). Intended for --gmp_tr_enabled=false + --sparsity_type=unstructured (not yet supported for N:M, which additionally needs group-structure-aware growth); only affects the unstructured gmp_pgd_kl_budget branch below.
+    if pgd_grow_to_target:
+        if tr_enabled:
+            logging.warning("  --gmp_pgd_grow_to_target=true with --gmp_tr_enabled=true: TR-GMP growth and "
+                             "PGD-driven growth will both be moving the mask independently -- almost certainly "
+                             "not intended together. Pass --gmp_tr_enabled=false.")
+        logging.info(f"  PGD-driven growth ENABLED (--gmp_pgd_grow_to_target): _pgd_desired targets "
+                     f"final_sparsity directly, revive saturates at min(k, revive_cand) instead of forcing "
+                     f"revive==prune -- self-KL budget ({pgd_kl_budget}) alone paces growth toward target.")
     _pgd_kl_cal_batch = None  # small/short batch, refreshed every mask_interval steps (see below), reused every PGD step in between
     _pgd_scratch   = {}  # name -> preallocated fp32 buffer, reused in-place every PGD step (see below)
     pgd_debug_repeat_swap = getattr(FLAGS, 'gmp_pgd_debug_repeat_swap', False)  # diagnostic: track what fraction of each step's flips are positions that ALSO flipped within the last gmp_pgd_debug_repeat_window steps (are the same weights repeatedly swapping back and forth, or is a growing set of distinct weights each swapping once)
@@ -5148,7 +5198,16 @@ def globalprune_gmp(
                     dtype=torch.long, device=_pgd_dev)
                 if _pgd_use_fsdp:
                     _dist.all_reduce(_pgd_stats, op=_dist.ReduceOp.SUM)
-                _pgd_k_prune = int(_pgd_stats[1].item() - _pgd_stats[0].item())
+                if pgd_grow_to_target:
+                    # _pgd_desired targets final_sparsity directly instead of
+                    # the current keep-count -- see gmp_pgd_grow_to_target's
+                    # docstring. Without this, _pgd_desired's target always
+                    # matches current sparsity by construction, so prune_cand
+                    # and revive_cand are forced equal (up to threshold-tie
+                    # noise) and there is no real asymmetry to drive growth.
+                    _pgd_k_prune = round(final_sparsity * _pgd_stats[1].item())
+                else:
+                    _pgd_k_prune = int(_pgd_stats[1].item() - _pgd_stats[0].item())
 
                 # global min/max — two all_reduces for FSDP
                 _pgd_lo_t = torch.tensor(
@@ -5529,7 +5588,18 @@ def globalprune_gmp(
                     # revive_cand) so k_actual can never exceed what's
                     # actually revivable, making the applied swap
                     # keep-count-conserving by construction again.
-                    _n_prune_cand = min(_n_prune_cand, _n_revive_cand)
+                    #
+                    # EXCEPT under gmp_pgd_grow_to_target: there, prune_cand
+                    # exceeding revive_cand is the whole point (that's what
+                    # drives net sparsity growth -- see its docstring), so
+                    # the search range is left at the FULL prune_cand instead
+                    # of being capped down to revive_cand. Revive selection
+                    # below saturates at min(k, revive_cand) instead, so it
+                    # can never ask for more than actually exists either --
+                    # same safety property, without forcing prune down to
+                    # match revive.
+                    if not pgd_grow_to_target:
+                        _n_prune_cand = min(_n_prune_cand, _n_revive_cand)
 
                     # Build the expensive log-space state ONCE (same candidate
                     # set for every bisection iteration -- only k changes), and
@@ -5635,13 +5705,30 @@ def globalprune_gmp(
                                  f"kl_at(n_prune_cand)={_pgd_kl_at_full:.6f} budget={pgd_kl_budget} "
                                  f"pre_sparsity={maskmgr.current_sparsity():.4f} (step={step})")
                     if use_wandb and is_main_process:
+                        # net_prune_predicted = max(0, k*-V): the theoretical
+                        # net sparsity increase this call SHOULD produce, from
+                        # the search result alone, before the mask is actually
+                        # touched below -- should match pgd/net_growth (the
+                        # ground-truth post-hoc mask diff, logged after
+                        # application) almost exactly when things are working
+                        # as intended; a persistent gap between the two would
+                        # flag a bug.
                         wandb.log({"pgd/kl_at_k_actual": _pgd_kl_at_k_lo, "pgd/kl_at_full_pgd": _pgd_kl_at_full,
                                    "pgd/kl_budget": pgd_kl_budget,
-                                   "pgd/k_actual": _k_actual, "pgd/n_prune_cand": _n_prune_cand}, step=step)
+                                   "pgd/k_actual": _k_actual, "pgd/n_prune_cand": _n_prune_cand,
+                                   "pgd/n_revive_cand": _n_revive_cand,
+                                   "pgd/net_prune_predicted": max(0, _k_actual - _n_revive_cand)}, step=step)
                     _sel_prune = _pgd_topk_mask_from_vals(_prune_vals, _prune_vlo, _prune_vhi, _k_actual, _pgd_dev, _pgd_use_fsdp, False)
                     del _prune_vals
-                    _sel_revive = (_pgd_topk_mask(_pgd_imps, _revive_cand, _k_actual, True, _pgd_dev, _pgd_use_fsdp, _pgd_lo, _pgd_hi)
-                                   if _k_actual > 0 else {n: torch.zeros_like(m) for n, m in maskmgr.masks.items()})
+                    # min(_k_actual, _n_revive_cand): under gmp_pgd_grow_to_target
+                    # _k_actual can exceed _n_revive_cand by design (that excess
+                    # is what nets out as growth, unmatched by any revive) --
+                    # saturate instead of asking _pgd_topk_mask for more revive
+                    # candidates than exist. No-op when not growing (there
+                    # _k_actual <= _n_revive_cand always, per the min() above).
+                    _k_revive = min(_k_actual, _n_revive_cand)
+                    _sel_revive = (_pgd_topk_mask(_pgd_imps, _revive_cand, _k_revive, True, _pgd_dev, _pgd_use_fsdp, _pgd_lo, _pgd_hi)
+                                   if _k_revive > 0 else {n: torch.zeros_like(m) for n, m in maskmgr.masks.items()})
                     for _n in maskmgr.named_params:
                         _old = maskmgr.masks[_n]
                         _new = _old.clone()
@@ -5652,6 +5739,17 @@ def globalprune_gmp(
                         maskmgr.masks[_n] = _new
                     logging.info(f"  [pgd_kl_budget] applied revivals={_pgd_revivals} prunings={_pgd_prunings} "
                                  f"post_sparsity={maskmgr.current_sparsity():.4f} (step={step})")
+                    if use_wandb and is_main_process:
+                        # Ground-truth applied counts (real mask diff, not the
+                        # search's own k_actual/k_revive) -- the metric that
+                        # actually matters for gmp_pgd_grow_to_target: net
+                        # growth this call = prunings - revivals, should be
+                        # persistently > 0 while current sparsity < target if
+                        # the asymmetric revive/prune design is working.
+                        wandb.log({"pgd/revivals": _pgd_revivals, "pgd/prunings": _pgd_prunings,
+                                   "pgd/net_growth": _pgd_prunings - _pgd_revivals,
+                                   "pgd/turnover": _pgd_revivals + _pgd_prunings,
+                                   "pgd/post_sparsity": maskmgr.current_sparsity()}, step=step)
                 # trust-region cap: limit how many positions actually flip this
                 # step (--gmp_pgd_max_swap_frac, fraction of total masked
                 # params). Uncapped PGD projects straight onto the full

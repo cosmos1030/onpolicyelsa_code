@@ -12,7 +12,7 @@ exec 2>&1
 
 PYTHON=/home1/doyoonkim/miniconda3/envs/rac/bin/python
 MODEL="/home1/doyoonkim/.cache/huggingface/hub/models--Qwen--Qwen3-1.7B/snapshots/70d244cc86ccca08cf5af4e1e306ecf908b1ad5e"
-DATA="/home1/doyoonkim/projects/elsa/data/ot3_fineweb_200k_qwen3.jsonl"
+DATA="/home1/doyoonkim/projects/elsa/data/ot3_fineweb_40k_qwen3_nostrip_8192.jsonl"  # matched to ALPS calibration set (was ot3_fineweb_200k_qwen3.jsonl, a different/uncleaned file)
 
 export HF_HOME="/home1/doyoonkim/.cache/huggingface"
 export HF_DATASETS_OFFLINE=1

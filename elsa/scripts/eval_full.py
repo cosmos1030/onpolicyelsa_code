@@ -70,10 +70,16 @@ def parse_args():
     p.add_argument("--skip_lighteval", action="store_true")
     p.add_argument("--max_samples", type=int, default=None, help="limit samples per lighteval benchmark (smoke test)")
     p.add_argument("--benchmarks", default=None, help="comma-separated subset of lighteval benchmark names to run (e.g. aime24,aime25); default runs all")
-    p.add_argument("--profile", default="official", choices=["official", "quick", "full"],
-                   help="'official' (default, official Qwen3 budgets incl. AIME24/25, ~2-4x slower) or "
-                        "'quick' (8192 budget, no AIME -- for ranking sweep configs before the expensive rerun). "
-                        "'full' still accepted (old name for 'official').")
+    p.add_argument("--profile", default="quick", choices=["official", "quick", "full"],
+                   help="'quick' (default, 8192 budget, no AIME -- matches every baseline on the reasoning_bench "
+                        "dashboard) or 'official' (official Qwen3 budgets incl. AIME24/25, ~2-4x slower, generates "
+                        "results NOT directly comparable to the dashboard's 8192-budget numbers unless every other "
+                        "row being compared also explicitly used --profile official). Was 'official' by default "
+                        "until 2026-08-31 -- multiple callers (SparseLLM/qwen3_main.py, slurm_gmp_eval_only.sh) "
+                        "silently inherited the wrong (official/32768) profile by not passing --profile at all, "
+                        "producing numbers that looked plausible but weren't comparable to the rest of the "
+                        "dashboard, and ran far slower than intended. 'full' still accepted (old name for "
+                        "'official').")
     p.add_argument("--out_base", default=None, help="base dir for lighteval outputs")
     p.add_argument("--flops", type=float, default=None,
                    help="Precomputed compute cost (FLOPs) for the pruning/calibration step that produced this "
