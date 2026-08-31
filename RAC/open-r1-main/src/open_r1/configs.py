@@ -17,12 +17,14 @@ if TYPE_CHECKING:
     from open_r1_trl.trl import GRPOConfig as _TrlGRPOConfig
     from open_r1_trl.trl import SFTConfig as _TrlSFTConfig
     from open_r1_trl.trl import GKDConfig as _TrlGKDConfig
+    from open_r1_trl.trl import DPOConfig as _TrlDPOConfig
 else:
     # At runtime we temporarily inherit from plain object
     _TrlScriptArguments = object           # type: ignore
     _TrlGRPOConfig      = object           # type: ignore
     _TrlSFTConfig       = object           # type: ignore
     _TrlGKDConfig       = object           # type: ignore
+    _TrlDPOConfig       = object           # type: ignore
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -282,6 +284,22 @@ class GKDConfig(_TrlGKDConfig):                    # type: ignore[misc]
 
 
 @dataclass
+class DPOConfig(_TrlDPOConfig):                    # type: ignore[misc]
+    """Placeholder base, re-parented to the real trl DPOConfig by _patch_bases()
+    below. Used for IPO too via loss_type="ipo" (DPOTrainer supports it natively,
+    no separate trainer class needed)."""
+
+    chat_template: Optional[str] = field(default=None, metadata={"help": "The chat template to use."})
+    system_prompt: Optional[str] = field(default=None, metadata={"help": "The optional system prompt to use."})
+    sparse_optimizer: Optional[str] = field(default=None, metadata={"help": "The sparse optimizer to use."})
+    wandb_entity: Optional[str] = field(default=None, metadata={"help": "The entity to store runs under."})
+    wandb_project: Optional[str] = field(default=None, metadata={"help": "The project to store runs under."})
+    wandb_run_group: Optional[str] = field(default=None, metadata={"help": "The group to store runs under."})
+    callbacks: list[str] = field(default_factory=lambda: [], metadata={"help": "The callbacks to run during training."})
+    benchmarks: list[str] = field(default_factory=lambda: [], metadata={"help": "The benchmarks to run after training."})
+
+
+@dataclass
 class GKDScriptArguments(ScriptArguments):
     """Script arguments for the GKD (on-policy distillation) training script."""
 
@@ -430,6 +448,7 @@ def _patch_bases() -> None:
         "GRPOConfig":      trl_pkg.GRPOConfig,
         "SFTConfig":       trl_pkg.SFTConfig,
         "GKDConfig":       trl_pkg.GKDConfig,
+        "DPOConfig":       trl_pkg.DPOConfig,
     }
 
     g = globals()

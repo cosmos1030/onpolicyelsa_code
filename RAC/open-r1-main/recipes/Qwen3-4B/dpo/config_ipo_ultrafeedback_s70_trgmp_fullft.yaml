@@ -1,0 +1,70 @@
+# IPO fine-tune of the pruned TR-GMP-s70 checkpoint (pre-GRPO base, wandb
+# 657qk0cq, math500=71.0/lcb=4.9/gpqa=28.8/ifeval=37.3/gsm8k=73.4 under the
+# 8192-budget "quick" eval profile) on UltraFeedback-binarized.
+# loss_type: ipo switches trl's DPOTrainer from vanilla DPO to IPO (Identity
+# Preference Optimization) -- same trainer class, different loss.
+#
+# Full fine-tuning + MaskedAdam, NOT LoRA: the original config_ipo_ultrafeedback_s70.yaml
+# used use_peft+LoRA and then merge_and_unload() to bake the adapter into the
+# base model for eval -- that merge does not know about the pruning mask, so
+# it silently DENSIFIED the pruned (zero) weights (verified: zero_frac went
+# from 0.70 pre-merge to ~0.0-0.0001 post-merge on ipo_alpssft_s70_lr1e4_uf_lr1e-6_merged).
+# This fork drops LoRA entirely (full-parameter training, no merge step at
+# all) and relies on `sparse_optimizer: MaskedAdam` (same fix already used
+# for GRPO/SFT, now also wired into DPOTrainer.create_optimizer) to keep the
+# pruned positions at exactly zero throughout training instead.
+#
+# Memory note: without LoRA, DPOTrainer's `ref_model=None` path falls through
+# to `create_reference_model(model)` -- a full second frozen 4B copy in GPU
+# memory, on top of the trainable model + MaskedAdam's fp32 (exp_avg,
+# exp_avg_sq) state. This is a heavier footprint than either the LoRA IPO
+# variant (small adapter, no ref copy needed) or GRPO's full-FT run (which
+# needs no ref copy at beta=0.0) -- per_device_train_batch_size dropped from
+# the LoRA config's 2 to 1 (grad_accum raised 8->16 to keep the same
+# effective batch=16) as a first-pass safety margin against OOM on a single
+# A100-80GB. If it still OOMs, drop max_length/max_prompt_length before
+# reaching for multi-GPU.
+
+# Model arguments
+model_name_or_path: cosmos1030/gmp-kd3e-1-s70pct-lr5e-5_20260811_115604
+model_revision: main
+sparse_optimizer: MaskedAdam  # freezes pruned (zero) weights at zero every step
+torch_dtype: bfloat16
+attn_implementation: eager
+
+# Data training arguments
+dataset_name: trl-lib/ultrafeedback_binarized
+dataset_train_split: train
+dataset_test_split: test
+
+# DPO/IPO trainer config
+loss_type: ipo
+beta: 0.1
+bf16: true
+do_train: true
+do_eval: false
+gradient_accumulation_steps: 8
+gradient_checkpointing: true
+gradient_checkpointing_kwargs:
+  use_reentrant: false
+learning_rate: 5.0e-6
+log_level: info
+logging_first_step: true
+logging_steps: 1
+logging_strategy: steps
+lr_scheduler_type: cosine
+max_length: 2048
+max_prompt_length: 1024
+max_steps: -1
+num_train_epochs: 1
+output_dir: /home1/doyoonkim/projects/elsa/models/ipo_trgmp_s70_ultrafeedback_fullft_maskedadam
+overwrite_output_dir: true
+per_device_train_batch_size: 1
+push_to_hub: false
+report_to:
+- wandb
+save_strategy: "steps"
+save_steps: 200
+save_total_limit: 2
+seed: 42
+warmup_ratio: 0.1

@@ -120,6 +120,36 @@ fine with it since it's a separate subprocess.
 ## Scripts in this folder
 
 - `alps_prune_qwen3_8b.sh <SPARSITY>` — one-shot ALPS pruning + quick eval, adapted from `../ALPS/slurm_alps_prune_8b_rtx6000ada.sh` (Qwen hub id instead of a local snapshot path, saves under `/NHNHOME/.../models/`). Sets `EVAL_FULL_SCRIPT` env var so `ALPS/qwen3_alps.py` finds `elsa/scripts/eval_full.py` in *this* repo clone instead of the other server's hardcoded fallback path (`ALPS/qwen3_alps.py` reads `os.environ.get("EVAL_FULL_SCRIPT", "/home1/doyoonkim/...")` — that fallback is another server's path, always pass the env var here).
+- `gmp_pgd_klgate_qwen3_8b_fsdp2gpu_cubic.sh` — cubic-growth-schedule ablation fork of `gmp_pgd_klgate_qwen3_8b_fsdp2gpu.sh` (same recipe, `--gmp_tr_enabled=false --gmp_growth_schedule=cubic --gmp_cubic_log_kl=true` instead of trust-region-gated growth), mirroring the log_cluster's 1.7B/4B `_cubic.sh` ablation at 8B scale. See the 1.7B/4B/8B "Ours(capped)" table for which wandb run each sparsity's matched lr comes from.
+
+## PENDING: 8B cubic ablation (queue this next)
+
+Matched lr/kl to the "Ours(capped)" 8B table row (S50=yy92hmwi lr5e-5, S60=bmzorogu lr5e-5, S70=vez1mi9f lr1e-4, 2:4=t5x5gwpr lr1e-4), kl_budget=0.02 (real cap, not the `999` uncapped-but-logged trick `run_gmp_pgd_klgate_8b_fsdp2gpu_parallel.sh` uses for its own separate uncapped sweep):
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 bash b200_scripts/gmp_pgd_klgate_qwen3_8b_fsdp2gpu_cubic.sh \
+  0.5 0.02 0.02 29500 512 32 cosine 2048 0 5e-5 "$OT3_DATA" 8192 true reasoning_qwen3_8b_nostrip8192 \
+  fisher global 0.33,0.33,0.33 unstructured 0.0 32 0 4 false 8 false 0.5   # S50
+CUDA_VISIBLE_DEVICES=2,3 bash b200_scripts/gmp_pgd_klgate_qwen3_8b_fsdp2gpu_cubic.sh \
+  0.6 0.02 0.02 29501 512 32 cosine 2048 0 5e-5 "$OT3_DATA" 8192 true reasoning_qwen3_8b_nostrip8192 \
+  fisher global 0.33,0.33,0.33 unstructured 0.0 32 0 4 false 8 false 0.5   # S60
+# then a second wave (only 2 concurrent 8B FSDP2 jobs fit in 4 GPUs):
+CUDA_VISIBLE_DEVICES=0,1 bash b200_scripts/gmp_pgd_klgate_qwen3_8b_fsdp2gpu_cubic.sh \
+  0.7 0.02 0.02 29500 512 32 cosine 2048 0 1e-4 "$OT3_DATA" 8192 true reasoning_qwen3_8b_nostrip8192 \
+  fisher global 0.33,0.33,0.33 unstructured 0.0 32 0 4 false 8 false 0.5   # S70
+CUDA_VISIBLE_DEVICES=2,3 bash b200_scripts/gmp_pgd_klgate_qwen3_8b_fsdp2gpu_cubic.sh \
+  0.5 0.02 0.02 29501 512 32 cosine 2048 0 1e-4 "$OT3_DATA" 8192 true reasoning_qwen3_8b_nostrip8192 \
+  fisher global 0.33,0.33,0.33 2:4 0.0 32 0 4 false 8 false 0.5            # 2:4
+```
+
+## PENDING: 4B 2:4 Ours(capped) table fill
+
+No new script needed -- `gmp_pgd_klgate_qwen3_4b.sh` already parameterizes `SPARSITY_TYPE` (arg 17). Cancelled the equivalent attempt on the log_cluster A100 side (jobs 820847/820848) in favor of running it here instead:
+
+```bash
+bash b200_scripts/gmp_pgd_klgate_qwen3_4b.sh 0.5 0.02 0.02 512 32 cosine 2048 0 5e-5 \
+  "$OT3_DATA" 8192 true reasoning_qwen3_4b_nostrip8192 fisher global 0.33,0.33,0.33 2:4 0.0 32 0 4 false 8
+```
 
 ## KNOWN UNRESOLVED: this host is heavily multi-tenant, default-width thread pools are catastrophic here (2026-08-13)
 

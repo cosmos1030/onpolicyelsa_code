@@ -1,0 +1,57 @@
+# IPO fine-tune of the pruned TR-GMP-s70 checkpoint (pre-GRPO base, 69.6%
+# MATH-500 greedy accuracy) on UltraFeedback-binarized -- independent of the
+# GRPO overthinking-fix run, started from the same base checkpoint.
+# loss_type: ipo switches trl's DPOTrainer from vanilla DPO to IPO (Identity
+# Preference Optimization) -- same trainer class, different loss.
+
+# Model arguments
+model_name_or_path: cosmos1030/gmp-kd3e-1-s70pct-lr5e-5_20260811_115604
+model_revision: main
+torch_dtype: bfloat16
+attn_implementation: eager
+
+# LoRA -- avoids needing a full second copy of a 4B model in memory for the
+# frozen reference model (DPOTrainer computes reference logprobs with
+# adapters disabled instead of loading a separate ref_model).
+use_peft: true
+lora_r: 16
+lora_alpha: 32
+lora_dropout: 0.05
+lora_target_modules: all-linear
+
+# Data training arguments
+dataset_name: trl-lib/ultrafeedback_binarized
+dataset_train_split: train
+dataset_test_split: test
+
+# DPO/IPO trainer config
+loss_type: ipo
+beta: 0.1
+bf16: true
+do_train: true
+do_eval: false
+gradient_accumulation_steps: 8
+gradient_checkpointing: true
+gradient_checkpointing_kwargs:
+  use_reentrant: false
+learning_rate: 5.0e-6
+log_level: info
+logging_first_step: true
+logging_steps: 1
+logging_strategy: steps
+lr_scheduler_type: cosine
+max_length: 2048
+max_prompt_length: 1024
+max_steps: -1
+num_train_epochs: 1
+output_dir: /home1/doyoonkim/projects/elsa/models/ipo_trgmp_s70_ultrafeedback
+overwrite_output_dir: true
+per_device_train_batch_size: 2
+push_to_hub: false
+report_to:
+- wandb
+save_strategy: "steps"
+save_steps: 200
+save_total_limit: 2
+seed: 42
+warmup_ratio: 0.1

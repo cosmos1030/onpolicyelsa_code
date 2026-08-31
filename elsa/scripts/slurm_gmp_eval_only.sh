@@ -12,9 +12,10 @@
 #SBATCH --exclude=n3,n42,n46,n51,n52,n54,n55,n58,n60,n76,n77,n80,n91
 exec 2>&1
 
-MODEL_PATH=${1:?"Usage: sbatch slurm_gmp_eval_only.sh <model_path> <train_wbid> <sparsity>"}
+MODEL_PATH=${1:?"Usage: sbatch slurm_gmp_eval_only.sh <model_path> <train_wbid> <sparsity> [profile]"}
 TRAIN_WBID=${2:?"Need train_wbid (training run ID in reasoning_qwen3_4b)"}
 SPARSITY=${3:?"Need sparsity"}
+PROFILE=${4:-quick}  # quick=8192 budget (matches the rest of the dashboard) -- eval_full.py itself defaults to 'official'=32768, which does NOT match the 8192-budget baselines everywhere else on the dashboard unless explicitly overridden here.
 
 PYTHON=/home1/doyoonkim/miniconda3/envs/rac/bin/python
 LOCAL_JOB_BASE="/local-data/user-data/${USER}/gmp_eval_${SLURM_JOB_ID}"
@@ -55,6 +56,7 @@ $PYTHON scripts/eval_full.py \
     --sparsity "$SPARSITY" \
     --gpu_util 0.85 \
     --tp_size 1 \
+    --profile "$PROFILE" \
     --out_base "$LOCAL_JOB_BASE/eval_out"
 
 echo "##### END #####"

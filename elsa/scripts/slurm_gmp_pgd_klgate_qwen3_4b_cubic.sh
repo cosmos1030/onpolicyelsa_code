@@ -1,33 +1,31 @@
 #!/bin/bash
-#SBATCH --job-name=gmp_pgd_klgate_1.7b
-#SBATCH --partition=A100-80GB
-#SBATCH --qos=hpgpu
+#SBATCH --job-name=gmp_pgd_klgate_4b
+#SBATCH --partition=H200-PCIe-ZT
+#SBATCH --qos=zt
 #SBATCH --gres=gpu:1
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=80G
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=100G
 #SBATCH --time=3-00:00:00
-#SBATCH --exclude=n3,n42,n46,n51,n52,n54,n55,n58,n60,n76,n77,n80,n91,n87,n61,n64,n31,n19
-#SBATCH --output=/home1/doyoonkim/projects/elsa/logs/gmp_pgd_klgate_1.7b_%j.out
+#SBATCH --exclude=n89,n90,n91
+#SBATCH --output=/home1/doyoonkim/projects/elsa/logs/gmp_pgd_klgate_4b_%j.out
 exec 2>&1
 
-# Same as slurm_gmp_tr_ntpkd_opkd_qwen3_1.7b_pgd.sh (real TR-GMP KL-gated
-# growth every mask_interval + --gmp_pgd=true per-step reprojection) but
-# with the per-step reprojection now ALSO KL-gated instead of uncapped:
-# --gmp_pgd_kl_budget bisects how many (lowest-importance) prune candidates
-# to accept each step so that self-KL(pre||post-prune), measured on a small
-# cached calibration batch, stays within budget -- revive count is always
-# set equal to the accepted prune count (existing invariant), so revival
-# volume is bounded for free by the same search. Replaces the earlier
-# --gmp_pgd_max_swap_frac fixed-count cap (see gmp_trainer.py), which
-# limited churn RATE but not whether that churn was actually safe -- a
-# cosine-schedule + swap_frac-capped variant tried first underperformed both
-# uncapped PGD and this KL-gated design at every sparsity level tested.
+# Qwen3-4B version of slurm_gmp_pgd_klgate_qwen3_1.7b.sh -- same TR-GMP
+# KL-gated growth + PGD-KL-gated per-step reprojection (--gmp_pgd_pgd=true,
+# --gmp_pgd_kl_budget bisects how many lowest-importance prune candidates to
+# accept each step so self-KL(pre||post-prune) on a small cached calibration
+# batch stays within budget; revive count always set equal to accepted prune
+# count). PGD/growth/TR logic itself is untouched -- only the SBATCH
+# resource footprint and MODEL path differ from the 1.7B script, following
+# the existing Qwen3-4B single-GPU (no FSDP) convention used by
+# slurm_gmp_tr_ntpkd_opkd_24_qwen3_4b_pgd.sh and slurm_gmp_tr_opkd_dense_qwen3_4b.sh
+# (H200-PCIe-ZT/zt, cpus=16, no FSDP needed -- only 8B needed FSDP).
 #
-# Usage: sbatch slurm_gmp_pgd_klgate_qwen3_1.7b.sh <SPARSITY> <KL_BUDGET> <KL_THRESHOLD> [OPD_GEN_LEN] [MASK_INTERVAL] [LR_SCHEDULER] [STEPS] [POST_TARGET_STEPS] [LR] [DATA_PATH] [SEQLEN] [GRAD_CKPT] [WANDB_PROJECT]
-# e.g.: sbatch slurm_gmp_pgd_klgate_qwen3_1.7b.sh 0.5 0.001 0.02 256 32 cosine 2048 0 1e-4 \
-#         /home1/doyoonkim/projects/elsa/data/ot3_fineweb_40k_qwen3_nostrip_8192.jsonl 8192 true reasoning_qwen3_1.7b_nostrip8192
+# Usage: sbatch slurm_gmp_pgd_klgate_qwen3_4b.sh <SPARSITY> <KL_BUDGET> <KL_THRESHOLD> [OPD_GEN_LEN] [MASK_INTERVAL] [LR_SCHEDULER] [STEPS] [POST_TARGET_STEPS] [LR] [DATA_PATH] [SEQLEN] [GRAD_CKPT] [WANDB_PROJECT] [SALIENCY] [PRUNING_SCOPE] [LOSS_WEIGHTS] [SPARSITY_TYPE] [L1_LAMBDA] [ROLLOUT_INTERVAL] [KD_NSAMPLES] [CALIB_SIZE] [DEBUG_IMPORTANCE_HIST] [PGD_INTERVAL] [PGD_POST_TARGET_ONLY]
+# e.g.: sbatch slurm_gmp_pgd_klgate_qwen3_4b.sh 0.5 0.001 0.02 256 32 cosine 2048 0 1e-4 \
+#         /home1/doyoonkim/projects/elsa/data/ot3_fineweb_40k_qwen3_nostrip_8192.jsonl 8192 true reasoning_qwen3_4b_nostrip8192
 
 SPARSITY=${1:?"Usage: <SPARSITY> <KL_BUDGET> <KL_THRESHOLD> [OPD_GEN_LEN] [MASK_INTERVAL] [LR_SCHEDULER] [STEPS] [POST_TARGET_STEPS] [LR] [DATA_PATH] [SEQLEN] [GRAD_CKPT] [WANDB_PROJECT]"}
 KL_BUDGET=${2:?"Usage: <SPARSITY> <KL_BUDGET> <KL_THRESHOLD> [OPD_GEN_LEN] [MASK_INTERVAL] [LR_SCHEDULER] [STEPS] [POST_TARGET_STEPS] [LR] [DATA_PATH] [SEQLEN] [GRAD_CKPT] [WANDB_PROJECT]"}
@@ -41,7 +39,7 @@ LR=${9:-1e-4}
 DATA_PATH_ARG=${10:-/home1/doyoonkim/projects/elsa/data/ot3_fineweb_40k_qwen3_nostrip_8192.jsonl}
 SEQLEN=${11:-8192}
 GRAD_CKPT=${12:-true}
-WANDB_PROJECT=${13:-reasoning_qwen3_1.7b_nostrip8192}
+WANDB_PROJECT=${13:-reasoning_qwen3_4b_nostrip8192}
 SALIENCY=${14:-fisher}
 PRUNING_SCOPE=${15:-global}
 LOSS_WEIGHTS=${16:-0.33,0.33,0.33}  # NTP,KD,OPKD -- e.g. 0,0.5,0.5 to drop NTP and split KD/OPKD evenly
@@ -53,9 +51,7 @@ CALIB_SIZE=${21:-4}  # gmp_pgd_kl_calib_size -- number of sequences in PGD's sel
 DEBUG_IMPORTANCE_HIST=${22:-false}  # gmp_pgd_debug_importance_hist -- purely diagnostic (dumps fisher*weight^2 quantile/density every 5 steps), costs ~0.6s/step amortized. Off by default; set true only when actively debugging PGD churn/threshold placement.
 PGD_INTERVAL=${23:-1}  # gmp_pgd_interval -- run PGD's reprojection (the dominant per-step cost) only every Nth step, decoupled from MASK_INTERVAL's growth cadence. Default 1 = every recovery step (prior behavior).
 PGD_POST_TARGET_ONLY=${24:-false}  # gmp_pgd_post_target_only -- only let PGD reproject once TR-GMP growth has reached final_sparsity, isolating PGD's post-target maintenance role from its during-growth-ramp role. Default false = PGD fires from step 1 onward as before.
-OPD_REVERSE_KL=${25:-false}  # gmp_onpolicy_reverse_kl -- use reverse KL D(S||T) (mode-seeking, always >=0, full vocab) for on-policy distillation instead of the default forward KL D(T||S) (mean-seeking, teacher top-K). Default false = forward KL as before.
-OPKD_PRUNE_OPD=${26:-false}  # gmp_opkd_prune_opd -- Prune-OPD-style monotone-decay token-reliability weighting for on-policy KD (down-weights later tokens in a rollout once student/teacher top-k stop overlapping). Default false = uniform per-token weight as before.
-VLLM_GPU_MEM=${27:-0.15}  # gmp_opkd_vllm_gpu_mem -- co-located vLLM engine's GPU memory fraction (of total, not free). 0.15 was sized for OPD_GEN_LEN=256; raise when OPD_GEN_LEN is bumped (512/1024/2048) to give the rollout KV cache more headroom and cut PreemptionMode.RECOMPUTE stalls -- verify with a short (e.g. steps=64) memcheck run first, same as any gen_len change.
+PRUNING_END_RATIO=${25:-0.5}  # gmp_pruning_end_ratio -- fixed cubic ramp reaches final_sparsity by step STEPS*this ratio (default 0.5 -> step 1024/2048); mask frozen after that, PGD keeps running capped every PGD_INTERVAL steps regardless.
 NTP_LAMBDA=$(echo "$LOSS_WEIGHTS" | cut -d, -f1)
 KD_LAMBDA=$(echo "$LOSS_WEIGHTS" | cut -d, -f2)
 OPKD_LAMBDA=$(echo "$LOSS_WEIGHTS" | cut -d, -f3)
@@ -63,7 +59,7 @@ KD_ONLY=$(python3 -c "print('true' if float('${NTP_LAMBDA}')==0.0 else 'false')"
 SPARSITY_PCT=$(python3 -c "print(int(${SPARSITY}*100))")
 
 PYTHON=/home1/doyoonkim/miniconda3/envs/rac/bin/python
-MODEL="/home1/doyoonkim/.cache/huggingface/hub/models--Qwen--Qwen3-1.7B/snapshots/70d244cc86ccca08cf5af4e1e306ecf908b1ad5e"
+MODEL="/home1/doyoonkim/.cache/huggingface/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c"
 DATA_PATH="$DATA_PATH_ARG"
 OPD_PROMPT_PATH="/home1/doyoonkim/projects/elsa/data/ot3_fineweb_200k_qwen3_opdprompts.jsonl"
 
@@ -85,7 +81,9 @@ export WANDB_API_KEY=$(grep WANDB_API_KEY ~/.bashrc | cut -d'=' -f2 | tail -1)
 # fragmentation mitigation the CuMemAllocator assertion doesn't check for
 # (it only greps for the literal string "expandable_segments:True") --
 # leaving fragmentation completely unmitigated caused a real OOM after
-# ~760 steps (720073: 26GB reserved-but-unallocated, 4.64GB request denied).
+# ~760 steps on the 1.7B single-GPU 2:4 canary (720073); same mitigation
+# applies here since PGD's extra calibration forward passes add the same
+# kind of fragmentation pressure regardless of model size.
 export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:256
 export TOKENIZERS_PARALLELISM=false
 export VLLM_USE_V1=0
@@ -93,15 +91,15 @@ export VLLM_USE_V1=0
 # _report_continuous_usage, a `while True: time.sleep(600)` loop) --
 # observed to cause a rare but reproducible interpreter-level crash
 # ("Fatal Python error: none_dealloc: deallocating None") deep into
-# training (e.g. step ~1650/2048), always right at a vLLM wake_up()
-# call. Not needed for a research training loop.
+# training, always right at a vLLM wake_up() call. Not needed for a
+# research training loop.
 export VLLM_NO_USAGE_STATS=1
 export VLLM_HOST_IP=127.0.0.1
 export TRITON_CACHE_DIR=/tmp/triton_cache_${USER}
 export HF_DATASETS_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 
-echo "=== TR-GMP NTP+KD+OPKD(0.33/0.33/0.33) Qwen3-1.7B s${SPARSITY_PCT} PGD-KL-budget(self-KL per step<=${KL_BUDGET}, tr_kl=${KL_THRESHOLD}) lr=${LR} mask_interval=${MASK_INTERVAL} rollout_interval=${ROLLOUT_INTERVAL} lr_scheduler=${LR_SCHEDULER} steps=${STEPS} post_target_steps=${POST_TARGET_STEPS} saliency=${SALIENCY} (OT80/FW20) ==="
+echo "=== TR-GMP NTP+KD+OPKD(${NTP_LAMBDA}/${KD_LAMBDA}/${OPKD_LAMBDA}) Qwen3-4B s${SPARSITY_PCT} PGD-KL-budget(self-KL per step<=${KL_BUDGET}, tr_kl=${KL_THRESHOLD}) lr=${LR} mask_interval=${MASK_INTERVAL} rollout_interval=${ROLLOUT_INTERVAL} lr_scheduler=${LR_SCHEDULER} steps=${STEPS} post_target_steps=${POST_TARGET_STEPS} saliency=${SALIENCY} (OT80/FW20) ==="
 echo "NODE=$(hostname)  JOB=$SLURM_JOB_ID"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 
@@ -112,14 +110,6 @@ fi
 
 cd /home1/doyoonkim/projects/elsa
 
-# --gmp_kl_chunk_size=2048 below: root cause of the repeated segfaults seen
-# in _kl_loss (kl_div/log_softmax on the full seqlen=8192 x ~152k-vocab
-# tensor, ~5GB in fp32, not FSDP-sharded) all session -- this flag existed
-# in the codebase for exactly this OOM/fragmentation risk (--gmp_kd_topk
-# defaults to 0=full-vocab, so that tensor was always built whole) but was
-# never actually turned on in any launcher. Every crash-and-retry before
-# this fixed nothing; it just re-rolled the dice on the same unmitigated
-# peak allocation.
 $PYTHON main.py \
     --model="$MODEL" \
     --dataset=mixed_cot \
@@ -144,7 +134,6 @@ $PYTHON main.py \
     --gmp_gradient_checkpointing=${GRAD_CKPT} \
     --gmp_max_prompt_len=512 \
     --gmp_kd_only=${KD_ONLY} \
-    --gmp_kl_chunk_size=2048 \
     --kd_nsamples=${KD_NSAMPLES} \
     --gmp_ntp_lambda=${NTP_LAMBDA} \
     --gmp_kd_lambda=${KD_LAMBDA} \
@@ -152,9 +141,12 @@ $PYTHON main.py \
     --gmp_onpolicy_kd_interval=${ROLLOUT_INTERVAL} \
     --gmp_onpolicy_max_new_tokens=${OPD_GEN_LEN} \
     --gmp_opkd_prev_mask_teacher=false \
-    --gmp_opkd_vllm_gpu_mem=${VLLM_GPU_MEM} \
+    --gmp_opkd_vllm_gpu_mem=0.15 \
     --gmp_prompt_path="$OPD_PROMPT_PATH" \
-    --gmp_tr_enabled=true \
+    --gmp_tr_enabled=false \
+    --gmp_growth_schedule=cubic \
+    --gmp_pruning_end_ratio=${PRUNING_END_RATIO} \
+    --gmp_cubic_log_kl=true \
     --gmp_tr_delta_init=0.05 \
     --gmp_tr_delta_min=0.001 \
     --gmp_tr_kl_threshold=${KL_THRESHOLD} \
@@ -166,8 +158,6 @@ $PYTHON main.py \
     --gmp_pgd_interval=${PGD_INTERVAL} \
     --gmp_pgd_post_target_only=${PGD_POST_TARGET_ONLY} \
     --gmp_pgd_skip_growth_step=true \
-    --gmp_onpolicy_reverse_kl=${OPD_REVERSE_KL} \
-    --gmp_opkd_prune_opd=${OPKD_PRUNE_OPD} \
     --gmp_save_path=/home1/doyoonkim/projects/elsa/models \
     --save_model=true \
     --push_to_hub=true \
@@ -176,7 +166,7 @@ $PYTHON main.py \
     --eval_zero_shot=true \
     --wandb=true \
     --wandb_project=${WANDB_PROJECT} \
-    --run_name_suffix="${RUN_TAG:+${RUN_TAG}_}pgd_klbudget${KL_BUDGET}_skipgrowth_lr${LR}_mi${MASK_INTERVAL}_ro${ROLLOUT_INTERVAL}_kl${KL_THRESHOLD}_${PRUNING_SCOPE}scope_$([ "${OPD_REVERSE_KL}" = "true" ] && echo revkl_)$([ "${OPKD_PRUNE_OPD}" = "true" ] && echo pruneopd_)$(basename "$DATA_PATH" .jsonl)" \
+    --run_name_suffix="${RUN_TAG:+${RUN_TAG}_}cubic_endratio${PRUNING_END_RATIO}_pgd_klbudget${KL_BUDGET}_lr${LR}_mi${MASK_INTERVAL}_ro${ROLLOUT_INTERVAL}_${PRUNING_SCOPE}scope_$(basename "$DATA_PATH" .jsonl)" \
     --seed=42
 
 echo "##### END #####"

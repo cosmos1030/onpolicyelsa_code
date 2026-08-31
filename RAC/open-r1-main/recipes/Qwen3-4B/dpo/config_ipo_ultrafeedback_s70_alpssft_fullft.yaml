@@ -1,0 +1,56 @@
+# IPO fine-tune of the pruned ALPS+SFT-s70 checkpoint (pre-GRPO base, wandb
+# 5x4prktp, math500=66.2/lcb=9.0/gpqa=26.8/ifeval=31.4/gsm8k=70.9 under the
+# 8192-budget "quick" eval profile) on UltraFeedback-binarized -- comparison
+# arm to config_ipo_ultrafeedback_s70_trgmp_fullft.yaml, which starts from
+# the TR-GMP+PGD s70 checkpoint instead. Same recipe, only the starting
+# checkpoint differs, to isolate what IPO adds on top of each pruning+
+# recovery method (mirrors the GRPO trgmp-vs-alpssft comparison design).
+#
+# Full fine-tuning + MaskedAdam, NOT LoRA -- see
+# config_ipo_ultrafeedback_s70_trgmp_fullft.yaml's header for why (the LoRA +
+# merge_and_unload() path silently densified this exact checkpoint's pruned
+# weights the first time IPO was run on it, as ipo_alpssft_s70_lr1e4_uf_lr1e-6_merged).
+
+# Model arguments
+model_name_or_path: cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260814_035030
+model_revision: main
+sparse_optimizer: MaskedAdam  # freezes pruned (zero) weights at zero every step
+torch_dtype: bfloat16
+attn_implementation: eager
+
+# Data training arguments
+dataset_name: trl-lib/ultrafeedback_binarized
+dataset_train_split: train
+dataset_test_split: test
+
+# DPO/IPO trainer config
+loss_type: ipo
+beta: 0.1
+bf16: true
+do_train: true
+do_eval: false
+gradient_accumulation_steps: 8
+gradient_checkpointing: true
+gradient_checkpointing_kwargs:
+  use_reentrant: false
+learning_rate: 5.0e-6
+log_level: info
+logging_first_step: true
+logging_steps: 1
+logging_strategy: steps
+lr_scheduler_type: cosine
+max_length: 2048
+max_prompt_length: 1024
+max_steps: -1
+num_train_epochs: 1
+output_dir: /home1/doyoonkim/projects/elsa/models/ipo_alpssft_s70_ultrafeedback_fullft_maskedadam
+overwrite_output_dir: true
+per_device_train_batch_size: 1
+push_to_hub: false
+report_to:
+- wandb
+save_strategy: "steps"
+save_steps: 200
+save_total_limit: 2
+seed: 42
+warmup_ratio: 0.1

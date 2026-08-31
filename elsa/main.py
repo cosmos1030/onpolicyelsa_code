@@ -1133,20 +1133,36 @@ if __name__ == '__main__':
     flags.DEFINE_string('gmp_hidden_mask', 'cot', 'Mask for hidden matching: cot (labels!=-100) or all (attention_mask, prompt+CoT).')
     flags.DEFINE_string('gmp_hidden_layers', 'final', 'Layer scope: final (last layer only) or anneal_all_to_final (coarse-to-fine).')
     flags.DEFINE_float('gmp_onpolicy_kd_lambda', 0.0, 'Weight for on-policy KD loss in GMP (0 = disabled).')
-    flags.DEFINE_integer('gmp_onpolicy_kd_interval', 1, 'Optimizer steps between on-policy KD generations. '
-                          'NOTE: while the vLLM rollout pool is active (the normal on-policy KD path), this flag does NOT '
-                          'control how often fresh rollouts are generated -- the pool is refilled once every '
-                          '--gmp_mask_interval steps (mask_interval * grad_accum rollouts at a time, see gmp_trainer.py\'s '
-                          '"OPKD vLLM pool refilled" block) and drawn down one batch per step until exhausted, regardless '
-                          'of this value. This flag only gates (a) the grad-conflict-filter snapshot check, and (b) a '
-                          'fallback "force a generation this step" trigger used when the pool path is not in effect. '
-                          'Real staleness of on-policy rollouts is bounded by --gmp_mask_interval, not by this flag.')
+    flags.DEFINE_integer('gmp_onpolicy_kd_interval', -1, 'Optimizer steps between on-policy KD generations, and '
+                          '(when the vLLM rollout pool is active, the normal on-policy KD path) the pool\'s refresh '
+                          'cadence. -1 (default) = tie to --gmp_mask_interval (old behavior: pool refills only at '
+                          'mask-update boundaries, mask_interval * grad_accum rollouts at a time). Set lower than '
+                          '--gmp_mask_interval to ALSO refresh the pool at every extra interval-boundary in between '
+                          '(see gmp_trainer.py\'s "OPKD vLLM pool refilled (mid-window, ...)" block), giving rollouts a '
+                          'freshness cadence decoupled from mask growth. Also gates the grad-conflict-filter snapshot '
+                          'check and the fallback "force a generation this step" trigger used when the pool path is '
+                          'not in effect.')
     flags.DEFINE_integer('gmp_onpolicy_max_new_tokens', 256, 'Max new tokens for on-policy student generation.')
     flags.DEFINE_integer('gmp_onpolicy_kd_topk', 0, 'Top-K for on-policy KL divergence (0 = full vocab).')
     flags.DEFINE_float('gmp_onpolicy_temperature', 0.6, 'Sampling temperature for on-policy generation.')
     flags.DEFINE_integer('gmp_onpolicy_grad_accum', 1, 'Number of on-policy generate+KL micro-steps to accumulate per interval.')
     flags.DEFINE_float('gmp_onpolicy_grad_clip', 1.0, 'Gradient clip norm applied after each on-policy rollout backward.')
     flags.DEFINE_boolean('gmp_onpolicy_reverse_kl', False, 'Use reverse KL D(S||T) for on-policy KD instead of forward KL.')
+    flags.DEFINE_boolean('gmp_opkd_prune_opd', False, 'Prune-OPD style monotone-decay token-reliability weighting for on-policy KD (see gmp_trainer._kl_loss docstring).')
+    flags.DEFINE_float('gmp_opkd_prune_opd_drop', 0.01, 'Per-bad-event weight decay step for gmp_opkd_prune_opd (Prune-OPD default: 0.01).')
+    flags.DEFINE_float('gmp_opkd_prune_opd_wbase', 0.5, 'Floor added to the decayed weight for gmp_opkd_prune_opd (Prune-OPD default: 0.5).')
+    flags.DEFINE_integer('gmp_opkd_prune_opd_topk', 256, 'Top-K used for the prune_opd reliability/overlap check, independent of gmp_onpolicy_kd_topk (Prune-OPD default log_prob_top_k: 256).')
+    flags.DEFINE_float('gmp_opkd_prune_opd_threshold', 0.7, 'overlap_ratio below this triggers a bad_event for gmp_opkd_prune_opd (Prune-OPD default: 0.7).')
+    flags.DEFINE_integer('gmp_saliency_diag_step', 0, 'If >0, run saliency_snapshot_diagnostic (baseline/magnitude/fixed_fisher/on_fisher/mix candidates, single snapshot) at this step, log to wandb, then exit. 0=off.')
+    flags.DEFINE_integer('gmp_saliency_diag_k', 4096, 'Global flat prune-candidate count for gmp_saliency_diag_step.')
+    flags.DEFINE_integer('gmp_saliency_diag_mc_nsamples', 8, 'Outer MC-sample count per Fisher estimate in gmp_saliency_diag_step; TOTAL backward passes = this * gmp_pgd_kl_calib_size (batch size B). CPU-toy evidence: total samples <16 underperforms the Adam baseline, ~32 clearly beats it -- default 8 * calib_size 4 = 32.')
+    flags.DEFINE_string('gmp_saliency_corr_step', '', 'Comma-separated step(s) at which to run saliency_random_group_correlation_diagnostic (Spearman rho between each candidate score and real per-group KL, over gmp_saliency_corr_groups random groups), e.g. "40,80,120" -- runs the diagnostic at EACH listed step within this one training run (no need to relaunch from scratch per step) and exits after the LAST one. Empty=off. Statistically sounder than gmp_saliency_diag_step\'s single bottom-k point estimate.')
+    flags.DEFINE_integer('gmp_saliency_corr_groups', 20, 'Number of random alive-weight groups sampled for gmp_saliency_corr_step.')
+    flags.DEFINE_integer('gmp_saliency_corr_group_size', 4096, 'Size of each random group for gmp_saliency_corr_step.')
+    flags.DEFINE_integer('gmp_saliency_corr_seed', 0, 'RNG seed for group sampling in gmp_saliency_corr_step.')
+    flags.DEFINE_boolean('gmp_saliency_ema_every_step', False, 'If true, call update_onpolicy_fisher_ema_continuous every training step (nsamples=1, gamma=0.999 to match Adam beta2) -- expensive (own separate forward+backward per step), for a genuinely apples-to-apples on-policy-Fisher-EMA vs Adam-exp_avg_sq comparison. Only meaningful together with gmp_saliency_corr_step.')
+    flags.DEFINE_integer('gmp_saliency_ema_nsamples', 1, 'MC-Fisher samples per step inside gmp_saliency_ema_every_step (default 1, matching Adam exp_avg_sq -- one real gradient per step). Raise to test whether on_fisher_ema underperforming baseline_composite_adam even at matched EMA depth is explained by per-sample multinomial-resampling variance (score-function Fisher estimator) rather than by shallower history -- cost scales linearly (nsamples x batch backward passes per step).')
+    flags.DEFINE_boolean('gmp_saliency_ntp_ema_every_step', False, 'If true, call update_ntp_only_fisher_ema every training step (real-label NTP gradient^2 EMA, gamma=0.999) regardless of whether NTP actually feeds the optimizer this run -- decoupled-saliency test: lets training drop NTP (reduces forgetting) while mask selection still uses NTP-quality curvature. Only meaningful together with gmp_saliency_corr_step.')
     flags.DEFINE_boolean('gmp_opkd_reuse_ipo_rollouts', False, 'If True, OPKD reuses IPO rejected rollouts (from RejectedQueue.rollout_pool) instead of generating new ones.')
     flags.DEFINE_boolean('gmp_opkd_prev_mask_teacher', False, 'Use pre-mask-update model snapshot as OPKD teacher instead of the dense teacher.')
     flags.DEFINE_float('gmp_prevmask_opkd_lambda', 0.0, 'Weight for prev-mask-teacher OPKD loss added on top of dense teacher OPKD (0=disabled).')

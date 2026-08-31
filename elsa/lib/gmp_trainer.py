@@ -1415,12 +1415,39 @@ def _hidden_loss_layerwise(s_hidden_states, t_hidden_states, labels, attention_m
     return (weights * layer_losses).sum()
 
 
-def _kl_loss(s_logits, t_logits, labels, temperature, topk, reverse=False, chunk_size=0):
+def _kl_loss(s_logits, t_logits, labels, temperature, topk, reverse=False, chunk_size=0,
+             prune_opd=False, prune_opd_drop=0.01, prune_opd_wbase=0.5,
+             prune_opd_topk=256, prune_opd_threshold=0.7):
     """Token-level KL divergence on CoT positions (labels != -100).
 
     reverse=False: forward KL D(T||S) over teacher top-K tokens (default)
     reverse=True:  reverse KL D(S||T) full vocab, always >= 0
     topk used for forward KL and for diag metrics in both modes.
+
+    prune_opd: ports Prune-OPD's (github.com/yangzhch6/Prune-OPD)
+    token-reliability weighting from long-horizon on-policy RL distillation
+    to our much shorter on-policy KD rollouts. Motivation here is different
+    from that paper's (rollout length): our model's own quality visibly
+    wobbles right after a mask-growth event (self-KL spikes for 1-3 PGD
+    calls before settling, see gmp_pgd_debug_importance_hist / the PGD
+    self-KL analysis this session), so a rollout SAMPLED during that
+    unstable window is a less trustworthy on-policy KD target than one
+    sampled once the mask has settled -- but gmp_onpolicy_kd_lambda
+    currently weights every rollout identically regardless of when in the
+    mask-growth cycle it was drawn. Once a token's student-top-K stops
+    overlapping the teacher's top-K enough ("bad_event": overlap_ratio <
+    prune_opd_threshold), every later token in that SAME rollout has its
+    loss weight decay by prune_opd_drop per additional violation (monotone
+    non-increasing, floored at prune_opd_wbase) -- an unreliable rollout's
+    later (compounding-error) tokens count for less, without having to
+    label which mask-growth phase produced it. The reliability check uses
+    its OWN top-K (prune_opd_topk, default 256) independent of `topk`
+    (which gates the forward-KL loss itself and may be 0 = full vocab) --
+    matches Prune-OPD's own decoupling of its overlap metric's
+    log_prob_top_k=256 from the RL objective, and its published
+    threshold=0.7 / w_drop=0.01 / w_base=0.5 defaults (from
+    experiments_scripts/prune-opd-*.sh, not the library fallback in
+    prune_opd.py). Applied regardless of `reverse` or `topk`.
 
     chunk_size > 0 (--gmp_kl_chunk_size): process the sequence dimension in
     chunks of this many tokens instead of materializing the full (B,T,V)
@@ -1476,19 +1503,56 @@ def _kl_loss(s_logits, t_logits, labels, temperature, topk, reverse=False, chunk
         kl = F.kl_div(s_logp_full, t_logp_full, log_target=True, reduction='none').sum(dim=-1)
 
     diag = {}
+    weight = None
     if topk > 0:
         with torch.no_grad():
             t_topk_idx = t_logits.topk(topk, dim=-1).indices
             s_topk_idx = s_logits.topk(topk, dim=-1).indices
             overlap = (s_topk_idx.unsqueeze(-1) == t_topk_idx.unsqueeze(-2)).any(dim=-1)
-            diag["kd/overlap_ratio"] = ((overlap.float().mean(dim=-1) * mask).sum() / denom).item()
+            overlap_ratio = overlap.float().mean(dim=-1)  # (B, T-1), per-token, in [0,1]
+            diag["kd/overlap_ratio"] = ((overlap_ratio * mask).sum() / denom).item()
             s_logp_s = s_logp_full.gather(-1, s_topk_idx)
             t_logp_t = t_logp_full.gather(-1, t_topk_idx)
             s_ent = -(s_logp_s.exp() * s_logp_s).sum(dim=-1)
             t_ent = -(t_logp_t.exp() * t_logp_t).sum(dim=-1)
             diag["kd/entropy_gap"] = (((s_ent - t_ent).abs() * mask).sum() / denom).item()
 
-    loss = (kl * mask).sum() / denom
+    if prune_opd:
+        # Prune-OPD-style monotone-decay reliability weight -- uses its OWN
+        # top-K (prune_opd_topk), independent of `topk`/the diagnostic block
+        # above, so this fires even when the loss itself is full-vocab
+        # (topk=0). See docstring for the threshold/drop/wbase defaults.
+        with torch.no_grad():
+            pk = min(prune_opd_topk, t_logits.shape[-1])
+            t_topk_idx_p = t_logits.topk(pk, dim=-1).indices
+            s_topk_idx_p = s_logits.topk(pk, dim=-1).indices
+            overlap_p = (s_topk_idx_p.unsqueeze(-1) == t_topk_idx_p.unsqueeze(-2)).any(dim=-1)
+            overlap_ratio_p = overlap_p.float().mean(dim=-1)  # (B, T-1)
+            bad_event = (overlap_ratio_p < prune_opd_threshold) & mask.bool()
+            cum_bad = bad_event.float().cumsum(dim=-1)
+            weight = (1.0 - prune_opd_drop * cum_bad).clamp(min=0.0, max=1.0) + prune_opd_wbase
+            weight = torch.where(mask.bool(), weight, torch.zeros_like(weight))
+            diag["kd/prune_opd_overlap_ratio"] = ((overlap_ratio_p * mask).sum() / denom).item()
+            diag["kd/prune_opd_weight_mean"] = ((weight * mask).sum() / denom).item()
+            diag["kd/prune_opd_bad_frac"] = (bad_event.sum(dim=-1) > 0).float().mean().item()
+
+            # WHERE reliability first breaks down within a rollout, as a
+            # fraction of that rollout's valid length -- tracks whether the
+            # "safe" prefix (before the model starts drifting from the
+            # teacher) shrinks/grows across training/mask-growth stages.
+            # 1.0 = never broke down (or empty rollout) this micro-batch.
+            has_bad = bad_event.any(dim=-1)
+            first_bad_idx = torch.where(has_bad, bad_event.float().argmax(dim=-1).float(),
+                                         mask.sum(dim=-1).float())
+            seq_valid_len = mask.sum(dim=-1).clamp(min=1).float()
+            first_bad_frac = (first_bad_idx / seq_valid_len).clamp(max=1.0)
+            diag["kd/prune_opd_first_bad_frac"] = first_bad_frac.mean().item()
+
+    if weight is not None:
+        wdenom = weight.sum().clamp(min=1e-6)
+        loss = (kl * weight).sum() / wdenom
+    else:
+        loss = (kl * mask).sum() / denom
     return loss, diag
 
 
@@ -1918,6 +1982,454 @@ def _compute_tr_kl(model: nn.Module, cal_batch: dict, cand_masks: dict,
     else:
         result = kl_vals.mean().item()
     return max(result, 0.0), kl_vals  # (scalar, per-token KL tensor)
+
+
+def _mc_fisher_named_params(model, named_params, cal_batch, device, nsamples=3):
+    """MC Fisher diagonal over `named_params` (the same Linear-weight tensors
+    maskmgr/PGD prune): F_ii = mean_n(grad[-log Q(y|h)]_i^2), y ~ Q_theta(.|h).
+
+    Per-SEQUENCE gradients (looping over the batch dim), not a single
+    batch-mean-loss backward: F.cross_entropy's default reduction='mean'
+    over a whole (B*T) flattened batch computes grad(mean_n loss_n), and
+    squaring THAT gives (mean_n g_n)^2, not the target mean_n(g_n^2) --
+    opposite-sign per-token/per-sequence gradients cancel in the mean before
+    squaring, which can make a genuinely important (high-curvature)
+    coordinate look ~0 just because different sequences pull it different
+    directions. This under-corrected version was ported faithfully from the
+    CPU toy's own mc_fisher_head, which has the identical bug (confirmed:
+    toy's "before" correlation 0.432 vs "after" per-sequence-fix 0.735-0.867
+    on the same rollout). Looping per-sequence (not per-token, which would
+    be B*T backward passes) is the practical middle ground -- still avoids
+    the cross-example cancellation, which is where the toy saw the large
+    effect. nsamples fresh y~Q_theta draws x B sequences = nsamples*B
+    backward passes total.
+
+    Accumulator lives on CPU, not GPU: keeping a persistent fp32 buffer the
+    size of every prunable Linear weight resident on-device for the whole
+    N-sample loop was itself a meaningful chunk of the OOMs this pilot hit
+    (on top of the already-tight co-located-vLLM + multi-loss training
+    memory). Moving each sample's g^2 to CPU immediately after computing it
+    keeps peak VRAM close to a single batch-size-1 backward pass, at the
+    cost of a small per-sample CPU transfer -- matches the reference
+    scout_stage_local_fisher bundle's design.
+    """
+    accum = {name: torch.zeros(p.shape, dtype=torch.float32, device='cpu') for name, p in named_params.items()}
+    input_ids = cal_batch['input_ids'].to(device)
+    attn_mask = cal_batch.get('attention_mask')
+    if attn_mask is not None:
+        attn_mask = attn_mask.to(device)
+    B = input_ids.shape[0]
+    was_training = model.training
+    model.train()
+    n_total = 0
+    for _ in range(nsamples):
+        for b in range(B):
+            ids_b = input_ids[b:b + 1]
+            mask_b = attn_mask[b:b + 1] if attn_mask is not None else None
+            model.zero_grad(set_to_none=True)
+            with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+                logits = model(input_ids=ids_b, attention_mask=mask_b).logits[:, :-1, :]
+            with torch.no_grad():
+                probs = logits.float().softmax(-1)
+                y = torch.multinomial(probs.reshape(-1, probs.shape[-1]), 1).reshape(probs.shape[:-1])
+            loss = F.cross_entropy(logits.reshape(-1, logits.shape[-1]).float(), y.reshape(-1))
+            loss.backward()
+            for name, p in named_params.items():
+                if p.grad is not None:
+                    accum[name] += (p.grad.detach().float() ** 2).cpu()
+            del logits, probs, y, loss
+            model.zero_grad(set_to_none=True)
+            n_total += 1
+    model.zero_grad(set_to_none=True)
+    if not was_training:
+        model.eval()
+    for name in accum:
+        accum[name] /= max(n_total, 1)
+    return accum
+
+
+def saliency_snapshot_diagnostic(model, maskmgr, fisher, cal_batch_on, cal_batch_ref, device,
+                                  k=4096, mc_nsamples=3, use_wandb=False, global_step=0):
+    """One-shot, single-timepoint comparison of candidate saliency estimators
+    (see scout_cpu_saliency_poc.zip / the CPU toy this mirrors): each
+    candidate proposes the same k lowest-scored (globally, across all
+    maskmgr.named_params) coordinates for pruning, and we measure the ACTUAL
+    self-KL each proposal would cause via _compute_tr_kl (same primitive PGD's
+    own kl-budget bisection uses). No EMA-over-stages here (needs persisted
+    state across multiple mask_interval boundaries) -- this is the cheap
+    single-snapshot pass meant to decide whether a full multi-stage run is
+    worth it at all.
+
+    cal_batch_on: on-policy rollout batch (student's own generations)
+    cal_batch_ref: fixed-reference batch (from the standard training data)
+    """
+    named_params = maskmgr.named_params
+    logging.info(f"[saliency_diag] computing candidate scores (k={k}, mc_nsamples={mc_nsamples}) at step={global_step}")
+
+    def _measure(score, cname):
+        # global top-k LOWEST score across all named_params -> proposed prune set.
+        # Mask out ALREADY-PRUNED positions (maskmgr.masks==False) first: at
+        # 70% sparsity most positions are already zero, and every candidate
+        # score (magnitude, Fisher*w^2) is trivially near-0 there too, so an
+        # unmasked global bottom-k is dominated by the huge already-dead pool
+        # and "prunes" things that are already pruned -- a near no-op that
+        # measured actual_kl~=0.000000 for every candidate before this fix.
+        # Only ALIVE positions can be meaningfully proposed for pruning.
+        masked_score = {name: torch.where(maskmgr.masks[name], score[name], score[name].new_full((), float('inf')))
+                         for name in named_params}
+        flat_scores = torch.cat([masked_score[name].reshape(-1) for name in named_params])
+        del masked_score
+        flat_sizes = [score[name].numel() for name in named_params]
+        offsets = [0]
+        for sz in flat_sizes:
+            offsets.append(offsets[-1] + sz)
+        k_eff = min(k, flat_scores.numel())
+        lowest_idx = torch.topk(flat_scores, k=k_eff, largest=False).indices
+        del flat_scores
+        cand_masks = {name: maskmgr.masks[name].clone() for name in named_params}
+        for name, off0, off1 in zip(named_params, offsets[:-1], offsets[1:]):
+            in_range = (lowest_idx >= off0) & (lowest_idx < off1)
+            sel = lowest_idx[in_range] - off0
+            if sel.numel() == 0:
+                continue
+            flat_mask = cand_masks[name].reshape(-1)
+            flat_mask[sel] = False  # candidate proposes pruning these (mask=False -> pruned)
+            cand_masks[name] = flat_mask.reshape(cand_masks[name].shape)
+        del lowest_idx
+        kl, _ = _compute_tr_kl(model, cal_batch_on, cand_masks, maskmgr, str(device))
+        del cand_masks
+        logging.info(f"[saliency_diag]   {cname:<28s} actual_kl={kl:.6f}")
+        return kl, k_eff
+
+    # Candidates are built and measured ONE AT A TIME, freed immediately after
+    # (torch.cuda.empty_cache() between each) -- holding all 5 full-model-sized
+    # (per prunable Linear weight) score dicts simultaneously was itself the
+    # cause of an OOM on an 80GB card after the (already memory-heavy) 32-sample
+    # MC-Fisher pass left the allocator with little headroom.
+    results = {}
+    k_eff = k
+
+    baseline = {name: fisher.importance(name, p) for name, p in named_params.items()}
+    results['baseline_composite_adam'], k_eff = _measure(baseline, 'baseline_composite_adam')
+    del baseline; torch.cuda.empty_cache()
+
+    magnitude = {name: p.data.float() ** 2 for name, p in named_params.items()}
+    results['magnitude'], _ = _measure(magnitude, 'magnitude')
+    del magnitude; torch.cuda.empty_cache()
+
+    # _mc_fisher_named_params accumulates on CPU (see its docstring -- avoids
+    # keeping a persistent full-model-sized fp32 buffer on GPU for the whole
+    # N-sample loop); move each back to `device` here, once, at combination
+    # time, not inside the sampling loop.
+    f_ref = {n: t.to(device) for n, t in _mc_fisher_named_params(model, named_params, cal_batch_ref, device, nsamples=mc_nsamples).items()}
+
+    fixed_fisher_score = {name: p.data.float() ** 2 * f_ref[name] for name, p in named_params.items()}
+    results['fixed_fisher'], _ = _measure(fixed_fisher_score, 'fixed_fisher')
+    del fixed_fisher_score; torch.cuda.empty_cache()
+
+    f_on = {n: t.to(device) for n, t in _mc_fisher_named_params(model, named_params, cal_batch_on, device, nsamples=mc_nsamples).items()}
+
+    on_fisher_score = {name: p.data.float() ** 2 * f_on[name] for name, p in named_params.items()}
+    results['on_fisher'], _ = _measure(on_fisher_score, 'on_fisher')
+    del on_fisher_score; torch.cuda.empty_cache()
+
+    mix_score = {name: p.data.float() ** 2 * (0.75 * f_ref[name] + 0.25 * f_on[name]) for name, p in named_params.items()}
+    del f_ref, f_on; torch.cuda.empty_cache()
+    results['mix_fixed75_on25'], _ = _measure(mix_score, 'mix_fixed75_on25')
+    del mix_score; torch.cuda.empty_cache()
+
+    if use_wandb:
+        import wandb as _wandb
+        _wandb.log({f"saliency_diag/{k}": v for k, v in results.items()}, step=global_step)
+        _wandb.log({"saliency_diag/k": k_eff}, step=global_step)
+    return results
+
+
+def _spearman_corr(a, b):
+    """Spearman rank correlation, no scipy dependency (matches the CPU toy's
+    pandas .rank(method='average') closely enough for continuous KL values
+    where exact ties are rare -- plain argsort-based ranks, not tie-aware)."""
+    a = torch.tensor(a, dtype=torch.float64)
+    b = torch.tensor(b, dtype=torch.float64)
+    ra = a.argsort().argsort().double()
+    rb = b.argsort().argsort().double()
+    ra = ra - ra.mean()
+    rb = rb - rb.mean()
+    denom = (ra.pow(2).sum().sqrt() * rb.pow(2).sum().sqrt()).item()
+    return (ra * rb).sum().item() / denom if denom > 0 else float('nan')
+
+
+def update_onpolicy_fisher_ema_continuous(model, maskmgr, cal_batch_on, device, ema_state, gammas=(0.999,), nsamples=1):
+    """Cheap, CONTINUOUS on-policy Fisher EMA update -- call this EVERY
+    training step (gmp_saliency_ema_every_step=true) so it has as many
+    updates baked in as Adam's own exp_avg_sq by any given step. Mirrors
+    Adam's design directly: a single (nsamples=1) MC-Fisher sample per call
+    -- cost = batch_size backward passes (e.g. 1-4), NOT the nsamples=8 (32
+    backward passes) used for a one-shot diagnostic snapshot -- with the EMA
+    itself, accumulated over every step across the whole run, doing the
+    variance reduction instead of paying for many MC samples within a
+    single call. Default gamma=0.999 matches --gmp_fisher_beta (Adam's own
+    beta2) exactly -- only meaningful once this runs every step; at
+    mask_interval-boundary-only cadence (32-step gaps) 0.999 barely moves
+    and 0.5/0.75 were the sensible choices instead (see the earlier
+    mask_interval-boundary version of this idea, superseded by this one
+    since 32-step spacing turned out barely deeper than the sparse
+    diagnostic-only blend it was meant to replace).
+
+    Deliberately does its OWN separate forward+backward rather than reusing
+    the training step's on-policy forward (which would need
+    retain_graph=True on the real loss's backward -- extra activation
+    memory kept alive, reopening the exact OOM fights this whole recipe
+    already went through today). Full cost accepted for now; only worth
+    optimizing later if this run proves the comparison is worth it.
+
+    ema_state: dict, mutated in place. Populates/updates
+    ema_state['f_on_ema999'] etc (CPU tensors, one per named_param, keyed by
+    round(gamma*1000)) directly -- saliency_random_group_correlation_diagnostic
+    reads these straight out when present instead of re-deriving its own
+    shallower blend from a single previous snapshot.
+    """
+    named_params = maskmgr.named_params
+    f_on = _mc_fisher_named_params(model, named_params, cal_batch_on, device, nsamples=nsamples)  # CPU tensors
+    _ema_blend_update(ema_state, f_on, named_params, gammas)
+
+
+def update_ntp_only_fisher_ema(model, maskmgr, ntp_batch, device, ema_state, gammas=(0.999,)):
+    """Decoupled-saliency building block: track an NTP-ONLY gradient-squared
+    EMA (real observed labels, NOT a resampled/self-sampled y -- this is the
+    genuine empirical Fisher estimator our early derivation showed NTP alone
+    gives cleanly, unlike KD/OPD's soft-target loss whose gradient already
+    marginalizes out label noise). Meant to run EVERY step regardless of
+    whether NTP is part of the actual training objective this run -- the
+    point is to let training drop NTP (avoids the forgetting NTP+KD+OPD
+    together showed in dense) while mask selection still gets NTP's
+    higher-quality curvature signal, by computing NTP's gradient here WITHOUT
+    ever handing it to the optimizer.
+
+    Same safe-timing contract as update_onpolicy_fisher_ema_continuous: call
+    this only where .grad is guaranteed empty (right after
+    optimizer.step()/optimizer.zero_grad()), since it does its own
+    independent forward+backward+zero_grad and does not attempt the
+    snapshot/restore dance needed to run mid-accumulation safely.
+
+    ntp_batch: a real NTP training batch (input_ids/attention_mask/labels
+    with true dataset labels, e.g. next(data_iter)) -- NOT a cal_batch built
+    for on-policy/self-sampled Fisher use.
+    """
+    named_params = maskmgr.named_params
+    input_ids = ntp_batch['input_ids'].to(device)
+    attn_mask = ntp_batch.get('attention_mask')
+    if attn_mask is not None:
+        attn_mask = attn_mask.to(device)
+    labels = ntp_batch['labels'].to(device)
+    was_training = model.training
+    model.train()
+    model.zero_grad(set_to_none=True)
+    with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+        out = model(input_ids=input_ids, attention_mask=attn_mask, labels=labels)
+        ntp_loss = out.loss
+    ntp_loss.backward()
+    f_ntp = {}
+    for name, p in named_params.items():
+        if p.grad is not None:
+            f_ntp[name] = p.grad.detach().float().cpu() ** 2
+        else:
+            f_ntp[name] = torch.zeros(p.shape, dtype=torch.float32, device='cpu')
+    model.zero_grad(set_to_none=True)
+    if not was_training:
+        model.eval()
+    for gamma in gammas:
+        key = f'f_ntp_ema{round(gamma * 1000)}'
+        prev = ema_state.get(key)
+        ema_state[key] = f_ntp if prev is None else {n: gamma * prev[n] + (1 - gamma) * f_ntp[n] for n in named_params}
+
+
+def _ema_blend_update(ema_state, f_on, named_params, gammas):
+    """Pure EMA-blend step, factored out so both the separate-forward path
+    (update_onpolicy_fisher_ema_continuous) and the reused-forward path
+    (fisher_grad_from_reused_onpolicy_forward, called inline from the real
+    on-policy KD step so it shares that step's own forward pass instead of
+    paying for a second one) update the same ema_state the same way."""
+    for gamma in gammas:
+        key = f'f_on_ema{round(gamma * 1000)}'
+        prev = ema_state.get(key)
+        if prev is None:
+            ema_state[key] = f_on
+        else:
+            ema_state[key] = {n: gamma * prev[n] + (1 - gamma) * f_on[n] for n in named_params}
+
+
+def saliency_random_group_correlation_diagnostic(model, maskmgr, fisher, cal_batch_on, cal_batch_ref, device,
+                                                   group_size=4096, n_groups=20, mc_nsamples=8,
+                                                   use_wandb=False, global_step=0, seed=0, ema_cache=None):
+    """Random-group Spearman correlation between each candidate saliency's
+    predicted score and ACTUAL pruning-induced KL -- the statistically sound
+    counterpart to saliency_snapshot_diagnostic's single bottom-k point
+    estimate. That single-point comparison (baseline/magnitude/fixed_fisher/
+    on_fisher/mix all landing within ~7% of each other on one k, one step)
+    can't distinguish a real ranking difference from noise; this instead
+    samples `n_groups` INDEPENDENT random alive-weight groups (same groups
+    for every candidate, so the comparison is paired), measures each group's
+    real KL once, and correlates that against every candidate's own
+    score-sum over that same group. One snapshot now yields a correlation
+    coefficient with actual samples behind it, not one number.
+
+    Groups are sampled from ALIVE positions only (same reasoning as
+    saliency_snapshot_diagnostic's fix -- an unrestricted pool is dominated
+    by already-pruned dead weight at high sparsity, which is a free "always
+    zero KL" group for every candidate and would inflate correlation as a
+    trivial artifact, not a real ranking result).
+
+    ema_cache: optional dict, reused across repeated calls within the SAME
+    training run (e.g. one call per entry in a multi-step
+    --gmp_saliency_corr_step="40,80,120" list). If given, also scores
+    on_fisher_ema50/on_fisher_ema75 -- the CPU-toy's own best-performing
+    candidates (temporal smoothing of the on-policy Fisher across
+    mask-growth stages, cutting single-snapshot sampling noise) -- which the
+    single-snapshot version of this diagnostic could never test since it has
+    no persisted state across calls. First call in a run has no previous
+    on-policy Fisher to smooth against, so EMA candidates are skipped that
+    time (falls back silently, not an error). Stored on CPU between calls
+    for the same reason _mc_fisher_named_params accumulates on CPU.
+    """
+    named_params = maskmgr.named_params
+    logging.info(f"[saliency_corr] sampling {n_groups} random alive-weight groups "
+                 f"(size={group_size}) at step={global_step}")
+
+    offsets = [0]
+    alive_parts = []
+    for name in named_params:
+        m = maskmgr.masks[name].reshape(-1)
+        alive_parts.append(m)
+        offsets.append(offsets[-1] + m.numel())
+    alive_flat = torch.cat(alive_parts)
+    del alive_parts
+    alive_idx = alive_flat.nonzero(as_tuple=True)[0]
+    del alive_flat
+    n_alive = alive_idx.numel()
+    g_eff = min(group_size, n_alive)
+
+    rng = torch.Generator(device='cpu').manual_seed(seed)
+    groups = [alive_idx[torch.randperm(n_alive, generator=rng)[:g_eff]] for _ in range(n_groups)]
+
+    # Ground truth: actual KL for each random group, measured ONCE and shared
+    # across every candidate below (paired comparison).
+    actual_kls = []
+    for gi, grp_idx in enumerate(groups):
+        cand_masks = {name: maskmgr.masks[name].clone() for name in named_params}
+        for name, off0, off1 in zip(named_params, offsets[:-1], offsets[1:]):
+            in_range = (grp_idx >= off0) & (grp_idx < off1)
+            sel = grp_idx[in_range] - off0
+            if sel.numel() == 0:
+                continue
+            flat_mask = cand_masks[name].reshape(-1)
+            flat_mask[sel] = False
+            cand_masks[name] = flat_mask.reshape(cand_masks[name].shape)
+        kl, _ = _compute_tr_kl(model, cal_batch_on, cand_masks, maskmgr, str(device))
+        actual_kls.append(kl)
+        del cand_masks
+        if (gi + 1) % 5 == 0:
+            logging.info(f"[saliency_corr]   ground-truth KL {gi + 1}/{n_groups} measured")
+    torch.cuda.empty_cache()
+
+    def _group_sums(score):
+        flat = torch.cat([score[name].reshape(-1) for name in named_params])
+        sums = [flat[grp_idx].sum().item() for grp_idx in groups]
+        del flat
+        return sums
+
+    correlations = {}
+
+    baseline = {name: fisher.importance(name, p) for name, p in named_params.items()}
+    correlations['baseline_composite_adam'] = _spearman_corr(_group_sums(baseline), actual_kls)
+    del baseline; torch.cuda.empty_cache()
+
+    # sqrt(v)*w^2 -- the Sparse Projected Adam (SPA) lr->0 limit ('sqrt_fisher'
+    # in AdamFisherTracker.importance): same Adam exp_avg_sq state and same
+    # w^2 term as baseline_composite_adam above, differing only in whether the
+    # metric weight is v (raw Fisher/Hessian-diagonal approx) or sqrt(v) (the
+    # metric Adam's own update actually preconditions by, i.e. its 1/(sqrt(v)+eps)
+    # denominator). Reuses the SAME exp_avg_sq state as baseline -- no extra
+    # forward/backward, isolates just the v-vs-sqrt(v) exponent choice.
+    f_sqrt = {name: fisher.fisher_factor(p) for name, p in named_params.items()}
+    sqrt_fisher_score = {name: (f_sqrt[name].clamp(min=0).sqrt() * p.data.float() ** 2
+                                 if f_sqrt[name] is not None else p.data.float() ** 2)
+                          for name, p in named_params.items()}
+    correlations['sqrt_fisher_baseline'] = _spearman_corr(_group_sums(sqrt_fisher_score), actual_kls)
+    del f_sqrt, sqrt_fisher_score; torch.cuda.empty_cache()
+
+    magnitude = {name: p.data.float() ** 2 for name, p in named_params.items()}
+    correlations['magnitude'] = _spearman_corr(_group_sums(magnitude), actual_kls)
+    del magnitude; torch.cuda.empty_cache()
+
+    f_ref = {n: t.to(device) for n, t in _mc_fisher_named_params(model, named_params, cal_batch_ref, device, nsamples=mc_nsamples).items()}
+    fixed_fisher_score = {name: p.data.float() ** 2 * f_ref[name] for name, p in named_params.items()}
+    correlations['fixed_fisher'] = _spearman_corr(_group_sums(fixed_fisher_score), actual_kls)
+    del fixed_fisher_score; torch.cuda.empty_cache()
+
+    f_on_raw = _mc_fisher_named_params(model, named_params, cal_batch_on, device, nsamples=mc_nsamples)  # CPU tensors
+    f_on = {n: t.to(device) for n, t in f_on_raw.items()}
+    on_fisher_score = {name: p.data.float() ** 2 * f_on[name] for name, p in named_params.items()}
+    correlations['on_fisher'] = _spearman_corr(_group_sums(on_fisher_score), actual_kls)
+    del on_fisher_score; torch.cuda.empty_cache()
+
+    mix_score = {name: p.data.float() ** 2 * (0.75 * f_ref[name] + 0.25 * f_on[name]) for name, p in named_params.items()}
+    del f_ref; torch.cuda.empty_cache()
+    correlations['mix_fixed75_on25'] = _spearman_corr(_group_sums(mix_score), actual_kls)
+    del mix_score; torch.cuda.empty_cache()
+
+    if ema_cache is not None:
+        # Prefer the CONTINUOUSLY-tracked EMA (update_onpolicy_fisher_ema_continuous,
+        # called every step throughout training -- as many updates by this
+        # step as Adam's own exp_avg_sq) over this function's own shallow
+        # single-previous-snapshot blend, which only has as many updates as
+        # there have been diagnostic calls (e.g. 2-3 total).
+        continuous_keys = sorted(k for k in ema_cache if k.startswith('f_on_ema'))
+        if continuous_keys:
+            for key in continuous_keys:
+                gamma_x1000 = int(key[len('f_on_ema'):])
+                cname = f'on_fisher_ema{gamma_x1000}'
+                f_ema = {n: t.to(device) for n, t in ema_cache[key].items()}
+                ema_score = {name: p.data.float() ** 2 * f_ema[name] for name, p in named_params.items()}
+                correlations[cname] = _spearman_corr(_group_sums(ema_score), actual_kls)
+                del f_ema, ema_score; torch.cuda.empty_cache()
+        else:
+            f_on_prev = ema_cache.get('f_on_prev')  # CPU tensors from the previous diag call, or None on the first call
+            if f_on_prev is not None:
+                logging.info("[saliency_corr]   (no continuous EMA tracker found -- falling back to shallow "
+                             "single-previous-snapshot blend, only as deep as the number of diag calls so far)")
+                for gamma, cname in ((0.5, 'on_fisher_ema50'), (0.75, 'on_fisher_ema75')):
+                    f_ema = {n: (gamma * f_on_prev[n] + (1 - gamma) * f_on_raw[n]).to(device) for n in named_params}
+                    ema_score = {name: p.data.float() ** 2 * f_ema[name] for name, p in named_params.items()}
+                    correlations[cname] = _spearman_corr(_group_sums(ema_score), actual_kls)
+                    del f_ema, ema_score; torch.cuda.empty_cache()
+            else:
+                logging.info("[saliency_corr]   (first diag call in this run -- no previous on-policy Fisher yet, "
+                             "skipping on_fisher_ema50/75 this time)")
+            ema_cache['f_on_prev'] = f_on_raw  # already CPU tensors, cheap to keep between calls
+
+        # NTP-ONLY tracked signal (update_ntp_only_fisher_ema) -- the
+        # decoupled-saliency test: real-label NTP gradient EMA, tracked
+        # independently of whatever the actual training objective is this
+        # run (may or may not include NTP itself).
+        ntp_keys = sorted(k for k in ema_cache if k.startswith('f_ntp_ema'))
+        for key in ntp_keys:
+            gamma_x1000 = int(key[len('f_ntp_ema'):])
+            cname = f'ntp_only_ema{gamma_x1000}'
+            f_ema = {n: t.to(device) for n, t in ema_cache[key].items()}
+            ema_score = {name: p.data.float() ** 2 * f_ema[name] for name, p in named_params.items()}
+            correlations[cname] = _spearman_corr(_group_sums(ema_score), actual_kls)
+            del f_ema, ema_score; torch.cuda.empty_cache()
+    del f_on
+
+    for cname, rho in correlations.items():
+        logging.info(f"[saliency_corr]   {cname:<28s} spearman_rho={rho:.4f}")
+
+    if use_wandb:
+        import wandb as _wandb
+        _wandb.log({f"saliency_corr/{k}": v for k, v in correlations.items()}, step=global_step)
+        _wandb.log({"saliency_corr/n_groups": n_groups, "saliency_corr/group_size": g_eff}, step=global_step)
+    return correlations
 
 
 def _squarehead_anchor_layers(num_hidden_states, block_size):
@@ -2510,6 +3022,11 @@ def globalprune_gmp(
     warmup_ratio        = getattr(FLAGS, 'gmp_warmup_ratio', 0.05)
     lr_schedule         = getattr(FLAGS, 'lr_scheduler', 'cosine')
     mask_interval       = getattr(FLAGS, 'gmp_mask_interval', 32)
+    _saliency_corr_steps = sorted({int(s) for s in getattr(FLAGS, 'gmp_saliency_corr_step', '').split(',') if s.strip()})
+    _saliency_ema_cache = {}  # persists across repeated saliency_random_group_correlation_diagnostic calls in this run
+    _saliency_ema_every_step = getattr(FLAGS, 'gmp_saliency_ema_every_step', False)
+    _saliency_ema_nsamples = getattr(FLAGS, 'gmp_saliency_ema_nsamples', 1)
+    _saliency_ntp_ema_every_step = getattr(FLAGS, 'gmp_saliency_ntp_ema_every_step', False)
     log_interval        = getattr(FLAGS, 'gmp_log_interval', 1)
     fisher_beta         = getattr(FLAGS, 'gmp_fisher_beta', 0.999)
     final_sparsity      = FLAGS.sparsity_ratio
@@ -2556,7 +3073,9 @@ def globalprune_gmp(
     hidden_mask    = getattr(FLAGS, 'gmp_hidden_mask', 'cot')
     hidden_layers  = getattr(FLAGS, 'gmp_hidden_layers', 'final')  # 'final' or 'anneal_all_to_final'
     onpolicy_lambda     = getattr(FLAGS, 'gmp_onpolicy_kd_lambda', 0.0)
-    onpolicy_interval   = getattr(FLAGS, 'gmp_onpolicy_kd_interval', 32)
+    onpolicy_interval   = getattr(FLAGS, 'gmp_onpolicy_kd_interval', -1)
+    if onpolicy_interval < 0:
+        onpolicy_interval = mask_interval  # default: tie rollout-refresh cadence to mask growth cadence (old behavior)
     opkd_reuse_ipo         = getattr(FLAGS, 'gmp_opkd_reuse_ipo_rollouts', False)
     opkd_vllm_gpu_mem      = getattr(FLAGS, 'gmp_opkd_vllm_gpu_mem', 0.35)
     opkd_prev_mask_teacher  = getattr(FLAGS, 'gmp_opkd_prev_mask_teacher', False)
@@ -2571,6 +3090,11 @@ def globalprune_gmp(
     onpolicy_grad_accum = max(1, getattr(FLAGS, 'gmp_onpolicy_grad_accum', 1))
     onpolicy_grad_clip  = getattr(FLAGS, 'gmp_onpolicy_grad_clip', 1.0)
     onpolicy_reverse_kl = getattr(FLAGS, 'gmp_onpolicy_reverse_kl', False)
+    opkd_prune_opd = getattr(FLAGS, 'gmp_opkd_prune_opd', False)
+    opkd_prune_opd_drop = getattr(FLAGS, 'gmp_opkd_prune_opd_drop', 0.01)
+    opkd_prune_opd_wbase = getattr(FLAGS, 'gmp_opkd_prune_opd_wbase', 0.5)
+    opkd_prune_opd_topk = getattr(FLAGS, 'gmp_opkd_prune_opd_topk', 256)
+    opkd_prune_opd_threshold = getattr(FLAGS, 'gmp_opkd_prune_opd_threshold', 0.7)
     onpolicy_pg           = getattr(FLAGS, 'gmp_onpolicy_pg', False)
     onpolicy_mixed_alpha  = getattr(FLAGS, 'gmp_onpolicy_mixed_alpha', 0.0)
     onpolicy_pg_cliprange = getattr(FLAGS, 'gmp_onpolicy_pg_cliprange', 0.2)
@@ -2769,14 +3293,20 @@ def globalprune_gmp(
             collate_fn=collate_prompts(tokenizer.pad_token_id or 0),
         )
         prompt_iter = _infinite(_prompt_loader)
-        # `interval` printed here is gmp_onpolicy_kd_interval, which does NOT govern
-        # rollout freshness while the vLLM pool path is active (the normal case) --
-        # the pool is refilled once every gmp_mask_interval steps regardless of this
-        # value (see the "OPKD vLLM pool refilled" log line for the value that
-        # actually matters). Logged anyway since it does gate the grad-conflict-filter
-        # snapshot and the no-pool fallback path.
-        logging.info(f"  On-policy KD: lambda={onpolicy_lambda}, interval={onpolicy_interval} (vLLM-pool cadence is "
-                     f"gmp_mask_interval={mask_interval}, not this value), "
+        # `interval` printed here is gmp_onpolicy_kd_interval. The vLLM pool is
+        # always refilled at every gmp_mask_interval boundary regardless of this
+        # value (that refill is tied to mask growth's own calibration needs and
+        # can't be decoupled). When onpolicy_interval < mask_interval, the pool
+        # is ALSO refilled at every extra onpolicy_interval boundary in between
+        # (see the "OPKD vLLM pool refilled (mid-window, ...)" log line below),
+        # giving rollouts a real refresh cadence independent of mask growth.
+        # When onpolicy_interval >= mask_interval (the default in every launcher
+        # script -- ROLLOUT_INTERVAL defaults to MASK_INTERVAL), this is a no-op
+        # and behavior is unchanged from before this flag did anything. It also
+        # still gates the grad-conflict-filter snapshot and the no-pool
+        # fallback path, as before.
+        logging.info(f"  On-policy KD: lambda={onpolicy_lambda}, interval={onpolicy_interval} "
+                     f"(mask_interval={mask_interval}; pool refresh fires every min(interval, mask_interval) steps), "
                      f"max_new_tokens={onpolicy_max_new}, topk={onpolicy_topk}")
 
     _opkd_vllm_engine = None
@@ -3477,6 +4007,84 @@ def globalprune_gmp(
         if pgd_enabled and pgd_kl_budget > 0 and _pgd_kl_cal_batch is None:
             _pgd_kl_cal_batch = _refresh_pgd_kl_cal_batch()
 
+        _saliency_diag_step = getattr(FLAGS, 'gmp_saliency_diag_step', 0)
+        if _saliency_diag_step > 0 and step == _saliency_diag_step and is_main_process:
+            if _pgd_kl_cal_batch is None:
+                _pgd_kl_cal_batch = _refresh_pgd_kl_cal_batch()
+            _diag_ref_batch = _pgd_kl_calib_batch(prompt_iter, pgd_kl_calib_size, pgd_kl_calib_seqlen, str(device))
+            saliency_snapshot_diagnostic(
+                model, maskmgr, fisher, _pgd_kl_cal_batch, _diag_ref_batch, str(device),
+                k=getattr(FLAGS, 'gmp_saliency_diag_k', 4096),
+                mc_nsamples=getattr(FLAGS, 'gmp_saliency_diag_mc_nsamples', 3),
+                use_wandb=use_wandb, global_step=step,
+            )
+            logging.info(f"[saliency_diag] done at step={step}, exiting (diagnostic-only run).")
+            import sys as _sys
+            _sys.exit(0)
+
+        if _saliency_corr_steps and step in _saliency_corr_steps and is_main_process:
+            if _pgd_kl_cal_batch is None:
+                _pgd_kl_cal_batch = _refresh_pgd_kl_cal_batch()
+            _corr_ref_batch = _pgd_kl_calib_batch(prompt_iter, pgd_kl_calib_size, pgd_kl_calib_seqlen, str(device))
+            saliency_random_group_correlation_diagnostic(
+                model, maskmgr, fisher, _pgd_kl_cal_batch, _corr_ref_batch, str(device),
+                group_size=getattr(FLAGS, 'gmp_saliency_corr_group_size', 4096),
+                n_groups=getattr(FLAGS, 'gmp_saliency_corr_groups', 20),
+                mc_nsamples=getattr(FLAGS, 'gmp_saliency_diag_mc_nsamples', 8),
+                use_wandb=use_wandb, global_step=step,
+                seed=getattr(FLAGS, 'gmp_saliency_corr_seed', 0),
+                ema_cache=_saliency_ema_cache,
+            )
+            if step == _saliency_corr_steps[-1]:
+                logging.info(f"[saliency_corr] done at step={step} (last of {_saliency_corr_steps}), exiting (diagnostic-only run).")
+                import sys as _sys
+                _sys.exit(0)
+            else:
+                logging.info(f"[saliency_corr] done at step={step}, continuing training toward next diag step "
+                             f"in {_saliency_corr_steps} (skip_growth_step's own PGD/mask logic below still runs normally).")
+
+        # Mid-window OPKD vLLM pool refresh: makes gmp_onpolicy_kd_interval
+        # actually control rollout freshness (previously dead code under the
+        # pool path -- pool refill was hardcoded to mask_interval only, see the
+        # "On-policy KD:" log above and job 819502's post-mortem). When
+        # onpolicy_interval < mask_interval, refresh the pool at every extra
+        # onpolicy_interval boundary that falls strictly between mask_interval
+        # boundaries (which already get their own refill below, tied to mask
+        # growth's calibration). No-op whenever onpolicy_interval >=
+        # mask_interval -- every existing launcher script defaults
+        # ROLLOUT_INTERVAL to MASK_INTERVAL, so this leaves all prior runs'
+        # behavior unchanged.
+        if (use_onpolicy and 0 < onpolicy_interval < mask_interval
+                and step % onpolicy_interval == 0 and step % mask_interval != 0):
+            _in_fsdp_refill_mid = fsdp_model is not None and _FSDP_AVAILABLE
+            _fsdp_sync_ctx_mid = (FSDP.summon_full_params(fsdp_model, writeback=False, offload_to_cpu=True, rank0_only=True)
+                                  if _in_fsdp_refill_mid else nullcontext())
+            with _fsdp_sync_ctx_mid:
+                if is_main_process and _opkd_vllm_engine is not None:
+                    if fsdp_model is None:
+                        _offload_optimizer_state(optimizer)
+                    _opkd_vllm_wake(_opkd_vllm_engine)
+                    if _in_fsdp_refill_mid and hasattr(_opkd_vllm_engine, 'sync_weights'):
+                        _sd = {n: p.data.cpu() for n, p in model.named_parameters()}
+                        _opkd_vllm_engine.sync_weights(_sd)
+                        del _sd
+                    elif not _in_fsdp_refill_mid:
+                        _sync_opkd_weights_to_vllm(model, _opkd_vllm_engine)
+            if is_main_process and _opkd_vllm_engine is not None:
+                _n_pool_mid = onpolicy_interval * grad_accum
+                _pool_batches = [next(prompt_iter) for _ in range(_n_pool_mid)]
+                _vllm_inputs, _flat_meta = _opkd_flatten_pool_batches(_pool_batches)
+                _vllm_outs = _opkd_vllm_engine.generate(_vllm_inputs, _opkd_vllm_params)
+                _opkd_vllm_sleep(_opkd_vllm_engine)
+                if fsdp_model is None:
+                    _reload_optimizer_state(optimizer, device)
+                _opkd_standalone_pool = _opkd_build_pool_from_outputs(_pool_batches, _flat_meta, _vllm_outs)
+                logging.info(f"  OPKD vLLM pool refilled (mid-window, onpolicy_interval={onpolicy_interval}): "
+                             f"{len(_opkd_standalone_pool)} rollouts (step={step})")
+            _opkd_standalone_pool = _opkd_broadcast_pool(_opkd_standalone_pool, is_distributed, device)
+            _opkd_standalone_pool_ptr = 0
+            torch.cuda.empty_cache()
+
         # periodic mask update (freeze mask after pruning_end_steps)
         if step % mask_interval == 0:
             # NOTE: _refresh_pgd_kl_cal_batch() used to be called right here,
@@ -4057,11 +4665,21 @@ def globalprune_gmp(
 
                         op_kl, op_diag = _kl_loss(s_out.logits, t_out.logits, gen_labels,
                                                   kd_temperature, onpolicy_topk,
-                                                  reverse=onpolicy_reverse_kl, chunk_size=kl_chunk_size)
+                                                  reverse=onpolicy_reverse_kl, chunk_size=kl_chunk_size,
+                                                  prune_opd=opkd_prune_opd,
+                                                  prune_opd_drop=opkd_prune_opd_drop,
+                                                  prune_opd_wbase=opkd_prune_opd_wbase,
+                                                  prune_opd_topk=opkd_prune_opd_topk,
+                                                  prune_opd_threshold=opkd_prune_opd_threshold)
                         if t_prev_out is not None:
                             op_kl_prev, _ = _kl_loss(s_out.logits, t_prev_out.logits, gen_labels,
                                                       kd_temperature, onpolicy_topk,
-                                                      reverse=onpolicy_reverse_kl, chunk_size=kl_chunk_size)
+                                                      reverse=onpolicy_reverse_kl, chunk_size=kl_chunk_size,
+                                                      prune_opd=opkd_prune_opd,
+                                                      prune_opd_drop=opkd_prune_opd_drop,
+                                                      prune_opd_wbase=opkd_prune_opd_wbase,
+                                                      prune_opd_topk=opkd_prune_opd_topk,
+                                                      prune_opd_threshold=opkd_prune_opd_threshold)
                         else:
                             op_kl_prev = None
 
@@ -4349,6 +4967,53 @@ def globalprune_gmp(
             optimizer.step()
             scheduler.step()
         optimizer.zero_grad()
+
+        if _saliency_ema_every_step and is_main_process and _pgd_kl_cal_batch is not None:
+            # Safe placement: .grad is guaranteed empty right here (just
+            # zeroed above, nothing pending until the next step's backward
+            # calls start accumulating) -- a separate forward+backward
+            # (own zero_grad inside _mc_fisher_named_params) can't clobber
+            # anything. The retain_graph-based reuse-the-on-policy-forward
+            # version (fisher_grad_from_reused_onpolicy_forward) was tried
+            # and reverted: avoiding a second forward pass there meant
+            # cloning ALL of .grad as a snapshot (full-model-sized, several
+            # GB) to safely undo its own backward's contribution mid-step,
+            # which is a worse memory trade than just paying for the extra
+            # forward here where no snapshot is needed at all.
+            update_onpolicy_fisher_ema_continuous(model, maskmgr, _pgd_kl_cal_batch, str(device), _saliency_ema_cache,
+                                                   nsamples=_saliency_ema_nsamples)
+
+        if _saliency_ntp_ema_every_step and is_main_process:
+            # Decoupled-saliency test: NTP's real-label gradient tracked
+            # here EVERY step regardless of whether ntp_lambda>0 actually
+            # feeds the optimizer this run -- lets a KD+OPD-only training
+            # objective (dropping NTP to reduce forgetting) still keep a
+            # good empirical-Fisher signal for mask selection. Same safe
+            # post-optimizer.step() timing as the on-policy tracker above.
+            #
+            # Prefer the on-policy rollout ALREADY generated for OPD this
+            # step (`generated`/`gen_labels`, still in scope -- Python has
+            # no block scoping, so the on-policy loop's last values survive
+            # to here) over a fixed-dataset batch: teacher-forcing NTP loss
+            # against the rollout's own already-sampled tokens is still a
+            # genuine observed-label gradient (same empirical-Fisher
+            # validity as fixed-dataset NTP), but the CONTEXT distribution
+            # is on-policy -- matches this session's original motivation
+            # (sample h from the current model's own occupancy, not a fixed
+            # reference corpus) with no extra generation cost, since OPD
+            # already paid for this rollout. Falls back to a fixed-dataset
+            # batch only if on-policy is off or this step's rollout somehow
+            # isn't available.
+            if use_onpolicy and 'generated' in dir() and 'gen_labels' in dir():
+                _ntp_batch = {'input_ids': generated, 'attention_mask': (generated != _pad_id).long(),
+                              'labels': gen_labels}
+            else:
+                _ntp_batch = next(data_iter)
+            # gamma=0.999 matches Adam's own beta2 exactly (~1000-step
+            # effective window); gamma=0.95 is a much shallower EMA
+            # (~20-step window) tried alongside out of curiosity -- both
+            # reuse this SAME single Fisher sample, no extra backward cost.
+            update_ntp_only_fisher_ema(model, maskmgr, _ntp_batch, str(device), _saliency_ema_cache, gammas=(0.999, 0.95))
 
         # ── PGD projection (fisher-saliency, FSDP-aware) ─────────────────────
         # Runs every step by design (classic PGD: project back onto the

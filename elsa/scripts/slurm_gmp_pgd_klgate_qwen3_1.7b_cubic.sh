@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=gmp_pgd_klgate_1.7b
+#SBATCH --job-name=gmp_pgd_klgate_1.7b_cubic
 #SBATCH --partition=A100-80GB
 #SBATCH --qos=hpgpu
 #SBATCH --gres=gpu:1
@@ -9,9 +9,20 @@
 #SBATCH --mem=80G
 #SBATCH --time=3-00:00:00
 #SBATCH --exclude=n3,n42,n46,n51,n52,n54,n55,n58,n60,n76,n77,n80,n91,n87,n61,n64,n31,n19
-#SBATCH --output=/home1/doyoonkim/projects/elsa/logs/gmp_pgd_klgate_1.7b_%j.out
+#SBATCH --output=/home1/doyoonkim/projects/elsa/logs/gmp_pgd_klgate_1.7b_cubic_%j.out
 exec 2>&1
 
+# Growth-schedule ablation fork of slurm_gmp_pgd_klgate_qwen3_1.7b.sh: same
+# capped-PGD reprojection every gmp_pgd_interval=8 steps throughout, but
+# mask GROWTH now follows a fixed cubic ramp (gmp_tr_enabled=false,
+# gmp_growth_schedule=cubic) reaching final_sparsity by step
+# steps*PRUNING_END_RATIO (default 0.5 -> step 1024/2048), instead of the
+# trust-region KL-gated growth the base script uses -- isolates whether
+# TR-GMP's self-KL-gated growth timing itself matters, independent of
+# PGD's own capped reprojection (which stays on, unchanged, for the whole
+# 2048 steps either way -- KL_THRESHOLD arg is unused in this mode, kept
+# only so the CLI shape matches the base script).
+#
 # Same as slurm_gmp_tr_ntpkd_opkd_qwen3_1.7b_pgd.sh (real TR-GMP KL-gated
 # growth every mask_interval + --gmp_pgd=true per-step reprojection) but
 # with the per-step reprojection now ALSO KL-gated instead of uncapped:
@@ -56,6 +67,7 @@ PGD_POST_TARGET_ONLY=${24:-false}  # gmp_pgd_post_target_only -- only let PGD re
 OPD_REVERSE_KL=${25:-false}  # gmp_onpolicy_reverse_kl -- use reverse KL D(S||T) (mode-seeking, always >=0, full vocab) for on-policy distillation instead of the default forward KL D(T||S) (mean-seeking, teacher top-K). Default false = forward KL as before.
 OPKD_PRUNE_OPD=${26:-false}  # gmp_opkd_prune_opd -- Prune-OPD-style monotone-decay token-reliability weighting for on-policy KD (down-weights later tokens in a rollout once student/teacher top-k stop overlapping). Default false = uniform per-token weight as before.
 VLLM_GPU_MEM=${27:-0.15}  # gmp_opkd_vllm_gpu_mem -- co-located vLLM engine's GPU memory fraction (of total, not free). 0.15 was sized for OPD_GEN_LEN=256; raise when OPD_GEN_LEN is bumped (512/1024/2048) to give the rollout KV cache more headroom and cut PreemptionMode.RECOMPUTE stalls -- verify with a short (e.g. steps=64) memcheck run first, same as any gen_len change.
+PRUNING_END_RATIO=${28:-0.5}  # gmp_pruning_end_ratio -- fixed cubic ramp reaches final_sparsity by step STEPS*this ratio (default 0.5 -> step 1024/2048); mask is frozen after that, PGD keeps running capped every PGD_INTERVAL steps regardless.
 NTP_LAMBDA=$(echo "$LOSS_WEIGHTS" | cut -d, -f1)
 KD_LAMBDA=$(echo "$LOSS_WEIGHTS" | cut -d, -f2)
 OPKD_LAMBDA=$(echo "$LOSS_WEIGHTS" | cut -d, -f3)
@@ -154,7 +166,10 @@ $PYTHON main.py \
     --gmp_opkd_prev_mask_teacher=false \
     --gmp_opkd_vllm_gpu_mem=${VLLM_GPU_MEM} \
     --gmp_prompt_path="$OPD_PROMPT_PATH" \
-    --gmp_tr_enabled=true \
+    --gmp_tr_enabled=false \
+    --gmp_growth_schedule=cubic \
+    --gmp_pruning_end_ratio=${PRUNING_END_RATIO} \
+    --gmp_cubic_log_kl=true \
     --gmp_tr_delta_init=0.05 \
     --gmp_tr_delta_min=0.001 \
     --gmp_tr_kl_threshold=${KL_THRESHOLD} \
@@ -176,7 +191,7 @@ $PYTHON main.py \
     --eval_zero_shot=true \
     --wandb=true \
     --wandb_project=${WANDB_PROJECT} \
-    --run_name_suffix="${RUN_TAG:+${RUN_TAG}_}pgd_klbudget${KL_BUDGET}_skipgrowth_lr${LR}_mi${MASK_INTERVAL}_ro${ROLLOUT_INTERVAL}_kl${KL_THRESHOLD}_${PRUNING_SCOPE}scope_$([ "${OPD_REVERSE_KL}" = "true" ] && echo revkl_)$([ "${OPKD_PRUNE_OPD}" = "true" ] && echo pruneopd_)$(basename "$DATA_PATH" .jsonl)" \
+    --run_name_suffix="${RUN_TAG:+${RUN_TAG}_}cubic_endratio${PRUNING_END_RATIO}_pgd_klbudget${KL_BUDGET}_lr${LR}_mi${MASK_INTERVAL}_ro${ROLLOUT_INTERVAL}_${PRUNING_SCOPE}scope_$([ "${OPD_REVERSE_KL}" = "true" ] && echo revkl_)$([ "${OPKD_PRUNE_OPD}" = "true" ] && echo pruneopd_)$(basename "$DATA_PATH" .jsonl)" \
     --seed=42
 
 echo "##### END #####"

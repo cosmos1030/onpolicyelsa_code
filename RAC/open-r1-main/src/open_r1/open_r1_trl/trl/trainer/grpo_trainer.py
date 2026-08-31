@@ -1,3 +1,4 @@
+import logging
 import os
 import textwrap
 import warnings
@@ -321,6 +322,9 @@ def nanmax(tensor: torch.Tensor) -> torch.Tensor:
     if torch.isnan(tensor).all(): 
         return torch.tensor(float("nan"), dtype=tensor.dtype, device=tensor.device)
     return torch.max(tensor[~torch.isnan(tensor)])
+
+
+logger = logging.getLogger(__name__)
 
 
 class GRPOTrainer(Trainer):

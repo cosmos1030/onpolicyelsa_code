@@ -12,6 +12,7 @@ _trl = _imp("open_r1_trl.trl")
 # ────────────────────────────────────────────────────────────────────
 _GRPOTrainer   = _imp("open_r1_trl.trl.trainer.grpo_trainer").GRPOTrainer
 _SFTTrainer    = _imp("open_r1_trl.trl.trainer.sft_trainer").SFTTrainer
+_DPOTrainer    = _imp("open_r1_trl.trl.trainer.dpo_trainer").DPOTrainer
 _TrlParser     = _imp("open_r1_trl.trl.scripts.utils").TrlParser
 _get_peft_cfg  = _imp("open_r1_trl.trl.trainer.utils").get_peft_config
 
@@ -29,12 +30,14 @@ _EXPORTS = [
     "ScriptArguments",
     "GRPOConfig",
     "SFTConfig",
+    "DPOConfig",
     "ModelConfig",
     "get_kbit_device_map",
     "get_quantization_config",
     # Extras we’re adding
     "GRPOTrainer",
     "SFTTrainer",
+    "DPOTrainer",
     "TrlParser",
     "get_peft_config",
     "setup_chat_format",
@@ -47,6 +50,7 @@ globals().update({n: getattr(_trl, n) for n in _EXPORTS if hasattr(_trl, n)})
 globals().update({
     "GRPOTrainer":      _GRPOTrainer,
     "SFTTrainer":       _SFTTrainer,
+    "DPOTrainer":       _DPOTrainer,
     "TrlParser":        _TrlParser,
     "get_peft_config":  _get_peft_cfg,
     "setup_chat_format": _setup_chat_fmt,

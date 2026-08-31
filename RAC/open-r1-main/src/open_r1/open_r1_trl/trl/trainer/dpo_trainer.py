@@ -52,6 +52,7 @@ from transformers.utils import is_peft_available, is_torch_xpu_available
 from ..data_utils import maybe_apply_chat_template, maybe_extract_prompt
 from ..models import create_reference_model, prepare_deepspeed
 from ..models.utils import prepare_fsdp
+from ..pruner.masked_adam import MaskedAdam
 from .callbacks import SyncRefModelCallback
 from .dpo_config import DPOConfig, FDivergenceConstants, FDivergenceType
 from .utils import (
@@ -684,6 +685,37 @@ class DPOTrainer(Trainer):
                 "ref_chosen_logps",
                 "ref_rejected_logps",
             ]
+
+    def create_optimizer(self):
+        # Mirrors GRPOTrainer's create_optimizer (grpo_trainer.py) -- without
+        # this override, `sparse_optimizer: MaskedAdam` in the yaml config is
+        # silently ignored here (DPOConfig declares the field but nothing
+        # reads it), so a pruned checkpoint's zeroed weights get densified by
+        # plain AdamW within the first few dozen steps of DPO/IPO training,
+        # same failure mode already fixed for GRPO/SFT.
+        sparse_opt = getattr(self.args, "sparse_optimizer", None)
+        if sparse_opt == "MaskedAdam":
+            decay_parameters = self.get_decay_parameter_names(self.model)
+            optimizer_grouped_parameters = [
+                {
+                    "params": [
+                        p for n, p in self.model.named_parameters() if (n in decay_parameters and p.requires_grad)
+                    ],
+                    "weight_decay": self.args.weight_decay,
+                },
+                {
+                    "params": [
+                        p for n, p in self.model.named_parameters() if (n not in decay_parameters and p.requires_grad)
+                    ],
+                    "weight_decay": 0.0,
+                },
+            ]
+            self.optimizer = MaskedAdam(
+                optimizer_grouped_parameters, lr=self.args.learning_rate,
+                betas=(self.args.adam_beta1, self.args.adam_beta2), eps=self.args.adam_epsilon,
+            )
+            return self.optimizer
+        return super().create_optimizer()
 
     def get_train_dataloader(self) -> DataLoader:
         """
