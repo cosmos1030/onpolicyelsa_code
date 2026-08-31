@@ -488,6 +488,34 @@ def _pgd_topk_mask_from_vals(vals, lo, hi, k, dev, use_fsdp, want_highest):
     return sel
 
 
+def _pgd_topk_mask_from_vals_kthvalue(vals, k, dev, want_highest):
+    """DIAGNOSTIC A/B alternative to _pgd_topk_mask_from_vals (--gmp_pgd_topk_impl=kthvalue,
+    default is 'bisect' -- this is not the default, analysis-phase only).
+    Same contract (given the same precomputed `vals` dict from
+    _pgd_build_topk_vals, return the boolean selection mask for the k
+    highest/lowest values), but finds the threshold via one torch.kthvalue
+    call on a one-time flat concat of the candidate pool instead of 64
+    sequential value-threshold bisection iterations. Ties at the exact
+    threshold value are NOT thinned here (unlike _pgd_topk_mask_from_vals's
+    tie-breaking) -- kthvalue's own tie-breaking (whichever elements happen
+    to land on the boundary) governs, so this diagnostic path can still
+    overshoot/undershoot k on a large tie cluster; that's a separate
+    question from the timing comparison this exists for.
+    Non-FSDP only (single-rank local concat) -- not wired up for the FSDP
+    collective case."""
+    if k <= 0:
+        return {n: torch.zeros_like(v, dtype=torch.bool) for n, v in vals.items()}
+    names = list(vals.keys())
+    flat = torch.cat([vals[n].reshape(-1) for n in names])
+    total = flat.numel()
+    if want_highest:
+        thr = torch.kthvalue(flat, max(1, total - k + 1)).values
+    else:
+        thr = torch.kthvalue(flat, min(total, k)).values
+    del flat
+    return {n: ((v >= thr) if want_highest else (v <= thr)) for n, v in vals.items()}
+
+
 def _fsdp_gather_flat(local_flat, group=None):
     """All-gather a flat local FSDP shard (arbitrary, possibly-zero, per-rank
     length -- classic FSDP1 concatenates ALL of a wrapped unit's parameters
@@ -3192,6 +3220,7 @@ def globalprune_gmp(
     pgd_skip_growth_step = getattr(FLAGS, 'gmp_pgd_skip_growth_step', False)  # skip PGD on the exact step growth just fired, so the model trains at least one step under the mask growth decided before PGD can touch it again
     pgd_post_target_only = getattr(FLAGS, 'gmp_pgd_post_target_only', False)  # isolate PGD's post-target-maintenance role from its during-growth-ramp role -- see gate check at the main PGD condition below
     pgd_interval = max(1, getattr(FLAGS, 'gmp_pgd_interval', 1))  # only run PGD's reprojection every Nth step (default 1 = every step, prior behavior) -- decouples PGD's own cadence from mask_interval's growth cadence
+    pgd_topk_impl = getattr(FLAGS, 'gmp_pgd_topk_impl', 'bisect')  # DIAGNOSTIC/A-B only (analysis phase, not a default): 'bisect' (default, unchanged 64-iter value-threshold search) or 'kthvalue' (torch.kthvalue on a one-time concat of the candidate pool instead) -- only wired into the unstructured gmp_pgd_kl_budget branch (where gmp_pgd_grow_to_target lives), non-FSDP only.
     pgd_grow_to_target = getattr(FLAGS, 'gmp_pgd_grow_to_target', False)  # PGD-driven growth (no separate TR-GMP growth): _pgd_desired targets final_sparsity directly (instead of matching current keep-count), and revive is no longer forced equal to prune -- revive saturates at min(k, revive_cand) while prune keeps going up to k, so whenever prune_cand > revive_cand (current sparsity < target) the self-KL-gated bisection alone drives net sparsity growth, at whatever pace the budget allows. Once current sparsity reaches target, prune_cand/revive_cand naturally converge and it degrades to pure polish/maintenance -- no separate at-target branch needed (unlike the N:M pre/post-target split). Intended for --gmp_tr_enabled=false + --sparsity_type=unstructured (not yet supported for N:M, which additionally needs group-structure-aware growth); only affects the unstructured gmp_pgd_kl_budget branch below.
     if pgd_grow_to_target:
         if tr_enabled:
@@ -5619,13 +5648,28 @@ def globalprune_gmp(
                     _pgd_kl_ref_cache = {}
                     _pgd_kl_at_calls = [0]
                     _pgd_kl_at_time = [0.0]
+                    # DIAGNOSTIC (analysis-phase only, no behavior change): split
+                    # _pgd_kl_at_time into "inner" (the 64-iter value-threshold
+                    # search in _pgd_topk_mask_from_vals, scans the full candidate
+                    # pool -- up to ~986M elements under gmp_pgd_grow_to_target)
+                    # vs "fwd" (the actual _compute_tr_kl model forward pass, on
+                    # the small pgd_kl_calib_size-sequence calibration batch) --
+                    # to find out which one actually dominates PGD's per-call cost
+                    # before deciding where (if anywhere) to optimize.
+                    _pgd_topk_time = [0.0]
+                    _pgd_fwd_time = [0.0]
 
                     def _pgd_kl_at(k):
                         """Self-KL if the k lowest-importance prune candidates were applied on top of the CURRENT mask."""
                         if k <= 0:
                             return 0.0
                         torch.cuda.synchronize(); _t_call0 = _time_dbg.time()
-                        _sel = _pgd_topk_mask_from_vals(_prune_vals, _prune_vlo, _prune_vhi, k, _pgd_dev, _pgd_use_fsdp, False)
+                        if pgd_topk_impl == 'kthvalue' and not _pgd_use_fsdp:
+                            _sel = _pgd_topk_mask_from_vals_kthvalue(_prune_vals, k, _pgd_dev, False)
+                        else:
+                            _sel = _pgd_topk_mask_from_vals(_prune_vals, _prune_vlo, _prune_vhi, k, _pgd_dev, _pgd_use_fsdp, False)
+                        torch.cuda.synchronize(); _t_topk1 = _time_dbg.time()
+                        _pgd_topk_time[0] += _t_topk1 - _t_call0
                         _cand_masks = {_n: (maskmgr.masks[_n] & ~_sel[_n]) if _n in _pgd_imps else maskmgr.masks[_n]
                                        for _n in maskmgr.named_params}
                         _kl, _ = _compute_tr_kl(fsdp_model if fsdp_model is not None else model,
@@ -5645,8 +5689,10 @@ def globalprune_gmp(
                             _dist.broadcast(_kl_t, src=0)
                             _kl = _kl_t.item()
                         torch.cuda.synchronize()
+                        _t_call2 = _time_dbg.time()
+                        _pgd_fwd_time[0] += _t_call2 - _t_topk1
                         _pgd_kl_at_calls[0] += 1
-                        _pgd_kl_at_time[0] += _time_dbg.time() - _t_call0
+                        _pgd_kl_at_time[0] += _t_call2 - _t_call0
                         return _kl
 
                     # Warm-started search: instead of always bisecting the full
@@ -5699,7 +5745,8 @@ def globalprune_gmp(
                     _pgd_last_k_actual = _k_actual
                     _pgd_kl_at_full = _pgd_kl_at(_n_prune_cand)  # KL if pure/uncapped PGD had applied ALL prune_cand -- not visited by the search itself, so this is one extra forward pass purely for this reference number.
                     logging.info(f"  [DBG kl_at_timing] calls={_pgd_kl_at_calls[0]} total_forward_time={_pgd_kl_at_time[0]:.3f}s "
-                                 f"avg_per_call={(_pgd_kl_at_time[0]/max(1,_pgd_kl_at_calls[0])):.3f}s (step={step})")
+                                 f"avg_per_call={(_pgd_kl_at_time[0]/max(1,_pgd_kl_at_calls[0])):.3f}s "
+                                 f"topk_time={_pgd_topk_time[0]:.3f}s fwd_time={_pgd_fwd_time[0]:.3f}s (step={step})")
                     logging.info(f"  [pgd_kl_budget] n_prune_cand={_n_prune_cand} n_revive_cand={_n_revive_cand} "
                                  f"k_actual={_k_actual} kl_at(k_actual)={_pgd_kl_at_k_lo:.6f} "
                                  f"kl_at(n_prune_cand)={_pgd_kl_at_full:.6f} budget={pgd_kl_budget} "
@@ -5718,7 +5765,10 @@ def globalprune_gmp(
                                    "pgd/k_actual": _k_actual, "pgd/n_prune_cand": _n_prune_cand,
                                    "pgd/n_revive_cand": _n_revive_cand,
                                    "pgd/net_prune_predicted": max(0, _k_actual - _n_revive_cand)}, step=step)
-                    _sel_prune = _pgd_topk_mask_from_vals(_prune_vals, _prune_vlo, _prune_vhi, _k_actual, _pgd_dev, _pgd_use_fsdp, False)
+                    if pgd_topk_impl == 'kthvalue' and not _pgd_use_fsdp:
+                        _sel_prune = _pgd_topk_mask_from_vals_kthvalue(_prune_vals, _k_actual, _pgd_dev, False)
+                    else:
+                        _sel_prune = _pgd_topk_mask_from_vals(_prune_vals, _prune_vlo, _prune_vhi, _k_actual, _pgd_dev, _pgd_use_fsdp, False)
                     del _prune_vals
                     # min(_k_actual, _n_revive_cand): under gmp_pgd_grow_to_target
                     # _k_actual can exceed _n_revive_cand by design (that excess
