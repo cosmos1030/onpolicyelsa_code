@@ -3791,21 +3791,31 @@ def globalprune_gmp(
             collate_fn=collate_prompts(tokenizer.pad_token_id or 0),
         )
         prompt_iter = _infinite(_prompt_loader)
-        # `interval` printed here is gmp_onpolicy_kd_interval. The vLLM pool is
-        # always refilled at every gmp_mask_interval boundary regardless of this
-        # value (that refill is tied to mask growth's own calibration needs and
-        # can't be decoupled). When onpolicy_interval < mask_interval, the pool
-        # is ALSO refilled at every extra onpolicy_interval boundary in between
-        # (see the "OPKD vLLM pool refilled (mid-window, ...)" log line below),
-        # giving rollouts a real refresh cadence independent of mask growth.
-        # When onpolicy_interval >= mask_interval (the default in every launcher
-        # script -- ROLLOUT_INTERVAL defaults to MASK_INTERVAL), this is a no-op
-        # and behavior is unchanged from before this flag did anything. It also
-        # still gates the grad-conflict-filter snapshot and the no-pool
-        # fallback path, as before.
+        # `interval` printed here is gmp_onpolicy_kd_interval. Two different
+        # refresh regimes depending on tr_enabled:
+        # - tr_enabled=true (TR-GMP growth): pool refill is tied to
+        #   gmp_mask_interval boundaries (mask growth's own calibration
+        #   needs), same as before. When onpolicy_interval < mask_interval,
+        #   the pool is ALSO refilled at every extra onpolicy_interval
+        #   boundary in between (see "OPKD vLLM pool refilled (mid-window,
+        #   ...)" below). When onpolicy_interval >= mask_interval (the
+        #   launcher default -- ROLLOUT_INTERVAL defaults to MASK_INTERVAL),
+        #   this is a no-op.
+        # - tr_enabled=false (pgd2growth): refill is fully decoupled from
+        #   mask_interval -- fires exactly every onpolicy_interval steps
+        #   regardless of mask_interval's value (see the "pgd2growth OPKD
+        #   pool refill" block further down in the training loop). PGD's
+        #   own mask decisions are pgd_interval-gated and never touch
+        #   mask_interval either, so nothing in this mode depends on it.
+        # Either way this also still gates the grad-conflict-filter snapshot
+        # and the no-pool fallback path, as before.
         logging.info(f"  On-policy KD: lambda={onpolicy_lambda}, interval={onpolicy_interval} "
-                     f"(mask_interval={mask_interval}; pool refresh fires every min(interval, mask_interval) steps), "
-                     f"max_new_tokens={onpolicy_max_new}, topk={onpolicy_topk}")
+                     f"(mask_interval={mask_interval}; "
+                     + (f"pool refresh fires every min(interval, mask_interval) steps)"
+                        if tr_enabled else
+                        f"pgd2growth mode -- pool refresh fires every {onpolicy_interval} steps, "
+                        f"independent of mask_interval)")
+                     + f", max_new_tokens={onpolicy_max_new}, topk={onpolicy_topk}")
 
     _opkd_vllm_engine = None
     _opkd_vllm_params = None
@@ -4552,7 +4562,13 @@ def globalprune_gmp(
         # mask_interval -- every existing launcher script defaults
         # ROLLOUT_INTERVAL to MASK_INTERVAL, so this leaves all prior runs'
         # behavior unchanged.
-        if (use_onpolicy and 0 < onpolicy_interval < mask_interval
+        # tr_enabled required: pgd2growth (tr_enabled=false) has its own
+        # fully-independent onpolicy_interval-gated block ("pgd2growth OPKD
+        # pool refill" below) that covers every onpolicy_interval boundary
+        # regardless of mask_interval -- without this guard the two blocks
+        # would both fire (double vLLM wake/generate/sleep) at every step
+        # where onpolicy_interval < mask_interval and step % onpolicy_interval == 0.
+        if (use_onpolicy and tr_enabled and 0 < onpolicy_interval < mask_interval
                 and step % onpolicy_interval == 0 and step % mask_interval != 0):
             _in_fsdp_refill_mid = fsdp_model is not None and _FSDP_AVAILABLE
             _fsdp_sync_ctx_mid = (FSDP.summon_full_params(fsdp_model, writeback=False, offload_to_cpu=True, rank0_only=True)
@@ -4870,8 +4886,16 @@ def globalprune_gmp(
                                     "train/delta_T_std":  _delta_std,
                                     "train/delta_T_pos_rate": _delta_pos}, step=step)
 
-            # OPKD vLLM pool refill AFTER mask update (only when TR-GMP is off)
-            if use_onpolicy and not _opkd_refilled_pre_mask:
+            # OPKD vLLM pool refill AFTER mask update (only when TR-GMP is on
+            # but already reached target -- sparse-training-continuation
+            # phase, still naturally cadenced by mask_interval). Pure
+            # PGD-driven growth (tr_enabled=false) is handled by its own
+            # onpolicy_interval-gated block below instead (see
+            # "pgd2growth OPKD pool refill" further down) -- mask_interval
+            # doesn't drive anything in that mode (PGD's own pgd_interval
+            # does), so tying rollout refresh to it here was an accidental
+            # coupling, not a real dependency.
+            if use_onpolicy and not _opkd_refilled_pre_mask and tr_enabled:
                 _in_fsdp_refill2 = fsdp_model is not None and _FSDP_AVAILABLE
                 _fsdp_sync_ctx2 = (FSDP.summon_full_params(fsdp_model, writeback=False, offload_to_cpu=True, rank0_only=True)
                                    if _in_fsdp_refill2 else nullcontext())
@@ -4937,6 +4961,43 @@ def globalprune_gmp(
             # next-best manual defrag: only touches PyTorch's free-block cache
             # (nothing live gets freed), so purely a memory-fragmentation
             # mitigation, no effect on the mask-search/KL logic or its outputs.
+            torch.cuda.empty_cache()
+
+        # pgd2growth OPKD pool refill (tr_enabled=false): decoupled from
+        # mask_interval entirely, gated on its own step % onpolicy_interval
+        # cadence. Mirrors the "AFTER mask update" refill above but as an
+        # independent top-level block so onpolicy_interval can be set below
+        # (more frequent refresh) OR above (less frequent) mask_interval --
+        # the mask_interval-nested version could only ever refresh at
+        # mask_interval's own cadence or a strict subdivision of it.
+        if use_onpolicy and not tr_enabled and step % onpolicy_interval == 0:
+            _in_fsdp_refill3 = fsdp_model is not None and _FSDP_AVAILABLE
+            _fsdp_sync_ctx3 = (FSDP.summon_full_params(fsdp_model, writeback=False, offload_to_cpu=True, rank0_only=True)
+                               if _in_fsdp_refill3 else nullcontext())
+            with _fsdp_sync_ctx3:
+                if is_main_process and _opkd_vllm_engine is not None:
+                    if fsdp_model is None:
+                        _offload_optimizer_state(optimizer)
+                    _opkd_vllm_wake(_opkd_vllm_engine)
+                    if _in_fsdp_refill3 and hasattr(_opkd_vllm_engine, 'sync_weights'):
+                        _sd = {n: p.data.cpu() for n, p in model.named_parameters()}
+                        _opkd_vllm_engine.sync_weights(_sd)
+                        del _sd
+                    elif not _in_fsdp_refill3:
+                        _sync_opkd_weights_to_vllm(model, _opkd_vllm_engine)
+            if is_main_process and _opkd_vllm_engine is not None:
+                _n_pool = onpolicy_interval * grad_accum
+                _pool_batches = [next(prompt_iter) for _ in range(_n_pool)]
+                _vllm_inputs, _flat_meta = _opkd_flatten_pool_batches(_pool_batches)
+                _vllm_outs = _opkd_vllm_engine.generate(_vllm_inputs, _opkd_vllm_params)
+                _opkd_vllm_sleep(_opkd_vllm_engine)
+                if fsdp_model is None:
+                    _reload_optimizer_state(optimizer, device)
+                _opkd_standalone_pool = _opkd_build_pool_from_outputs(_pool_batches, _flat_meta, _vllm_outs)
+                logging.info(f"  OPKD vLLM pool refilled (pgd2growth, onpolicy_interval={onpolicy_interval}): "
+                             f"{len(_opkd_standalone_pool)} rollouts (step={step})")
+            _opkd_standalone_pool = _opkd_broadcast_pool(_opkd_standalone_pool, is_distributed, device)
+            _opkd_standalone_pool_ptr = 0
             torch.cuda.empty_cache()
 
         # Early stop N steps after TR-GMP first reaches target sparsity, instead of
