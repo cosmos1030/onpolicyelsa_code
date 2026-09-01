@@ -6348,8 +6348,17 @@ def globalprune_gmp(
                         _pgd_revivals += int((_new & ~_old).sum().item())
                         _pgd_prunings += int((~_new & _old).sum().item())
                         maskmgr.masks[_n] = _new
+                    # BUGFIX: current_sparsity() does a dist.all_reduce() under FSDP
+                    # (world_size>1) -- calling it a second time from inside the
+                    # is_main_process-only wandb block below (as this used to)
+                    # issues that collective on rank0 only, with no matching call
+                    # on other ranks, desyncing the NCCL collective count across
+                    # ranks and deadlocking (reproduced live: rank0 stuck here
+                    # forever while other ranks race ahead). Call it once, here,
+                    # unconditionally on every rank, and reuse the value below.
+                    _pgd_post_sparsity = maskmgr.current_sparsity()
                     logging.info(f"  [pgd_kl_budget] applied revivals={_pgd_revivals} prunings={_pgd_prunings} "
-                                 f"post_sparsity={maskmgr.current_sparsity():.4f} (step={step})")
+                                 f"post_sparsity={_pgd_post_sparsity:.4f} (step={step})")
                     if use_wandb and is_main_process:
                         # Ground-truth applied counts (real mask diff, not the
                         # search's own k_actual/k_revive) -- the metric that
@@ -6360,7 +6369,7 @@ def globalprune_gmp(
                         wandb.log({"pgd/revivals": _pgd_revivals, "pgd/prunings": _pgd_prunings,
                                    "pgd/net_growth": _pgd_prunings - _pgd_revivals,
                                    "pgd/turnover": _pgd_revivals + _pgd_prunings,
-                                   "pgd/post_sparsity": maskmgr.current_sparsity()}, step=step)
+                                   "pgd/post_sparsity": _pgd_post_sparsity}, step=step)
                 # trust-region cap: limit how many positions actually flip this
                 # step (--gmp_pgd_max_swap_frac, fraction of total masked
                 # params). Uncapped PGD projects straight onto the full
@@ -6491,9 +6500,12 @@ def globalprune_gmp(
                     # of "this is the one branch that doesn't log". Mirroring the
                     # elif branch's log line here so uncapped PGD is as
                     # observable as the KL-gated path.
+                    # BUGFIX: same is_main_process-only current_sparsity() collective
+                    # mismatch as the kl_budget branch above -- call unconditionally.
+                    _pgd_uncapped_post_sparsity = maskmgr.current_sparsity()
                     if is_main_process:
                         logging.info(f"  [pgd_uncapped] applied revivals={_pgd_revivals} prunings={_pgd_prunings} "
-                                     f"post_sparsity={maskmgr.current_sparsity():.4f} (step={step})")
+                                     f"post_sparsity={_pgd_uncapped_post_sparsity:.4f} (step={step})")
                     if pgd_debug_repeat_swap and use_wandb and is_main_process:
                         wandb.log({"pgd/repeat_swap_frac": (_pgd_repeat_flips / _pgd_total_flips) if _pgd_total_flips > 0 else 0.0,
                                    "pgd/total_flips": _pgd_total_flips}, step=step)

@@ -34,7 +34,7 @@
 # before assuming single-GPU sequential queuing on a new container.
 # Machine-local launcher (paths under /NHNHOME/log-postech/doyoonkim/).
 #
-# Usage: bash b200_scripts/gmp_pgd_klgate_qwen3_4b.sh <SPARSITY> <KL_BUDGET> <KL_THRESHOLD> [OPD_GEN_LEN] [MASK_INTERVAL] [LR_SCHEDULER] [STEPS] [POST_TARGET_STEPS] [LR] [DATA_PATH] [SEQLEN] [GRAD_CKPT] [WANDB_PROJECT] [SALIENCY] [PRUNING_SCOPE] [LOSS_WEIGHTS] [SPARSITY_TYPE] [L1_LAMBDA] [ROLLOUT_INTERVAL] [KD_NSAMPLES] [CALIB_SIZE] [DEBUG_IMPORTANCE_HIST] [PGD_INTERVAL] [PGD_POST_TARGET_ONLY]
+# Usage: bash b200_scripts/gmp_pgd_klgate_qwen3_4b.sh <SPARSITY> <KL_BUDGET> <KL_THRESHOLD> [OPD_GEN_LEN] [MASK_INTERVAL] [LR_SCHEDULER] [STEPS] [POST_TARGET_STEPS] [LR] [DATA_PATH] [SEQLEN] [GRAD_CKPT] [WANDB_PROJECT] [SALIENCY] [PRUNING_SCOPE] [LOSS_WEIGHTS] [SPARSITY_TYPE] [L1_LAMBDA] [ROLLOUT_INTERVAL] [KD_NSAMPLES] [CALIB_SIZE] [DEBUG_IMPORTANCE_HIST] [PGD_INTERVAL] [PGD_POST_TARGET_ONLY] [REVERSE_KL]
 # e.g.: bash b200_scripts/gmp_pgd_klgate_qwen3_4b.sh 0.5 999 0.01 512 32 cosine 2048 0 5e-5 \
 #         "$OT3_DATA" 8192 true reasoning_qwen3_4b_nostrip8192 fisher global 0.33,0.33,0.33 unstructured 0.0 32 0 4 false 8
 set -e
@@ -63,6 +63,7 @@ CALIB_SIZE=${21:-4}   # gmp_pgd_kl_calib_size
 DEBUG_IMPORTANCE_HIST=${22:-false}  # gmp_pgd_debug_importance_hist -- diagnostic only, ~0.6s/step amortized
 PGD_INTERVAL=${23:-1}  # gmp_pgd_interval -- run PGD's reprojection only every Nth step
 PGD_POST_TARGET_ONLY=${24:-false}  # gmp_pgd_post_target_only -- PGD only fires once growth reaches final_sparsity
+REVERSE_KL=${25:-false}  # gmp_onpolicy_reverse_kl -- reverse KL D(S||T) for on-policy KD instead of forward KL D(T||S) (default)
 
 NTP_LAMBDA=$(echo "$LOSS_WEIGHTS" | cut -d, -f1)
 KD_LAMBDA=$(echo "$LOSS_WEIGHTS" | cut -d, -f2)
@@ -78,7 +79,7 @@ PYTHON=/NHNHOME/log-postech/doyoonkim/miniconda3/envs/rac/bin/python
 
 OPD_PROMPT_PATH="/NHNHOME/log-postech/doyoonkim/data/ot3_fineweb_200k_qwen3_opdprompts.jsonl"
 
-JOB_TAG="gmp_pgd_klgate_4b_b200_s${SPARSITY_PCT}_${SPARSITY_TYPE//:/}_lr${LR}_kl${KL_THRESHOLD}_klb${KL_BUDGET}_mi${MASK_INTERVAL}_pgdi${PGD_INTERVAL}${PGD_POST_TARGET_ONLY:+_pto${PGD_POST_TARGET_ONLY}}"
+JOB_TAG="gmp_pgd_klgate_4b_b200_s${SPARSITY_PCT}_${SPARSITY_TYPE//:/}_lr${LR}_kl${KL_THRESHOLD}_klb${KL_BUDGET}_mi${MASK_INTERVAL}_pgdi${PGD_INTERVAL}${PGD_POST_TARGET_ONLY:+_pto${PGD_POST_TARGET_ONLY}}${REVERSE_KL:+_rkl${REVERSE_KL}}"
 LOCAL_JOB_BASE="/NHNHOME/log-postech/doyoonkim/logs/${JOB_TAG}"
 mkdir -p "$LOCAL_JOB_BASE/wandb"
 
@@ -160,6 +161,7 @@ $PYTHON main.py \
     --gmp_pgd_debug_importance_hist=${DEBUG_IMPORTANCE_HIST} \
     --gmp_pgd_interval=${PGD_INTERVAL} \
     --gmp_pgd_post_target_only=${PGD_POST_TARGET_ONLY} \
+    --gmp_onpolicy_reverse_kl=${REVERSE_KL} \
     --gmp_pgd_skip_growth_step=true \
     --gmp_save_path=/NHNHOME/log-postech/doyoonkim/models \
     --save_model=true \
@@ -171,7 +173,7 @@ $PYTHON main.py \
     --wandb=true \
     --wandb_project=${WANDB_PROJECT} \
     --seed=42 \
-    --run_name_suffix="pgd_klbudget${KL_BUDGET}_skipgrowth_lr${LR}_mi${MASK_INTERVAL}_ro${ROLLOUT_INTERVAL}_kl${KL_THRESHOLD}_${PRUNING_SCOPE}scope_${SPARSITY_TYPE//:/}_b200"
+    --run_name_suffix="pgd_klbudget${KL_BUDGET}_skipgrowth_lr${LR}_mi${MASK_INTERVAL}_ro${ROLLOUT_INTERVAL}_kl${KL_THRESHOLD}_${PRUNING_SCOPE}scope_${SPARSITY_TYPE//:/}${REVERSE_KL:+_rkl${REVERSE_KL}}_b200"
 
 EXIT_CODE=$?
 echo "=== main.py EXIT: $EXIT_CODE ==="
