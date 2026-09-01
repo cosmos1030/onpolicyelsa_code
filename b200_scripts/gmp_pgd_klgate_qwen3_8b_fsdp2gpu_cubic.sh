@@ -47,6 +47,19 @@ SALIENCY=${15:-fisher}
 PRUNING_SCOPE=${16:-global}
 LOSS_WEIGHTS=${17:-0.33,0.33,0.33}  # NTP,KD,OPKD
 SPARSITY_TYPE=${18:-unstructured}   # unstructured | 2:4 | 4:8
+
+# N:M's post-target PGD path (_pgd_kl_at_nm_post, added in 92eeb8a) builds
+# full-model-sized importance tensors via a dict comprehension over every
+# param at once -- measured OOM at step 1544/2048 of a 2:4 run with FSDP
+# rank0 at 141.73GiB + vLLM sidecar at 35.80GiB (0.20 frac) leaving only
+# 177.75MiB free, short by 192MiB. Shave 0.01 (~1.78GiB) off the sidecar
+# for N:M only -- unstructured doesn't hit this code path and 0.20 is
+# already known-good there (2bb8f6e). Don't drop below ~0.18 for N:M:
+# vLLM's own weights+overhead alone need ~32GiB (documented OOM at 0.15).
+VLLM_GPU_MEM=0.20
+if [ "$SPARSITY_TYPE" != "unstructured" ]; then
+    VLLM_GPU_MEM=0.19
+fi
 L1_LAMBDA=${19:-0.0}
 ROLLOUT_INTERVAL=${20:-${MASK_INTERVAL}}
 KD_NSAMPLES=${21:-0}
@@ -138,7 +151,7 @@ $TORCHRUN --nproc_per_node=2 --master_port=${MASTER_PORT} main.py \
     --gmp_onpolicy_kd_interval=${ROLLOUT_INTERVAL} \
     --gmp_onpolicy_max_new_tokens=${OPD_GEN_LEN} \
     --gmp_opkd_prev_mask_teacher=false \
-    --gmp_opkd_vllm_gpu_mem=0.20 \
+    --gmp_opkd_vllm_gpu_mem=${VLLM_GPU_MEM} \
     --gmp_opkd_vllm_gpu_index=0 \
     --gmp_prompt_path="$OPD_PROMPT_PATH" \
     --gmp_tr_enabled=false \
