@@ -465,6 +465,13 @@ def _pgd_topk_mask_from_vals(vals, lo, hi, k, dev, use_fsdp, want_highest):
     # coordination on WHICH elements) -- but for a tie cluster this large
     # the binomial variance around the target count is tiny (~sqrt(N)
     # candidates), vastly tighter than accepting the entire tie or none of it.
+    # DIAGNOSTIC A/B toggle (env var, not a real flag -- temporary, for
+    # isolating this tie-breaking block's own wall-clock cost from
+    # everything else): GMP_PGD_SKIP_TIEBREAK=1 reverts to the old
+    # all-or-nothing behavior with none of the extra tensor ops below.
+    import os as _os_tiebreak
+    if _os_tiebreak.environ.get('GMP_PGD_SKIP_TIEBREAK') == '1':
+        return sel
     tied = {n: (v == thr) for n, v in vals.items()}
     n_tied_t = torch.zeros(1, dtype=torch.long, device=dev)
     for t in tied.values():
@@ -762,6 +769,361 @@ def _pgd_nm_post_target(imps, masks, prune_n, prune_m, shapes=None):
             continue
         new_masks[n] = _pgd_nm_post_target_2d(imp, prune_n, prune_m)
     return new_masks
+
+
+def _pgd_nm_group_finished_2d(mask, prune_n, prune_m):
+    """Per-group boolean, broadcast to every coordinate of that group: True
+    where the group's CURRENT alive-count already equals prune_n (a valid
+    N:M group). Pure structural check on the mask alone, no importance
+    needed -- used by gmp_pgd_grow_to_target's N:M path to split candidates
+    into "unfinished" groups (free coordinate-level movement toward target,
+    same as unstructured) vs "finished" groups (already-valid N:M groups,
+    restricted to paired swaps only so they never get pushed away from N:M
+    by an unpaired partial accept -- see _pgd_nm_finished_swap below)."""
+    n_rows, n_cols = mask.shape
+    n_full = n_cols // prune_m
+    n_nm = n_full * prune_m
+    mask_g = mask[:, :n_nm].reshape(n_rows * n_full, prune_m)
+    alive_count = mask_g.sum(dim=1)
+    finished_g = (alive_count == prune_n).unsqueeze(1).expand(-1, prune_m)
+    finished_full = torch.zeros(n_rows, mask.shape[1], dtype=torch.bool, device=mask.device)
+    finished_full[:, :n_nm] = finished_g.reshape(n_rows, n_nm)
+    return finished_full
+
+
+def _pgd_nm_group_finished(masks, prune_n, prune_m, shapes=None):
+    """Wrapper matching _pgd_nm_post_target's FSDP gather/scatter shim --
+    see _pgd_nm_group_finished_2d for the core per-tensor logic."""
+    if shapes:
+        import torch.distributed as _dist
+        _rank = _dist.get_rank()
+    result = {}
+    names = shapes.keys() if shapes else masks.keys()
+    for n in names:
+        mask = masks[n]
+        shape = shapes.get(n) if shapes else None
+        if shape is not None and tuple(shape) != tuple(mask.shape):
+            _dummy_imp = mask.new_zeros(mask.shape, dtype=torch.float32)
+            _, full_mask = _fsdp_nm_reconstruct(_dummy_imp, mask, shape)
+            full_fin = _pgd_nm_group_finished_2d(full_mask, prune_n, prune_m)
+            result[n] = _fsdp_nm_scatter_back(full_fin, mask.numel(), _rank, mask.shape)
+            continue
+        if mask.dim() < 2 or mask.numel() == 0:
+            result[n] = torch.zeros_like(mask)
+            continue
+        result[n] = _pgd_nm_group_finished_2d(mask, prune_n, prune_m)
+    return result
+
+
+def _pgd_nm_directional_2d(imp, mask, desired, prune_n, prune_m):
+    """For groups NOT at exactly prune_n alive yet (over- or under-shooting):
+    per-coordinate prune/revive ELIGIBILITY, directionally and per-group-
+    count restricted so a single accept can never push a group's alive-count
+    past prune_n in either direction, and never mixes prune+revive within
+    the SAME group in one step (a group is either overshoot-prune-eligible
+    XOR undershoot-revive-eligible XOR neither -- never both):
+      - alive_g > prune_n (overshoot): prune candidates only, capped
+        per-group at (alive_g - prune_n), lowest-importance-first within
+        the group (so if the step's budget can't clear the whole group,
+        the most confidently-unimportant excess goes first).
+      - alive_g < prune_n (undershoot): revive candidates only, capped
+        per-group at (prune_n - alive_g), highest-importance-first.
+      - alive_g == prune_n (finished): excluded entirely here -- handled
+        by _pgd_nm_finished_swap_2d instead, which enforces atomic pairing
+        (this function's per-group cap alone is NOT enough for finished
+        groups, since a finished group needs coordinated prune+revive, not
+        one-directional movement)."""
+    n_rows, n_cols = imp.shape
+    n_full = n_cols // prune_m
+    n_nm = n_full * prune_m
+    imp_g = imp[:, :n_nm].reshape(n_rows * n_full, prune_m)
+    mask_g = mask[:, :n_nm].reshape(n_rows * n_full, prune_m)
+    desired_g = desired[:, :n_nm].reshape(n_rows * n_full, prune_m)
+    alive_g = mask_g.sum(dim=1)
+    over_g = alive_g > prune_n
+    under_g = alive_g < prune_n
+    budget_over = (alive_g - prune_n).clamp(min=0)
+    budget_under = (prune_n - alive_g).clamp(min=0)
+
+    prune_cand_g = mask_g & ~desired_g
+    revive_cand_g = (~mask_g) & desired_g
+
+    prune_key = torch.where(prune_cand_g, imp_g, imp_g.new_full((), float('inf')))
+    prune_rank = prune_key.argsort(dim=1).argsort(dim=1)  # rank0 = lowest importance
+    prune_elig_g = prune_cand_g & over_g.unsqueeze(1) & (prune_rank < budget_over.unsqueeze(1))
+
+    revive_key = torch.where(revive_cand_g, imp_g, imp_g.new_full((), float('-inf')))
+    revive_rank = (-revive_key).argsort(dim=1).argsort(dim=1)  # rank0 = highest importance
+    revive_elig_g = revive_cand_g & under_g.unsqueeze(1) & (revive_rank < budget_under.unsqueeze(1))
+
+    prune_full = torch.zeros(n_rows, imp.shape[1], dtype=torch.bool, device=imp.device)
+    revive_full = torch.zeros(n_rows, imp.shape[1], dtype=torch.bool, device=imp.device)
+    prune_full[:, :n_nm] = prune_elig_g.reshape(n_rows, n_nm)
+    revive_full[:, :n_nm] = revive_elig_g.reshape(n_rows, n_nm)
+    return prune_full, revive_full
+
+
+def _pgd_nm_directional(imps, masks, desired, prune_n, prune_m, shapes=None):
+    """FSDP-aware wrapper -- see _pgd_nm_directional_2d. Same gather/scatter
+    shim as _pgd_nm_pre_target (needs `desired` gathered too, unlike
+    _pgd_nm_post_target/_pgd_nm_group_finished which don't take a desired
+    arg)."""
+    if shapes:
+        import torch.distributed as _dist
+        _rank = _dist.get_rank()
+    prune_out, revive_out = {}, {}
+    names = shapes.keys() if shapes else imps.keys()
+    for n in names:
+        mask = masks[n]
+        imp = imps.get(n)
+        if imp is None:
+            imp = mask.new_zeros(mask.shape, dtype=torch.float32)
+        des = desired.get(n) if desired is not None else None
+        if des is None:
+            des = mask
+        shape = shapes.get(n) if shapes else None
+        if shape is not None and tuple(shape) != tuple(imp.shape):
+            full_imp, full_mask = _fsdp_nm_reconstruct(imp, mask, shape)
+            full_des_flat = _fsdp_gather_flat(des.reshape(-1))
+            full_des = full_des_flat.reshape(tuple(shape))
+            full_p, full_r = _pgd_nm_directional_2d(full_imp, full_mask, full_des, prune_n, prune_m)
+            prune_out[n] = _fsdp_nm_scatter_back(full_p, imp.numel(), _rank, imp.shape)
+            revive_out[n] = _fsdp_nm_scatter_back(full_r, imp.numel(), _rank, imp.shape)
+            continue
+        if imp.dim() < 2 or imp.numel() == 0:
+            prune_out[n] = torch.zeros_like(mask)
+            revive_out[n] = torch.zeros_like(mask)
+            continue
+        prune_out[n], revive_out[n] = _pgd_nm_directional_2d(imp, mask, des, prune_n, prune_m)
+    return prune_out, revive_out
+
+
+def _pgd_nm_finished_swap_2d(imp, mask, desired, prune_n, prune_m):
+    """For groups ALREADY at exactly prune_n alive: identify which need a
+    swap (mask_g != desired_g) and score each such group as ONE ATOMIC UNIT
+    -- selection must happen at the group level (via the score returned
+    here), never independently on the flattened prune/revive coordinates,
+    or a selected prune from one group could pair with a selected revive
+    from an unrelated group and break BOTH (a real bug in an earlier
+    version of this code, caught by user review: independent top-k on
+    flat _prune_cand_fin/_revive_cand_fin pools has no per-group coupling
+    at all, even though global prune count == global revive count).
+
+    Returns (group_score [n_rows*n_full], prune_mask_g, revive_mask_g
+    [both n_rows*n_full, prune_m] bool, n_rows, n_full, n_nm) -- group
+    index order is row-major, caller reshapes back for expansion. score is
+    -inf for groups that are unfinished or already match desired (not
+    swap candidates)."""
+    n_rows, n_cols = imp.shape
+    n_full = n_cols // prune_m
+    n_nm = n_full * prune_m
+    imp_g = imp[:, :n_nm].reshape(n_rows * n_full, prune_m)
+    mask_g = mask[:, :n_nm].reshape(n_rows * n_full, prune_m)
+    desired_g = desired[:, :n_nm].reshape(n_rows * n_full, prune_m)
+    alive_g = mask_g.sum(dim=1)
+    finished_g = alive_g == prune_n
+    prune_mask_g = mask_g & ~desired_g
+    revive_mask_g = (~mask_g) & desired_g
+    needs_swap_g = prune_mask_g.any(dim=1) | revive_mask_g.any(dim=1)
+    eligible_g = finished_g & needs_swap_g
+
+    prune_cnt = prune_mask_g.sum(dim=1).clamp(min=1).float()
+    revive_cnt = revive_mask_g.sum(dim=1).clamp(min=1).float()
+    prune_imp_mean = (imp_g * prune_mask_g.float()).sum(dim=1) / prune_cnt
+    revive_imp_mean = (imp_g * revive_mask_g.float()).sum(dim=1) / revive_cnt
+    # "value" of doing this group's swap in one shot: how much more
+    # important is what we'd revive than what we'd prune -- bigger gap =
+    # safer/more-confident swap, accepted first under the self-KL budget.
+    score_g = revive_imp_mean - prune_imp_mean
+    score_g = torch.where(eligible_g, score_g, score_g.new_full((), float('-inf')))
+    return score_g, prune_mask_g, revive_mask_g, n_rows, n_full, n_nm
+
+
+def _pgd_nm_finished_swap_build(imps, masks, desired, prune_n, prune_m, shapes=None):
+    """FSDP-aware wrapper around _pgd_nm_finished_swap_2d. Unlike
+    _pgd_nm_directional's shim (gather -> compute -> scatter-back
+    per-tensor immediately), this returns the per-name (score_g,
+    prune_mask_g, revive_mask_g, meta) BEFORE any scatter-back, because
+    group-level top-k selection (done by the caller, across ALL names at
+    once) must run on the same full-shape group layout that produced the
+    scores -- scattering back to local shards first would fragment groups
+    across ranks and make the group index bookkeeping impossible to
+    reassemble correctly. meta[n] = (n_rows, n_full, n_nm, full_shape,
+    local_numel, local_shape) for the caller's later scatter-back of the
+    FINAL (post-selection) coordinate-level result.
+    FSDP note: this means every rank computes the FULL group score tensor
+    identically post-gather -- fine for correctness (all ranks agree) but
+    not yet perf-optimized for large FSDP world sizes; validated so far
+    only on the non-FSDP (single-GPU) path."""
+    if shapes:
+        import torch.distributed as _dist
+        _rank = _dist.get_rank()
+    scores, prune_g, revive_g, meta = {}, {}, {}, {}
+    names = shapes.keys() if shapes else imps.keys()
+    for n in names:
+        mask = masks[n]
+        imp = imps.get(n)
+        if imp is None:
+            imp = mask.new_zeros(mask.shape, dtype=torch.float32)
+        des = desired.get(n) if desired is not None else None
+        if des is None:
+            des = mask
+        shape = shapes.get(n) if shapes else None
+        if shape is not None and tuple(shape) != tuple(imp.shape):
+            full_imp, full_mask = _fsdp_nm_reconstruct(imp, mask, shape)
+            full_des_flat = _fsdp_gather_flat(des.reshape(-1))
+            full_des = full_des_flat.reshape(tuple(shape))
+            s, p, r, nr, nf, nnm = _pgd_nm_finished_swap_2d(full_imp, full_mask, full_des, prune_n, prune_m)
+            scores[n] = s; prune_g[n] = p; revive_g[n] = r
+            meta[n] = (nr, nf, nnm, tuple(shape), imp.numel(), tuple(imp.shape))
+            continue
+        if imp.dim() < 2 or imp.numel() == 0:
+            continue
+        s, p, r, nr, nf, nnm = _pgd_nm_finished_swap_2d(imp, mask, des, prune_n, prune_m)
+        scores[n] = s; prune_g[n] = p; revive_g[n] = r
+        meta[n] = (nr, nf, nnm, tuple(imp.shape), imp.numel(), tuple(imp.shape))
+    return scores, prune_g, revive_g, meta
+
+
+def _pgd_topk_groups_from_scores(scores, k, dev, use_fsdp):
+    """Select the k highest-scoring groups (FSDP-global count) from `scores`
+    (dict of per-name 1D float tensors, -inf for ineligible groups). Plain
+    LINEAR-space bisection, unlike _pgd_topk_mask_from_vals's log-space
+    search -- scores here are importance DIFFERENCES (revive_imp - prune_imp,
+    can be negative), so log-space doesn't apply; the heavy-tailed-range
+    problem log-space was built to fix is a property of raw non-negative
+    importance values, not of this bounded difference. Same tie-breaking
+    (random thinning) as _pgd_topk_mask_from_vals, for the same reason --
+    many groups can share the exact same score (e.g. 0.0 for untouched
+    embedding-table groups early in training)."""
+    if use_fsdp:
+        import torch.distributed as _dist
+    if k <= 0:
+        return {n: torch.zeros_like(v, dtype=torch.bool) for n, v in scores.items()}
+    finite_lo = min((v[torch.isfinite(v)].min().item() if torch.isfinite(v).any() else 0.0) for v in scores.values())
+    finite_hi = max((v[torch.isfinite(v)].max().item() if torch.isfinite(v).any() else 0.0) for v in scores.values())
+    if use_fsdp:
+        _lo_t = torch.tensor(finite_lo, device=dev)
+        _hi_t = torch.tensor(finite_hi, device=dev)
+        _dist.all_reduce(_lo_t, op=_dist.ReduceOp.MIN)
+        _dist.all_reduce(_hi_t, op=_dist.ReduceOp.MAX)
+        finite_lo, finite_hi = _lo_t.item(), _hi_t.item()
+    thr_lo, thr_hi = finite_lo, finite_hi
+    cnt_t = torch.zeros(1, dtype=torch.long, device=dev)
+    for _ in range(48):
+        mid = (thr_lo + thr_hi) / 2.0
+        cnt_t.zero_()
+        for v in scores.values():
+            cnt_t += (v >= mid).sum(dtype=torch.long)
+        if use_fsdp:
+            _dist.all_reduce(cnt_t, op=_dist.ReduceOp.SUM)
+        if cnt_t.item() > k:
+            thr_lo = mid
+        else:
+            thr_hi = mid
+    thr = thr_hi
+    sel = {n: (v >= thr) for n, v in scores.items()}
+    tied = {n: (v == thr) for n, v in scores.items()}
+    n_tied_t = torch.zeros(1, dtype=torch.long, device=dev)
+    for t in tied.values():
+        n_tied_t += t.sum(dtype=torch.long)
+    if use_fsdp:
+        _dist.all_reduce(n_tied_t, op=_dist.ReduceOp.SUM)
+    n_tied = int(n_tied_t.item())
+    if n_tied > 0:
+        n_strict_t = torch.zeros(1, dtype=torch.long, device=dev)
+        for n in scores:
+            n_strict_t += (sel[n] & ~tied[n]).sum(dtype=torch.long)
+        if use_fsdp:
+            _dist.all_reduce(n_strict_t, op=_dist.ReduceOp.SUM)
+        n_strict = int(n_strict_t.item())
+        n_needed = max(0, k - n_strict)
+        if n_needed < n_tied:
+            keep_frac = n_needed / n_tied
+            sel = {n: (sel[n] & ~tied[n]) | (tied[n] & (torch.rand_like(v) < keep_frac))
+                   for n, v in scores.items()}
+    return sel
+
+
+def _pgd_nm_expand_group_sel(sel_g, prune_g, revive_g, meta, rank=None):
+    """Expand a group-level selection (from _pgd_topk_groups_from_scores)
+    back into full coordinate-level prune/revive boolean masks, scattering
+    back to local FSDP shards if meta indicates this tensor was gathered
+    (full_shape != local_shape)."""
+    prune_out, revive_out = {}, {}
+    for n, sel in sel_g.items():
+        n_rows, n_full, n_nm, full_shape, local_numel, local_shape = meta[n]
+        p_g = prune_g[n] & sel.unsqueeze(1)
+        r_g = revive_g[n] & sel.unsqueeze(1)
+        p_full = torch.zeros(full_shape, dtype=torch.bool, device=sel.device)
+        r_full = torch.zeros(full_shape, dtype=torch.bool, device=sel.device)
+        p_full[:, :n_nm] = p_g.reshape(n_rows, n_nm)
+        r_full[:, :n_nm] = r_g.reshape(n_rows, n_nm)
+        if tuple(full_shape) != tuple(local_shape):
+            prune_out[n] = _fsdp_nm_scatter_back(p_full, local_numel, rank, local_shape)
+            revive_out[n] = _fsdp_nm_scatter_back(r_full, local_numel, rank, local_shape)
+        else:
+            prune_out[n] = p_full
+            revive_out[n] = r_full
+    return prune_out, revive_out
+
+
+def _pgd_nm_check_invariant(before_masks, after_masks, prune_n, prune_m, step, shapes=None):
+    """Hard runtime check (always on, not a debug flag -- this exists
+    specifically because the 3-phase gmp_pgd_grow_to_target N:M design had
+    two real per-group-atomicity bugs caught by user review before this
+    check was added, and prose claims of correctness were not trusted
+    afterward, for good reason). Verifies, for every N:M group in every
+    prunable tensor, that ONE PGD step's Phase A+B+C changes never made a
+    group's alive-count move further from prune_n than it started, and that
+    a group already exactly at prune_n before the step is STILL exactly at
+    prune_n after -- i.e. the invariant |a_g - prune_n| is non-increasing,
+    and finished groups stay finished. Raises RuntimeError (not a bare
+    `assert`, which can be compiled out with -O) with the offending tensor
+    name, group index, and before/after alive-counts on any violation, so a
+    breakage crashes the run loudly instead of silently shipping a
+    non-N:M checkpoint."""
+    if shapes:
+        import torch.distributed as _dist
+    names = shapes.keys() if shapes else before_masks.keys()
+    for n in names:
+        b_mask = before_masks[n]
+        a_mask = after_masks[n]
+        shape = shapes.get(n) if shapes else None
+        if shape is not None and tuple(shape) != tuple(b_mask.shape):
+            _dummy = b_mask.new_zeros(b_mask.shape, dtype=torch.float32)
+            _, b_full = _fsdp_nm_reconstruct(_dummy, b_mask, shape)
+            _, a_full = _fsdp_nm_reconstruct(_dummy, a_mask, shape)
+        else:
+            b_full, a_full = b_mask, a_mask
+        if b_full.dim() < 2 or b_full.numel() == 0:
+            continue
+        n_rows, n_cols = b_full.shape
+        n_full = n_cols // prune_m
+        n_nm = n_full * prune_m
+        if n_nm == 0:
+            continue
+        b_g = b_full[:, :n_nm].reshape(n_rows * n_full, prune_m).sum(dim=1)
+        a_g = a_full[:, :n_nm].reshape(n_rows * n_full, prune_m).sum(dim=1)
+        b_dist = (b_g - prune_n).abs()
+        a_dist = (a_g - prune_n).abs()
+        worse = a_dist > b_dist
+        if worse.any():
+            idx = int(torch.nonzero(worse, as_tuple=False)[0].item())
+            raise RuntimeError(
+                f"[pgd_nm_invariant] step={step} tensor={n} group={idx}: "
+                f"alive-count moved AWAY from prune_n={prune_n} "
+                f"(before={int(b_g[idx].item())}, after={int(a_g[idx].item())}) -- "
+                f"a Phase A/B/C bug let a group's |alive-prune_n| increase.")
+        was_finished = b_g == prune_n
+        broke_finished = was_finished & (a_g != prune_n)
+        if broke_finished.any():
+            idx = int(torch.nonzero(broke_finished, as_tuple=False)[0].item())
+            raise RuntimeError(
+                f"[pgd_nm_invariant] step={step} tensor={n} group={idx}: "
+                f"was already a valid N:M group (alive={prune_n}) but ISN'T "
+                f"anymore (after={int(a_g[idx].item())}) -- Phase C's atomic "
+                f"pairing didn't hold.")
 
 
 def _apply_mask(param, mask, ste=False):
@@ -3221,7 +3583,7 @@ def globalprune_gmp(
     pgd_post_target_only = getattr(FLAGS, 'gmp_pgd_post_target_only', False)  # isolate PGD's post-target-maintenance role from its during-growth-ramp role -- see gate check at the main PGD condition below
     pgd_interval = max(1, getattr(FLAGS, 'gmp_pgd_interval', 1))  # only run PGD's reprojection every Nth step (default 1 = every step, prior behavior) -- decouples PGD's own cadence from mask_interval's growth cadence
     pgd_topk_impl = getattr(FLAGS, 'gmp_pgd_topk_impl', 'bisect')  # DIAGNOSTIC/A-B only (analysis phase, not a default): 'bisect' (default, unchanged 64-iter value-threshold search) or 'kthvalue' (torch.kthvalue on a one-time concat of the candidate pool instead) -- only wired into the unstructured gmp_pgd_kl_budget branch (where gmp_pgd_grow_to_target lives), non-FSDP only.
-    pgd_grow_to_target = getattr(FLAGS, 'gmp_pgd_grow_to_target', False)  # PGD-driven growth (no separate TR-GMP growth): _pgd_desired targets final_sparsity directly (instead of matching current keep-count), and revive is no longer forced equal to prune -- revive saturates at min(k, revive_cand) while prune keeps going up to k, so whenever prune_cand > revive_cand (current sparsity < target) the self-KL-gated bisection alone drives net sparsity growth, at whatever pace the budget allows. Once current sparsity reaches target, prune_cand/revive_cand naturally converge and it degrades to pure polish/maintenance -- no separate at-target branch needed (unlike the N:M pre/post-target split). Intended for --gmp_tr_enabled=false + --sparsity_type=unstructured (not yet supported for N:M, which additionally needs group-structure-aware growth); only affects the unstructured gmp_pgd_kl_budget branch below.
+    pgd_grow_to_target = getattr(FLAGS, 'gmp_pgd_grow_to_target', False)  # PGD-driven growth (no separate TR-GMP growth): _pgd_desired targets final_sparsity directly (instead of matching current keep-count), and revive is no longer forced equal to prune -- revive saturates at min(k, revive_cand) while prune keeps going up to k, so whenever prune_cand > revive_cand (current sparsity < target) the self-KL-gated bisection alone drives net sparsity growth, at whatever pace the budget allows. Once current sparsity reaches target, prune_cand/revive_cand naturally converge and it degrades to pure polish/maintenance -- no separate at-target branch needed (unlike the old N:M pre/post-target split). Intended for --gmp_tr_enabled=false. Also supports sparsity_type=N:M now: _pgd_desired is replaced with a per-group top-prune_n projection of current importance (_pgd_nm_post_target) instead of a global threshold, and N:M bypasses the old pre/post-target split entirely, falling through to this same unstructured-shaped bisection -- intermediate masks are free to violate the N:M pattern group-by-group (a group's dead-count can sit anywhere from 0 to prune_m-prune_n mid-training, not just 0-or-exactly-N), converging to exactly N:M only once _pgd_desired is fully matched. Only affects the gmp_pgd_kl_budget branch below.
     if pgd_grow_to_target:
         if tr_enabled:
             logging.warning("  --gmp_pgd_grow_to_target=true with --gmp_tr_enabled=true: TR-GMP growth and "
@@ -5288,6 +5650,33 @@ def globalprune_gmp(
                     for _n in maskmgr.named_params
                 }
 
+                if pgd_grow_to_target and getattr(maskmgr, 'prune_n', 0) > 0 and getattr(maskmgr, 'prune_m', 0) > 0:
+                    # N:M-aware PGD-driven growth: a global-threshold _pgd_desired
+                    # (above) has no group structure, so it can't serve as an N:M
+                    # target directly -- an N:M target must itself always be
+                    # exactly prune_n-of-prune_m per group. Replace _pgd_desired
+                    # with an independent per-group top-prune_n projection of
+                    # CURRENT importance instead (_pgd_nm_post_target -- already
+                    # used unchanged for N:M's post-target maintenance phase;
+                    # reused here as-is, since "recompute the ideal N:M mask from
+                    # scratch off current importance" is exactly what a moving
+                    # target needs, regardless of whether the CURRENT mask is
+                    # itself N:M-valid yet). Everything downstream (prune_cand/
+                    # revive_cand, the self-KL bisection, tie-breaking) is then
+                    # IDENTICAL to the unstructured grow_to_target path below --
+                    # intermediate masks are free to violate the N:M pattern
+                    # group-by-group (a group can sit at 0, 1, 2, ... dead
+                    # coordinates mid-training, not just 0 or prune_n); only
+                    # _pgd_desired is constrained, so once m_t converges to it
+                    # (prune_cand/revive_cand both empty) every group is
+                    # automatically exactly N:M again -- no separate structural
+                    # eligibility check or at-target branch needed, unlike the
+                    # old pre/post-target split this bypasses (see the
+                    # `_pgd_is_nm and not pgd_grow_to_target` gate below).
+                    _pgd_desired = _pgd_nm_post_target(
+                        _pgd_imps, maskmgr.masks, maskmgr.prune_n, maskmgr.prune_m,
+                        shapes=(maskmgr.named_shapes if _pgd_use_fsdp else None))
+
                 # N:M-aware PGD (sparsity_type=2:4/4:8): plain global-threshold
                 # reprojection has no group awareness and silently breaks the
                 # N:M pattern (verified empirically: ~1.5-2.4% of groups ended
@@ -5302,7 +5691,179 @@ def globalprune_gmp(
                 # -- so post-target uses an independent per-group top-prune_n
                 # recompute instead. See _pgd_nm_pre_target/_pgd_nm_post_target.
                 _pgd_is_nm = getattr(maskmgr, 'prune_n', 0) > 0 and getattr(maskmgr, 'prune_m', 0) > 0
-                if _pgd_is_nm:
+                if _pgd_is_nm and pgd_grow_to_target:
+                    # N:M-aware PGD-driven growth, ONE joint self-KL-gated
+                    # bisection per step (not three independently-budgeted
+                    # phases -- an earlier version of this code did that and
+                    # was caught by user review: three separate <=delta
+                    # checks do NOT imply the combined transition is <=delta,
+                    # since KL has no triangle inequality
+                    # (D(Q_t,Q_A)<=delta and D(Q_A,Q_B)<=delta does not bound
+                    # D(Q_t,Q_B)). The ORIGINAL spec was always a single
+                    # check on the FULL candidate (theta_{t+1}, m_{t+1})
+                    # against the true pre-PGD state (theta_t, m_t) -- that
+                    # is what this now does).
+                    #
+                    # Per-group classification by current alive-count a_g vs
+                    # prune_n still splits candidates into three POOLS (this
+                    # part of the design was independently verified correct
+                    # by user review and is unchanged):
+                    #   - a_g > prune_n (OVERSHOOT): prune-only pool, capped
+                    #     per-group at (a_g - prune_n).
+                    #   - a_g < prune_n (UNDERSHOOT): revive-only pool,
+                    #     capped per-group at (prune_n - a_g).
+                    #   - a_g == prune_n (FINISHED): atomic per-group swap
+                    #     pool (group is the candidate unit, not a coordinate
+                    #     -- see _pgd_nm_finished_swap_2d).
+                    #
+                    # What changed: instead of bisecting each pool's own k
+                    # independently and applying phases sequentially (so
+                    # each phase's KL was measured against the PREVIOUS
+                    # phase's already-mutated state), a single shared
+                    # fraction alpha in [0,1] scales all three pools'
+                    # accepted counts together (k_x = round(alpha * n_x)),
+                    # and EVERY bisection trial's KL is measured by building
+                    # the FULL combined candidate straight from
+                    # _pgd_nm_masks_before (the true snapshot taken before
+                    # any of this step's changes) -- maskmgr.masks is never
+                    # mutated until the bisection is done and exactly one
+                    # alpha is applied, once, atomically. This guarantees
+                    # D_KL(Q_before || Q_after) <= pgd_kl_budget for the
+                    # WHOLE step by construction, not just per-phase.
+                    _pgd_nm_masks_before = {_n: maskmgr.masks[_n].clone() for _n in maskmgr.named_params}
+
+                    _pgd_elig_prune_dir, _pgd_elig_revive_dir = _pgd_nm_directional(
+                        _pgd_imps, _pgd_nm_masks_before, _pgd_desired, maskmgr.prune_n, maskmgr.prune_m,
+                        shapes=(maskmgr.named_shapes if _pgd_use_fsdp else None))
+                    _fin_scores, _fin_pg, _fin_rg, _fin_meta = _pgd_nm_finished_swap_build(
+                        _pgd_imps, _pgd_nm_masks_before, _pgd_desired, maskmgr.prune_n, maskmgr.prune_m,
+                        shapes=(maskmgr.named_shapes if _pgd_use_fsdp else None))
+                    _pgd_nm_rank = _dist.get_rank() if _pgd_use_fsdp else None
+
+                    _n_a_t = torch.tensor(sum(v.sum().item() for v in _pgd_elig_prune_dir.values()), dtype=torch.long, device=_pgd_dev)
+                    _n_b_t = torch.tensor(sum(v.sum().item() for v in _pgd_elig_revive_dir.values()), dtype=torch.long, device=_pgd_dev)
+                    _n_c_t = torch.tensor(sum(torch.isfinite(v).sum().item() for v in _fin_scores.values()), dtype=torch.long, device=_pgd_dev)
+                    if _pgd_use_fsdp:
+                        _dist.all_reduce(_n_a_t, op=_dist.ReduceOp.SUM)
+                        _dist.all_reduce(_n_b_t, op=_dist.ReduceOp.SUM)
+                        _dist.all_reduce(_n_c_t, op=_dist.ReduceOp.SUM)
+                    _n_a, _n_b, _n_c = int(_n_a_t.item()), int(_n_b_t.item()), int(_n_c_t.item())
+
+                    _k_a_final = _k_b_final = _k_c_final = 0
+                    _kl_final = 0.0
+                    if (_n_a > 0 or _n_b > 0 or _n_c > 0) and pgd_kl_budget > 0 and _pgd_kl_cal_batch is not None:
+                        _pv_a, _plo_a, _phi_a = _pgd_build_topk_vals(_pgd_imps, _pgd_elig_prune_dir, False, _pgd_lo, _pgd_hi) if _n_a > 0 else (None, None, None)
+                        _pv_b, _plo_b, _phi_b = _pgd_build_topk_vals(_pgd_imps, _pgd_elig_revive_dir, True, _pgd_lo, _pgd_hi) if _n_b > 0 else (None, None, None)
+                        _cache_joint = {}
+
+                        def _nm_combined_candidate(alpha):
+                            _k_a = round(alpha * _n_a)
+                            _k_b = round(alpha * _n_b)
+                            _k_c = round(alpha * _n_c)
+                            _sel_p_a = (_pgd_topk_mask_from_vals(_pv_a, _plo_a, _phi_a, _k_a, _pgd_dev, _pgd_use_fsdp, False)
+                                        if _k_a > 0 else {_n: torch.zeros_like(_m) for _n, _m in _pgd_nm_masks_before.items()})
+                            _sel_r_b = (_pgd_topk_mask_from_vals(_pv_b, _plo_b, _phi_b, _k_b, _pgd_dev, _pgd_use_fsdp, True)
+                                        if _k_b > 0 else {_n: torch.zeros_like(_m) for _n, _m in _pgd_nm_masks_before.items()})
+                            if _k_c > 0:
+                                _sel_g_c = _pgd_topk_groups_from_scores(_fin_scores, _k_c, _pgd_dev, _pgd_use_fsdp)
+                                _sel_p_c, _sel_r_c = _pgd_nm_expand_group_sel(_sel_g_c, _fin_pg, _fin_rg, _fin_meta, rank=_pgd_nm_rank)
+                            else:
+                                _sel_p_c = {_n: torch.zeros_like(_m) for _n, _m in _pgd_nm_masks_before.items()}
+                                _sel_r_c = {_n: torch.zeros_like(_m) for _n, _m in _pgd_nm_masks_before.items()}
+                            _cand = {}
+                            for _n in maskmgr.named_params:
+                                _base = _pgd_nm_masks_before[_n]
+                                if _n in _pgd_imps:
+                                    _pa = _sel_p_a.get(_n, torch.zeros_like(_base))
+                                    _rb = _sel_r_b.get(_n, torch.zeros_like(_base))
+                                    _pc = _sel_p_c.get(_n, torch.zeros_like(_base))
+                                    _rc = _sel_r_c.get(_n, torch.zeros_like(_base))
+                                    _cand[_n] = (_base | _rb | _rc) & ~_pa & ~_pc
+                                else:
+                                    _cand[_n] = _base
+                            return _cand, _k_a, _k_b, _k_c
+
+                        def _nm_kl_at(alpha):
+                            if alpha <= 0.0:
+                                return 0.0, 0, 0, 0, None
+                            _cand, _k_a, _k_b, _k_c = _nm_combined_candidate(alpha)
+                            _kl, _ = _compute_tr_kl(fsdp_model if fsdp_model is not None else model,
+                                                     _pgd_kl_cal_batch, _cand, maskmgr, str(device),
+                                                     kl_reduce=tr_kl_reduce, kl_quantile=tr_kl_quantile,
+                                                     ref_cache=_cache_joint)
+                            if _pgd_use_fsdp:
+                                _kl_t = torch.tensor([_kl], dtype=torch.float64, device=_pgd_dev)
+                                _dist.broadcast(_kl_t, src=0)
+                                _kl = _kl_t.item()
+                            return _kl, _k_a, _k_b, _k_c, _cand
+
+                        # _cand_final is saved from whichever bisection trial
+                        # actually won, NOT rebuilt afterward -- _pgd_topk_
+                        # mask_from_vals/_pgd_topk_groups_from_scores both use
+                        # torch.rand_like for tie-breaking (see their
+                        # docstrings), so calling _nm_combined_candidate(alpha)
+                        # a SECOND time at the exact same alpha draws a
+                        # DIFFERENT random tie-break and can silently produce a
+                        # different mask than the one the search actually
+                        # verified. Caught empirically (2:4 smoke test, step 1):
+                        # bisection accepted alpha=0.0312 at kl=0.0199, but a
+                        # naive re-call at the same alpha for the "independent"
+                        # apply-time check measured kl=0.020121 > 0.02 on the
+                        # freshly-redrawn (different) candidate and crashed.
+                        # Reusing the SAME saved candidate for both the search
+                        # and the apply-time re-check removes the randomness as
+                        # a confound while keeping the re-check honest: it's
+                        # still a genuinely fresh _compute_tr_kl call, just not
+                        # a fresh MASK.
+                        _alpha_lo, _alpha_hi = 0.0, 1.0
+                        _kl_at_lo = 0.0
+                        _cand_final = None
+                        for _ in range(pgd_kl_bisect_iters):
+                            _alpha_mid = (_alpha_lo + _alpha_hi) / 2.0
+                            _kl_mid, _ka_mid, _kb_mid, _kc_mid, _cand_mid = _nm_kl_at(_alpha_mid)
+                            if _kl_mid <= pgd_kl_budget:
+                                _alpha_lo, _kl_at_lo = _alpha_mid, _kl_mid
+                                _k_a_final, _k_b_final, _k_c_final = _ka_mid, _kb_mid, _kc_mid
+                                _cand_final = _cand_mid
+                            else:
+                                _alpha_hi = _alpha_mid
+                        _kl_final = _kl_at_lo
+                        if _alpha_lo > 0.0 and _cand_final is not None:
+                            # Re-measure the SAME (already-fixed) candidate
+                            # that won the search -- a fresh _compute_tr_kl
+                            # call, so this still catches a genuine bug in KL
+                            # computation itself, just not a re-drawn mask.
+                            _kl_final, _ = _compute_tr_kl(fsdp_model if fsdp_model is not None else model,
+                                                           _pgd_kl_cal_batch, _cand_final, maskmgr, str(device),
+                                                           kl_reduce=tr_kl_reduce, kl_quantile=tr_kl_quantile,
+                                                           ref_cache=_cache_joint)
+                            if _pgd_use_fsdp:
+                                _kl_t = torch.tensor([_kl_final], dtype=torch.float64, device=_pgd_dev)
+                                _dist.broadcast(_kl_t, src=0)
+                                _kl_final = _kl_t.item()
+                            if _kl_final > pgd_kl_budget + 1e-6:
+                                raise RuntimeError(
+                                    f"[pgd_nm_invariant] step={step}: whole-step self-KL check failed at apply time -- "
+                                    f"D_KL(before||after)={_kl_final:.6f} > budget={pgd_kl_budget} "
+                                    f"(alpha={_alpha_lo:.4f}, k_a={_k_a_final} k_b={_k_b_final} k_c={_k_c_final}).")
+                            for _n in maskmgr.named_params:
+                                _old = _pgd_nm_masks_before[_n]
+                                _new = _cand_final[_n]
+                                _pgd_revivals += int((_new & ~_old).sum().item())
+                                _pgd_prunings += int((~_new & _old).sum().item())
+                                maskmgr.masks[_n] = _new
+                    logging.info(f"  [pgd_kl_budget][nm][grow] n_overshoot_cand={_n_a} n_undershoot_cand={_n_b} n_finished_cand={_n_c} "
+                                 f"k_overshoot={_k_a_final} k_undershoot={_k_b_final} k_finished={_k_c_final} "
+                                 f"kl_final={_kl_final:.6f} budget={pgd_kl_budget} "
+                                 f"post_sparsity={maskmgr.current_sparsity():.4f} (step={step})")
+                    _pgd_nm_check_invariant(_pgd_nm_masks_before, maskmgr.masks, maskmgr.prune_n, maskmgr.prune_m,
+                                             step, shapes=(maskmgr.named_shapes if _pgd_use_fsdp else None))
+                    if use_wandb and is_main_process:
+                        wandb.log({"pgd/nm_overshoot_k": _k_a_final, "pgd/nm_overshoot_n_cand": _n_a,
+                                   "pgd/nm_undershoot_k": _k_b_final, "pgd/nm_undershoot_n_cand": _n_b,
+                                   "pgd/nm_finished_k": _k_c_final, "pgd/nm_finished_n_cand": _n_c,
+                                   "pgd/nm_kl_final": _kl_final}, step=step)
+                elif _pgd_is_nm:
                     _pgd_at_target = maskmgr.current_sparsity() >= final_sparsity
                     if _pgd_at_target:
                         _new_masks = _pgd_nm_post_target(_pgd_imps, maskmgr.masks, maskmgr.prune_n, maskmgr.prune_m,
