@@ -985,17 +985,39 @@ def _pgd_nm_finished_swap_build(imps, masks, desired, prune_n, prune_m, shapes=N
     return scores, prune_g, revive_g, meta
 
 
-def _pgd_topk_groups_from_scores(scores, k, dev, use_fsdp):
-    """Select the k highest-scoring groups (FSDP-global count) from `scores`
-    (dict of per-name 1D float tensors, -inf for ineligible groups). Plain
-    LINEAR-space bisection, unlike _pgd_topk_mask_from_vals's log-space
-    search -- scores here are importance DIFFERENCES (revive_imp - prune_imp,
-    can be negative), so log-space doesn't apply; the heavy-tailed-range
-    problem log-space was built to fix is a property of raw non-negative
-    importance values, not of this bounded difference. Same tie-breaking
-    (random thinning) as _pgd_topk_mask_from_vals, for the same reason --
-    many groups can share the exact same score (e.g. 0.0 for untouched
-    embedding-table groups early in training)."""
+def _pgd_topk_groups_from_scores(scores, k, dev, use_fsdp, seed=None):
+    """Select the k highest-scoring groups from `scores` (dict of per-name
+    1D float tensors, -inf for ineligible groups). Plain LINEAR-space
+    bisection, unlike _pgd_topk_mask_from_vals's log-space search -- scores
+    here are importance DIFFERENCES (revive_imp - prune_imp, can be
+    negative), so log-space doesn't apply; the heavy-tailed-range problem
+    log-space was built to fix is a property of raw non-negative importance
+    values, not of this bounded difference.
+
+    use_fsdp: whether the THRESHOLD COUNT search needs a cross-rank
+    all_reduce. Callers must set this to False (not the run's general FSDP
+    flag) when `scores` is ALREADY identical on every rank -- e.g.
+    _pgd_nm_finished_swap_build gathers to full shape and returns the SAME
+    tensor on every rank, so a further all_reduce(SUM) on a count computed
+    identically on every rank would multiply it by world_size and corrupt
+    the bisection. Only pass True for scores that are genuinely different
+    per-rank local shards.
+
+    seed: tie-breaking (random thinning, same technique as
+    _pgd_topk_mask_from_vals) uses torch.rand -- when `scores` is identical
+    across ranks (the finished-swap-groups case above), each rank's default
+    (unseeded) RNG state differs, so an UNSEEDED random draw on identical
+    input would select DIFFERENT groups on different ranks even though the
+    data is the same everywhere -- silently desyncing which coordinates
+    each FSDP rank thinks are pruned/revived (caught by design review, not
+    by a crash: this class of bug produces a wrong-but-plausible-looking
+    result, not an exception). Pass an int (e.g. the training step) to seed
+    a dedicated generator so every rank draws the IDENTICAL random sequence
+    for identical input -- required whenever the caller's `scores` is
+    itself rank-identical (i.e. together with use_fsdp=False above); leave
+    None only when scores are genuinely per-rank-local (matching
+    _pgd_topk_mask_from_vals's existing per-rank-independent approximation,
+    safe there because each rank thins its OWN disjoint local elements)."""
     if use_fsdp:
         import torch.distributed as _dist
     if k <= 0:
@@ -1040,8 +1062,14 @@ def _pgd_topk_groups_from_scores(scores, k, dev, use_fsdp):
         n_needed = max(0, k - n_strict)
         if n_needed < n_tied:
             keep_frac = n_needed / n_tied
-            sel = {n: (sel[n] & ~tied[n]) | (tied[n] & (torch.rand_like(v) < keep_frac))
-                   for n, v in scores.items()}
+            if seed is not None:
+                _gen = torch.Generator(device=dev)
+                _gen.manual_seed(int(seed))
+                sel = {n: (sel[n] & ~tied[n]) | (tied[n] & (torch.rand(v.shape, dtype=v.dtype, device=v.device, generator=_gen) < keep_frac))
+                       for n, v in scores.items()}
+            else:
+                sel = {n: (sel[n] & ~tied[n]) | (tied[n] & (torch.rand_like(v) < keep_frac))
+                       for n, v in scores.items()}
     return sel
 
 
@@ -5742,11 +5770,17 @@ def globalprune_gmp(
 
                     _n_a_t = torch.tensor(sum(v.sum().item() for v in _pgd_elig_prune_dir.values()), dtype=torch.long, device=_pgd_dev)
                     _n_b_t = torch.tensor(sum(v.sum().item() for v in _pgd_elig_revive_dir.values()), dtype=torch.long, device=_pgd_dev)
+                    # NOT all_reduced: unlike _pgd_elig_prune_dir/_revive_dir
+                    # (genuinely different per-rank local shards, scattered
+                    # back by _pgd_nm_directional), _fin_scores is the FULL,
+                    # gathered, rank-IDENTICAL tensor _pgd_nm_finished_swap_build
+                    # returns -- summing a count computed identically on every
+                    # rank and then all_reduce(SUM)-ing it would multiply the
+                    # true count by world_size.
                     _n_c_t = torch.tensor(sum(torch.isfinite(v).sum().item() for v in _fin_scores.values()), dtype=torch.long, device=_pgd_dev)
                     if _pgd_use_fsdp:
                         _dist.all_reduce(_n_a_t, op=_dist.ReduceOp.SUM)
                         _dist.all_reduce(_n_b_t, op=_dist.ReduceOp.SUM)
-                        _dist.all_reduce(_n_c_t, op=_dist.ReduceOp.SUM)
                     _n_a, _n_b, _n_c = int(_n_a_t.item()), int(_n_b_t.item()), int(_n_c_t.item())
 
                     _k_a_final = _k_b_final = _k_c_final = 0
@@ -5765,7 +5799,19 @@ def globalprune_gmp(
                             _sel_r_b = (_pgd_topk_mask_from_vals(_pv_b, _plo_b, _phi_b, _k_b, _pgd_dev, _pgd_use_fsdp, True)
                                         if _k_b > 0 else {_n: torch.zeros_like(_m) for _n, _m in _pgd_nm_masks_before.items()})
                             if _k_c > 0:
-                                _sel_g_c = _pgd_topk_groups_from_scores(_fin_scores, _k_c, _pgd_dev, _pgd_use_fsdp)
+                                # use_fsdp=False: _fin_scores is already the
+                                # FULL, gathered, rank-identical tensor (see
+                                # _pgd_nm_finished_swap_build) -- a further
+                                # all_reduce(SUM) on a count computed
+                                # identically on every rank would multiply it
+                                # by world_size. seed=step: makes the tie-break
+                                # random draw identical across ranks despite
+                                # each rank having independent RNG state --
+                                # required BECAUSE the input is rank-identical
+                                # (an unseeded draw would silently pick
+                                # different groups on different ranks even
+                                # though _fin_scores matches everywhere).
+                                _sel_g_c = _pgd_topk_groups_from_scores(_fin_scores, _k_c, _pgd_dev, False, seed=step)
                                 _sel_p_c, _sel_r_c = _pgd_nm_expand_group_sel(_sel_g_c, _fin_pg, _fin_rg, _fin_meta, rank=_pgd_nm_rank)
                             else:
                                 _sel_p_c = {_n: torch.zeros_like(_m) for _n, _m in _pgd_nm_masks_before.items()}
