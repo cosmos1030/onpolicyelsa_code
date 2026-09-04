@@ -1,0 +1,87 @@
+# GRPO fine-tune of the ALPS->SFT s70 checkpoint (66.2% MATH-500 greedy
+# accuracy, best of the lr sweep) -- comparison arm to config_overthinking_s70.yaml,
+# which starts GRPO from the TR-GMP+PGD s70 checkpoint instead. Same reward
+# design, same dataset, same hyperparameters; only the starting checkpoint
+# differs, to isolate what GRPO adds on top of each pruning+recovery method.
+#
+# Reward design (per user's explicit request):
+#   - lighteval_accuracy (weight 1.0): correctness via lighteval's own
+#     MultilingualExtractiveMatchMetric -- the SAME scorer used everywhere
+#     else in this project's MATH-500 evals, so train-time reward and
+#     final eval metric are byte-identical (no math_verify-vs-lighteval gap).
+#   - lighteval_format   (weight 0.1): 1.0 if a \boxed{} answer is present
+#     at all, targeting the no-boxed collapse under sampling.
+#   - lighteval_length   (weight 0.2): Kimi-1.5-style length shaping --
+#     among CORRECT completions in a group, shorter gets more reward;
+#     incorrect completions never get a positive reward just for being
+#     short (see lighteval_len_reward in rewards.py). Weighted below the
+#     correctness signal so the model can't reward-hack by rushing wrong
+#     answers.
+
+# Model arguments
+model_name_or_path: cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260814_035030
+model_revision: main
+sparse_optimizer: MaskedAdam  # freezes pruned (zero) weights at zero every step -- without this, plain AdamW silently densifies the pruned checkpoint within ~20 steps (verified: compute_sparsity dropped 70%->1.2% by step 20 in the pre-fix run)
+torch_dtype: bfloat16
+attn_implementation: eager
+
+# Data training arguments -- OpenThoughts3-1.2M math-domain subset, gold
+# extracted to a short "\boxed{...}" string per row (build script:
+# elsa/scripts/build_openthoughts_grpo.py), prompts pre-wrapped in the exact
+# MATH_QUERY_TEMPLATE lighteval's math_500 task uses at eval time so training
+# and eval instructions match.
+dataset_name: /home1/doyoonkim/projects/elsa/data/openthoughts3_math_grpo_20k_wrapped.jsonl
+dataset_prompt_column: problem
+system_prompt: null
+
+# GRPO trainer config
+bf16: true
+use_vllm: true
+# NOTE: the vendored trl fork's GRPOTrainer calls VLLMClient(args.vllm_server_host,
+# args.vllm_server_port, ...) positionally, but VLLMClient's first positional arg
+# is actually `base_url`, not `host` -- a bare host string like "127.0.0.1" makes
+# urlparse() return hostname=None and crash. Passing a full URL (with scheme+port)
+# here works around it, since VLLMClient's base_url branch parses it correctly and
+# the (mis-slotted) port argument goes unused.
+vllm_server_host: "http://127.0.0.1:8000"
+vllm_server_port: 8000
+vllm_server_timeout: 600.0
+do_train: true
+do_eval: false
+gradient_accumulation_steps: 16
+gradient_checkpointing: true
+gradient_checkpointing_kwargs:
+  use_reentrant: false
+learning_rate: 1.0e-06
+log_level: info
+logging_first_step: true
+logging_steps: 1
+logging_strategy: steps
+lr_scheduler_type: constant
+max_prompt_length: 2048
+max_completion_length: 8192
+max_steps: 200
+num_generations: 2
+num_train_epochs: 1
+output_dir: /home1/doyoonkim/projects/elsa/models/grpo_alpssft_s70_overthinking
+overwrite_output_dir: true
+per_device_train_batch_size: 1
+push_to_hub: false
+report_to:
+- wandb
+reward_funcs:
+- lighteval_accuracy
+- lighteval_format
+- lighteval_length
+reward_weights:
+- 1.0
+- 0.1
+- 0.2
+save_strategy: "steps"
+save_steps: 50
+save_total_limit: 2
+seed: 42
+temperature: 1.0
+top_p: 1.0
+beta: 0.0
+warmup_ratio: 0.0

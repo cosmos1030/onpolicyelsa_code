@@ -290,7 +290,12 @@ def llm_worker(
         enable_prefix_caching=script_args.enable_prefix_caching,
         kv_cache_dtype=script_args.kv_cache_dtype,
         max_model_len=script_args.max_model_len,
-        worker_extension_cls="trl.scripts.vllm_serve.WeightSyncWorkerExtension",
+        # Use OUR vendored extension class, not the separately pip-installed
+        # trl's (newer, incompatible init_communicator signature requiring an
+        # extra client_device_uuid arg our vendored client/endpoint don't
+        # send) -- vLLM resolves this string dynamically at worker-process
+        # import time, so it must match whichever VLLMClient we actually use.
+        worker_extension_cls="open_r1_trl.trl.scripts.vllm_serve.WeightSyncWorkerExtension",
     )
 
     # Send ready signal to parent process

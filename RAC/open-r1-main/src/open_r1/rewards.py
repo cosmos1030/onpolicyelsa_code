@@ -202,6 +202,81 @@ def len_reward(completions: list[Dict[str, str]], solution: list[str], **kwargs)
     return rewards
 
 
+_LIGHTEVAL_SCORER = None
+
+
+def _get_lighteval_scorer():
+    """The exact MultilingualExtractiveMatchMetric instance lighteval's
+    pass_at_k_math uses to grade MATH-500 everywhere else in this project
+    (dense/TR-GMP/ALPS eval, the within-model n=8 multisample study, etc.).
+    Reusing it here means the GRPO reward and the final eval metric are
+    byte-identical, avoiding the math_verify-vs-lighteval grading mismatch
+    discovered earlier when a hand-rolled extractive-match reimplementation
+    gave wildly different accuracy than the official lighteval pipeline."""
+    global _LIGHTEVAL_SCORER
+    if _LIGHTEVAL_SCORER is None:
+        from lighteval.metrics.metrics import Metrics
+        metric = Metrics.pass_at_k_math(sample_params={"k": 1, "n": 1})
+        _LIGHTEVAL_SCORER = metric.sample_level_fn.compute_score.__self__
+    return _LIGHTEVAL_SCORER
+
+
+def _lighteval_correct(content: str, sol: str) -> bool:
+    from lighteval.models.model_output import ModelResponse
+    from lighteval.tasks.requests import Doc
+
+    scorer = _get_lighteval_scorer()
+    doc = Doc(query="", choices=[sol], gold_index=0)
+    mr = ModelResponse(text=[content])
+    try:
+        return scorer.compute(doc=doc, model_response=mr) >= 0.5
+    except Exception as e:
+        print(f"lighteval scorer failed: {e}, content tail: {content[-200:]!r}")
+        return False
+
+
+def _has_boxed(text: str) -> bool:
+    return "\\boxed{" in text
+
+
+def lighteval_accuracy_reward(completions: list[list[dict[str, str]]], solution: list[str], **kwargs) -> list[float]:
+    """Correctness reward using lighteval's own scorer instead of math_verify
+    directly (see _get_lighteval_scorer)."""
+    contents = [completion[0]["content"] for completion in completions]
+    return [1.0 if _lighteval_correct(c, s) else 0.0 for c, s in zip(contents, solution)]
+
+
+def lighteval_format_reward(completions: list[list[dict[str, str]]], **kwargs) -> list[float]:
+    """1.0 if the completion contains an extractable \\boxed{...} answer,
+    0.0 otherwise. Targets the format-collapse failure mode measured during
+    the within-model multi-sample analysis of this checkpoint: 29% of sampled
+    completions under temperature 0.6 never emit \\boxed{} at all."""
+    contents = [completion[0]["content"] for completion in completions]
+    return [1.0 if _has_boxed(c) else 0.0 for c in contents]
+
+
+def lighteval_len_reward(completions: list[dict[str, str]], solution: list[str], **kwargs) -> list[float]:
+    """Kimi-1.5-style length shaping (see len_reward above): among correct
+    completions in the group, shorter gets more reward; incorrect completions
+    never get a positive reward just for being short. Correctness is computed
+    with the same lighteval scorer as lighteval_accuracy_reward, so this is
+    conditioned on the actual eval-time notion of "correct," not math_verify's."""
+    contents = [completion[0]["content"] for completion in completions]
+    correctness = [_lighteval_correct(c, s) for c, s in zip(contents, solution)]
+
+    lengths = [len(c) for c in contents]
+    min_len, max_len = min(lengths), max(lengths)
+    if max_len == min_len:
+        return [0.0] * len(completions)
+
+    rewards = []
+    for length, is_correct in zip(lengths, correctness):
+        lambda_val = 0.5 - (length - min_len) / (max_len - min_len)
+        reward = lambda_val if is_correct else min(0.0, lambda_val)
+        rewards.append(float(reward))
+    return rewards
+
+
 def get_cosine_scaled_reward(
     min_value_wrong: float = -1.0,
     max_value_wrong: float = -0.5,
@@ -660,6 +735,9 @@ def get_reward_funcs(script_args) -> list[Callable]:
             max_penalty=script_args.repetition_max_penalty,
         ),
         "length": len_reward,
+        "lighteval_accuracy": lighteval_accuracy_reward,
+        "lighteval_format": lighteval_format_reward,
+        "lighteval_length": lighteval_len_reward,
         "code": update_wrapper(
             partial(
                 code_reward,
