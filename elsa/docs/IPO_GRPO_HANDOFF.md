@@ -23,6 +23,13 @@ bash elsa/scripts/setup_ipo_grpo_env.sh
   - config: [`config_overthinking_s70.yaml`](https://github.com/cosmos1030/onpolicyelsa_code/blob/master/RAC/open-r1-main/recipes/Qwen3-4B/grpo/config_overthinking_s70.yaml) / [`_ablation_noLen`](https://github.com/cosmos1030/onpolicyelsa_code/blob/master/RAC/open-r1-main/recipes/Qwen3-4B/grpo/config_overthinking_s70_ablation_noLen.yaml) / [`_alpssft`](https://github.com/cosmos1030/onpolicyelsa_code/blob/master/RAC/open-r1-main/recipes/Qwen3-4B/grpo/config_overthinking_s70_alpssft.yaml) / [`_alpssft_ablation_noLen`](https://github.com/cosmos1030/onpolicyelsa_code/blob/master/RAC/open-r1-main/recipes/Qwen3-4B/grpo/config_overthinking_s70_alpssft_ablation_noLen.yaml)
 - Reasoning eval (math500/lcb/gpqa/ifeval/gsm8k): [`elsa/scripts/slurm_gmp_eval_only.sh`](https://github.com/cosmos1030/onpolicyelsa_code/blob/master/elsa/scripts/slurm_gmp_eval_only.sh) `<model_path> <wandb_run_id> 0.7 quick`
 
+## `quick=8192` 프로파일이란?
+`slurm_gmp_eval_only.sh`/`eval_full.py`의 `--profile` 옵션입니다 (`quick` | `official`).
+- **`quick`** (기본값, 8192-토큰 생성 budget, AIME 제외) — 대시보드/이 표의 모든 baseline이 이 프로파일로 통일돼있어서 서로 직접 비교 가능합니다.
+- **`official`**: Qwen3 공식 eval budget (AIME24/25 포함, 최대 32768 토큰) — 2~4배 느리고, **quick 프로파일 숫자와 직접 비교 불가**합니다 (budget 자체가 다름).
+
+즉 아래 표의 숫자들은 전부 `quick`으로 통일해서 뽑은 거라 서로 비교 가능하고, 앞으로 새 체크포인트 eval 돌릴 때도 반드시 `quick`(4번째 인자, 스크립트 기본값)으로 맞춰야 이 표와 비교가 됩니다.
+
 ## 체크포인트 + Reasoning 벤치마크 (HF, quick=8192 프로파일)
 
 | 모델 | Reas.avg | Math500 | LCB | GPQA | IFEval | GSM8K | HF |
