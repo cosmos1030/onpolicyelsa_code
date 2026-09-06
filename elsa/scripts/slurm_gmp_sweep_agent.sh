@@ -8,7 +8,7 @@
 #SBATCH --cpus-per-task=10
 #SBATCH --output=/local-data/user-data/%u/job_%j/slurm/%x_%j.out
 #SBATCH -t 3-00:00:00
-#SBATCH --exclude=n3,n52,n55,n58,n60,n76,n80
+#SBATCH --exclude=n3,n60,n80
 
 # Usage:
 #   wandb sweep sweep_configs/gmp_ntp_deepseek_1.5b.yaml

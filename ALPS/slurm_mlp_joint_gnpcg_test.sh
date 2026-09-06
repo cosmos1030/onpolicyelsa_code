@@ -8,7 +8,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=60G
 #SBATCH --time=01:00:00
-#SBATCH --exclude=n3,n42,n46,n51,n52,n54,n55,n58,n60,n76,n77,n80,n91,n61,n64
+#SBATCH --exclude=n3,n42,n46,n51,n54,n60,n77,n80,n91,n61,n64
 #SBATCH --output=/home1/doyoonkim/projects/elsa/logs/mlp_gnpcg_test_%j.out
 exec 2>&1
 

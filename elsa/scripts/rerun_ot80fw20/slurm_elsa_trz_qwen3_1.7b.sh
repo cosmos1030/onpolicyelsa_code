@@ -8,7 +8,7 @@
 #SBATCH --cpus-per-task=20
 #SBATCH --mem=150G
 #SBATCH --time=3-00:00:00
-#SBATCH --exclude=n3,n42,n46,n51,n52,n54,n55,n58,n60,n76,n77,n80,n91,n61,n64,n19,n31
+#SBATCH --exclude=n3,n42,n46,n51,n54,n60,n77,n80,n91,n61,n64,n19,n31
 #SBATCH --output=/local-data/user-data/%u/elsa_trz_1.7b_%j/slurm_%j.out
 exec 2>&1
 

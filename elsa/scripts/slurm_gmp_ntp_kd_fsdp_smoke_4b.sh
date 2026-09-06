@@ -8,7 +8,7 @@
 #SBATCH --mem=80G
 #SBATCH --time=02:00:00
 #SBATCH --output=/home1/doyoonkim/projects/elsa/logs/gmp_fsdp_smoke_4b_%j.out
-#SBATCH --exclude=n3,n42,n60,n76,n77,n80
+#SBATCH --exclude=n3,n42,n60,n77,n80
 exec 2>&1
 
 # Multi-GPU GMP NTP+KD smoke test (FSDP 2 GPU, 64 steps) + full eval (5 samples/bench)

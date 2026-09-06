@@ -8,7 +8,7 @@
 #SBATCH --cpus-per-task=24
 #SBATCH --mem=200G
 #SBATCH --time=3-00:00:00
-#SBATCH --exclude=n3,n42,n46,n51,n54,n60,n76,n77,n80,n87,n91,n61,n64
+#SBATCH --exclude=n3,n42,n46,n51,n54,n60,n77,n80,n87,n91,n61,n64
 #SBATCH --output=/home1/doyoonkim/projects/elsa/logs/alps_sft_ntpkd_opkd_8b_fsdp4_%j.out
 exec 2>&1
 

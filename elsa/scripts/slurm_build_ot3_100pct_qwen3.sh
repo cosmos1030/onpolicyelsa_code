@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=24
 #SBATCH --mem=128G
 #SBATCH --time=12:00:00
-#SBATCH --exclude=n3,n42,n46,n51,n52,n54,n55,n58,n60,n76,n77,n80,n91
+#SBATCH --exclude=n3,n42,n46,n51,n54,n60,n77,n80,n91
 #SBATCH --output=/home1/doyoonkim/projects/elsa/logs/build_ot3_100pct_qwen3_%j.out
 exec 2>&1
 

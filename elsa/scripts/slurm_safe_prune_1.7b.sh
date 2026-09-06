@@ -9,7 +9,7 @@
 #SBATCH --mem=48G
 #SBATCH --time=2-00:00:00
 #SBATCH --output=/home1/doyoonkim/projects/elsa/logs/safe_prune_1.7b_%j.out
-#SBATCH --exclude=n3,n42,n46,n51,n52,n54,n55,n58,n60,n76,n77,n80,n91
+#SBATCH --exclude=n3,n42,n46,n51,n54,n60,n77,n80,n91
 exec 2>&1
 
 # SAFE pruning for Qwen3-1.7B — S50/60/70

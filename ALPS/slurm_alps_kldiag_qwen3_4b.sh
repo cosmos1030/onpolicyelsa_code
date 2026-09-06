@@ -8,7 +8,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --time=06:00:00
-#SBATCH --exclude=n3,n42,n46,n51,n52,n54,n55,n58,n60,n76,n77,n80,n91
+#SBATCH --exclude=n3,n42,n46,n51,n54,n60,n77,n80,n91
 #SBATCH --output=/home1/doyoonkim/projects/elsa/logs/alps_kldiag_4b_%j.out
 exec 2>&1
 

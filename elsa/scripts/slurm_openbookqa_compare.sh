@@ -8,7 +8,7 @@
 #SBATCH --cpus-per-task=10
 #SBATCH --mem=60G
 #SBATCH --time=02:00:00
-#SBATCH --exclude=n3,n60,n76,n80
+#SBATCH --exclude=n3,n60,n80
 #SBATCH --output=/local-data/user-data/%u/job_%j/slurm/%x_%j.out
 
 exec 2>&1

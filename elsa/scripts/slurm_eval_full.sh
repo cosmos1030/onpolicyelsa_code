@@ -8,7 +8,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=80G
 #SBATCH --time=12:00:00
-#SBATCH --exclude=n3,n42,n46,n51,n54,n60,n76,n77,n80,n87,n91
+#SBATCH --exclude=n3,n42,n46,n51,n54,n60,n77,n80,n87,n91
 #SBATCH --output=/home1/doyoonkim/projects/elsa/logs/eval_full_%j.out
 exec 2>&1
 

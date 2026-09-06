@@ -9,7 +9,7 @@
 #SBATCH --mem=160G
 #SBATCH --time=3-00:00:00
 #SBATCH --output=/local-data/user-data/%u/elsa_sweep_4b_%j/slurm_%j.out
-#SBATCH --exclude=n3,n42,n51,n52,n54,n55,n58,n60,n76,n77,n80
+#SBATCH --exclude=n3,n42,n51,n54,n60,n77,n80
 exec 2>&1
 
 # ELSA sweep agent for Qwen3-4B — runs 1 config then eval_full.py

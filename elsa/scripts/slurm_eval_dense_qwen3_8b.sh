@@ -9,7 +9,7 @@
 #SBATCH --mem=64G
 #SBATCH --time=0-12:00:00
 #SBATCH --output=/home1/doyoonkim/projects/elsa/logs/eval_dense_qwen3_8b_%j.out
-#SBATCH --exclude=n3,n42,n60,n76,n77,n80
+#SBATCH --exclude=n3,n42,n60,n77,n80
 exec 2>&1
 
 # Find Qwen3-8B snapshot path dynamically

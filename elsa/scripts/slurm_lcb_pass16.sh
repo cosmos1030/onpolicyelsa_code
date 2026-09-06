@@ -8,7 +8,7 @@
 #SBATCH --cpus-per-task=10
 #SBATCH --output=/home1/doyoonkim/projects/elsa/logs/%x_%j.out
 #SBATCH -t 0-06:00:00
-#SBATCH --exclude=n3,n51,n52,n55,n58,n60,n76,n80
+#SBATCH --exclude=n3,n51,n60,n80
 
 # Usage:
 #   sbatch scripts/slurm_lcb_pass16.sh deepseek-1.5b

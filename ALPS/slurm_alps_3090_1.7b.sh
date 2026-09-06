@@ -9,7 +9,7 @@
 #SBATCH --mem=48G
 #SBATCH --time=0-06:00:00
 #SBATCH --output=/home1/doyoonkim/projects/ALPS/logs/alps_s%a_%j.out
-#SBATCH --exclude=n3,n42,n51,n52,n54,n55,n58,n60,n76,n77,n80
+#SBATCH --exclude=n3,n42,n51,n54,n60,n77,n80
 exec 2>&1
 
 # ALPS pruning + full eval for Qwen3-1.7B on RTX3090

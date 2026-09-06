@@ -8,7 +8,7 @@
 #SBATCH --cpus-per-task=10
 #SBATCH --output=/home1/doyoonkim/projects/elsa/logs/mmlu_full_dense_%j.out
 #SBATCH -t 4:00:00
-#SBATCH --exclude=n3,n51,n54,n60,n76,n80
+#SBATCH --exclude=n3,n51,n54,n60,n80
 
 exec 2>&1
 

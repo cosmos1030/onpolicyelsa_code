@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=24
 #SBATCH --mem=96G
 #SBATCH --time=6:00:00
-#SBATCH --exclude=n3,n42,n46,n51,n52,n54,n55,n58,n60,n76,n77,n80,n91
+#SBATCH --exclude=n3,n42,n46,n51,n54,n60,n77,n80,n91
 #SBATCH --output=/home1/doyoonkim/projects/elsa/logs/build_ot3fw_qwen3_40k_thinkstrip_fixed_8192_%j.out
 exec 2>&1
 

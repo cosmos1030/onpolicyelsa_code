@@ -9,6 +9,7 @@
 #SBATCH --mem=60G
 #SBATCH --time=00:30:00
 #SBATCH --output=/home1/doyoonkim/projects/elsa/logs/debug_pgd_grow_%j.out
+#SBATCH --exclude=n3,n42,n46,n51,n54,n60,n77,n80,n87,n91,n61
 exec 2>&1
 
 # Smoke test for --gmp_pgd_grow_to_target: PGD-driven growth, no separate

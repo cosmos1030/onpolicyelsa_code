@@ -9,7 +9,7 @@
 #SBATCH --mem=64G
 #SBATCH --time=0-12:00:00
 #SBATCH --output=/home1/doyoonkim/projects/elsa/logs/eval_ms_%j.out
-#SBATCH --exclude=n3,n42,n46,n51,n52,n54,n55,n58,n60,n76,n77,n80,n91
+#SBATCH --exclude=n3,n42,n46,n51,n54,n60,n77,n80,n91
 
 # Usage: sbatch slurm_eval_milestone.sh <MODEL_PATH> <RUN_NAME> <SPARSITY>
 # Example: sbatch slurm_eval_milestone.sh /home1/.../models/ckpt tr_gmp_kl001_s70 0.70

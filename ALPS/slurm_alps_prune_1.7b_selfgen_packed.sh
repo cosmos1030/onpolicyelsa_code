@@ -9,7 +9,7 @@
 #SBATCH --mem=80G
 #SBATCH --time=3-00:00:00
 #SBATCH --output=/local-data/user-data/%u/alps_1.7b_selfgen_packed_%j/slurm_%j.out
-#SBATCH --exclude=n3,n42,n46,n51,n52,n54,n55,n58,n60,n76,n77,n80,n91,n61,n64
+#SBATCH --exclude=n3,n42,n46,n51,n54,n60,n77,n80,n91,n61,n64
 exec 2>&1
 
 # Rerun of slurm_alps_prune_1.7b_selfgen.sh (jobs 717786-788) with

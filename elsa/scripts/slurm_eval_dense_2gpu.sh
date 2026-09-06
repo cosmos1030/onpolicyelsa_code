@@ -9,7 +9,7 @@
 #SBATCH --mem=128G
 #SBATCH --time=0-12:00:00
 #SBATCH --output=/home1/doyoonkim/projects/elsa/logs/eval_dense_2gpu_%j.out
-#SBATCH --exclude=n3,n60,n76,n80
+#SBATCH --exclude=n3,n60,n80
 exec 2>&1
 
 MODEL="/home1/doyoonkim/.cache/huggingface/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c"

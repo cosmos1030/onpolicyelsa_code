@@ -9,7 +9,7 @@
 #SBATCH --mem=16G
 #SBATCH --time=0-04:00:00
 #SBATCH --output=/local-data/user-data/doyoonkim/logs/hf_upload_%j.out
-#SBATCH --exclude=n3,n42,n51,n52,n54,n55,n58,n60,n76,n77,n80
+#SBATCH --exclude=n3,n42,n51,n54,n60,n77,n80
 exec 2>&1
 
 PYTHON=/home1/doyoonkim/miniconda3/envs/rac/bin/python

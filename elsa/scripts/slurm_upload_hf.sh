@@ -9,7 +9,7 @@
 #SBATCH --time=02:00:00
 #SBATCH --qos=hpgpu
 #SBATCH --output=/home1/doyoonkim/projects/elsa/logs/hf_upload_%j.out
-#SBATCH --exclude=n3,n42,n60,n76,n77,n80
+#SBATCH --exclude=n3,n42,n60,n77,n80
 exec 2>&1
 
 PYTHON=/home1/doyoonkim/miniconda3/envs/rac/bin/python
