@@ -1053,6 +1053,19 @@ if __name__ == '__main__':
                        'a one-time flat concat of the candidate pool instead -- fewer kernel launches, but '
                        'costs an extra full-pool-sized concat allocation, and does not do bisect\'s '
                        'boundary-tie thinning. non-FSDP only.')
+    flags.DEFINE_string('gmp_pgd_grow_rule', 'kl', "Ablation knob for gmp_pgd_grow_to_target: what picks k along "
+                        "the target-directed support path. 'kl' (default, = the method) takes the largest k whose "
+                        "measured self-KL displacement stays within gmp_pgd_kl_budget. 'schedule' instead picks the "
+                        "k whose post-projection sparsity matches the gmp_growth_schedule ramp at that step, with no "
+                        "KL entering the decision -- the schedule-matched control in which the path, saliency, "
+                        "per-event target recomputation, prune/revive pairing, pgd_interval cadence and recovery "
+                        "objective are all unchanged, so the ONLY difference is the k-selection rule during growth. "
+                        "After the ramp delivers final_sparsity, 'schedule' hands k back to the KL rule so "
+                        "post-target maintenance is identical in both arms.")
+    flags.DEFINE_float('gmp_pgd_grow_rule_end_ratio', 0.5, 'Fraction of --steps over which gmp_pgd_grow_rule=schedule '
+                       'ramps to final sparsity (0.5 matches the existing cubic-ablation convention). Deliberately '
+                       'separate from gmp_pruning_end_ratio, which would also re-enable the schedule-driven '
+                       'maskmgr.update() path and put a second mechanism on the mask.')
     flags.DEFINE_bool('gmp_pgd_grow_to_target', False, 'PGD-driven growth: instead of a separate TR-GMP growth mechanism, PGD\'s own gmp_pgd_kl_budget self-KL bisection drives sparsity from 0 to final_sparsity directly -- _pgd_desired targets final_sparsity (not current keep-count), and revive is no longer forced equal to prune (revive saturates at min(k, revive_cand) while prune keeps going up to k), so whenever prune candidates outnumber revive candidates the accepted swap set is net-pruning, at whatever pace the self-KL budget allows. Requires --gmp_pgd=true --gmp_pgd_kl_budget=<budget> --gmp_tr_enabled=false. Now also supports sparsity_type=N:M: the N:M pattern is treated as a constraint on the FINAL target only, not on intermediate masks (a group is free to sit at any dead-count 0..prune_m-prune_n mid-training) -- _pgd_desired is a per-group top-prune_n projection of current importance, everything else identical to the unstructured path.')
     flags.DEFINE_bool('gmp_pgd_debug_repeat_swap', False, 'Diagnostic (fully-uncapped PGD path only): log what fraction of each step\'s revive/prune flips are positions that ALSO flipped within the last gmp_pgd_debug_repeat_window steps -- tests whether PGD churn is a small set of weights repeatedly swapping back and forth (unstable near-threshold weights) vs. a growing set of distinct weights each swapping once.')
     flags.DEFINE_integer('gmp_pgd_debug_repeat_window', 5, 'Lookback window (steps) for gmp_pgd_debug_repeat_swap\'s repeat-flip detection.')
@@ -1074,6 +1087,10 @@ if __name__ == '__main__':
     flags.DEFINE_integer('gmp_batch_size', 1, 'Per-device batch size for GMP.')
     flags.DEFINE_integer('gmp_grad_accum', 8, 'Gradient accumulation steps for GMP.')
     flags.DEFINE_float('gmp_warmup_ratio', 0.05, 'Fraction of steps for LR warmup in GMP (used only when lr_warmup_steps=0).')
+    flags.DEFINE_integer('gmp_ckpt_every_steps', 0, 'Save a resumable training checkpoint every N optimizer steps (0 = off). Carries weights, Adam state (which also holds the Fisher/saliency EMA), LR scheduler, mask and step counter, so a killed run continues the same trajectory instead of restarting.')
+    flags.DEFINE_integer('gmp_ckpt_keep', 1, 'How many periodic checkpoints to keep on disk (older ones are deleted after a newer one is fully written). One 8B checkpoint is ~56 GB.')
+    flags.DEFINE_string('gmp_ckpt_dir', '', 'Directory for --gmp_ckpt_every_steps checkpoints (default: <gmp_save_path>/ckpt_<run_tag>).')
+    flags.DEFINE_string('gmp_resume_from', '', 'Path to a stepNNNNNN.pt checkpoint to resume training from. Mask shards are rank-local, so resume with the SAME GPU count as the run that wrote it.')
     flags.DEFINE_integer('gmp_dense_warmup_steps', 0, 'Steps to train fully dense before GMP pruning schedule starts (gates mask application, TR-GMP growth, cubic sparsity ramp, PGD, and DPO-queue refill alike).')
     flags.DEFINE_float('gmp_pruning_end_ratio', 1.0, 'Fraction of steps at which pruning completes; remaining steps do sparse training with fixed mask. Ignored when gmp_sparse_train_steps > 0.')
     flags.DEFINE_integer('gmp_sparse_train_steps', 512, 'Steps of fixed-mask sparse training at the end of the run (mask frozen at final sparsity). Pruning completes at steps - gmp_sparse_train_steps, so the cubic ramp fills the time between gmp_dense_warmup_steps and that point. 0 = derive from gmp_pruning_end_ratio instead.')

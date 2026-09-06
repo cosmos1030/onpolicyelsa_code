@@ -158,6 +158,7 @@ $TORCHRUN --nproc_per_node=2 --master_port=${MASTER_PORT} main.py \
     --gmp_pgd_kl_budget=${KL_BUDGET} \
     --gmp_pgd_kl_calib_size=${CALIB_SIZE} \
     --gmp_pgd_interval=${PGD_INTERVAL} \
+    --gmp_ckpt_every_steps=${CKPT_EVERY:-0} --gmp_ckpt_dir="${CKPT_DIR:-}" --gmp_resume_from="${RESUME_FROM:-}" \
     --gmp_save_path=/NHNHOME/log-postech/doyoonkim/models \
     --save_model=true \
     --push_to_hub=true \
