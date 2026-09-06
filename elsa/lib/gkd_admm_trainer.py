@@ -304,6 +304,163 @@ def collate_prompts(pad_token_id):
 # ---------------------------------------------------------------------------
 # Dataset: CoT text for NTP + prompt for KD generation
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Memory-mapped sample store (low-RAM alternative to the monolithic pickle)
+# ---------------------------------------------------------------------------
+# The pickle cache holds every sample as Python objects wrapping int64 tensors:
+# for 40k x 8192-token samples that is ~7.9GB on disk and more once resident,
+# which OOM-kills the job outright inside a memory-capped container. Nothing in
+# a sample actually needs to be stored except the two id sequences:
+#   attention_mask == ones(len(input_ids))   (tokenized with padding=False)
+#   prompt_mask    == ones(len(prompt_ids))
+#   labels         == input_ids with the first len(prompt_ids) entries set to
+#                     -100 (pretrain records have an empty prompt -> no mask)
+# so this store keeps only input_ids/prompt_ids, concatenated into two flat
+# int32 memmaps plus offset indexes, and rebuilds the other three tensors per
+# __getitem__. Identical tensors, ~1.4GB on disk, and resident RSS stays near
+# zero because the pages are file-backed and reclaimable under memory pressure.
+_MM_SUFFIX = ".mm"
+
+
+def _memmap_cache_dir(cache_path):
+    """Sibling directory of the pickle cache, keyed by the same content hash."""
+    return cache_path[:-len(".pkl")] + _MM_SUFFIX if cache_path.endswith(".pkl") else cache_path + _MM_SUFFIX
+
+
+class _MemmapSamples:
+    """Sequence of sample dicts backed by memmaps. Duck-types the sample list."""
+
+    def __init__(self, mm_dir):
+        import numpy as np
+        with open(os.path.join(mm_dir, "meta.json")) as f:
+            self.meta = json.load(f)
+        self._n = int(self.meta["n"])
+        self.ids = np.memmap(os.path.join(mm_dir, "ids.i32"), dtype=np.int32, mode="r")
+        self.ids_off = np.load(os.path.join(mm_dir, "ids_off.npy"))
+        self.pids = np.memmap(os.path.join(mm_dir, "pids.i32"), dtype=np.int32, mode="r")
+        self.pids_off = np.load(os.path.join(mm_dir, "pids_off.npy"))
+
+    def __len__(self):
+        return self._n
+
+    def __getitem__(self, i):
+        if i < 0:
+            i += self._n
+        if not (0 <= i < self._n):
+            raise IndexError(i)
+        a, b = int(self.ids_off[i]), int(self.ids_off[i + 1])
+        c, d = int(self.pids_off[i]), int(self.pids_off[i + 1])
+        # .astype(np.int64) copies, so the returned tensors never alias the map
+        input_ids = torch.from_numpy(self.ids[a:b].astype("int64"))
+        prompt_ids = torch.from_numpy(self.pids[c:d].astype("int64"))
+        labels = input_ids.clone()
+        labels[: d - c] = -100
+        return {
+            "input_ids": input_ids,
+            "attention_mask": torch.ones(b - a, dtype=torch.long),
+            "labels": labels,
+            "prompt_ids": prompt_ids,
+            "prompt_mask": torch.ones(d - c, dtype=torch.long),
+        }
+
+
+def _cot_tokenize_record(rec, tokenizer, max_len, max_prompt_len, append_eos):
+    """Tokenize ONE MixedTextDataset record -> sample dict, or None to skip it.
+
+    Extracted verbatim from MixedTextDataset.__init__'s build loop so that the
+    pickle builder and the memmap builder (scripts/build_memmap_cache.py) share
+    one implementation -- two copies of this logic would silently diverge and
+    produce caches that are not comparable across runs.
+    """
+    text = rec.get("text", "")
+    if not text:
+        return None
+
+    is_pretrain = rec.get("pretrain", False)
+
+    if is_pretrain:
+        # Pretrain data (e.g. FineWeb-Edu): no prompt masking, gradient flows everywhere.
+        prompt_text = ""
+        prompt_len = 0
+    else:
+        # Split at <think>
+        idx = text.find(MixedTextDataset.THINK_TAG)
+        if idx == -1:
+            # fallback: split at first double-newline
+            idx = text.find("\n\n")
+            if idx == -1:
+                return None
+            prompt_text = text[:idx]
+        else:
+            prompt_text = text[:idx + len(MixedTextDataset.THINK_TAG)]
+
+        cot_text = text[len(prompt_text):]
+        if not cot_text.strip():
+            return None
+
+    # Full sequence for NTP
+    full_enc = tokenizer(
+        text,
+        truncation=True,
+        max_length=max_len - 1 if append_eos else max_len,
+        return_tensors="pt",
+        padding=False,
+    )
+    if append_eos:
+        full_ids = torch.cat([
+            full_enc["input_ids"].squeeze(0),
+            torch.tensor([tokenizer.eos_token_id], dtype=torch.long),
+        ])
+        full_mask = torch.cat([
+            full_enc["attention_mask"].squeeze(0),
+            torch.tensor([1], dtype=torch.long),
+        ])
+    else:
+        full_ids = full_enc["input_ids"].squeeze(0)
+        full_mask = full_enc["attention_mask"].squeeze(0)
+
+    # Skip very short samples: a long run of ~max_len batches
+    # followed by an abrupt drop to a short one (e.g. an
+    # 82-token FineWeb-Edu snippet) reproducibly triggered a
+    # CUBLAS_STATUS_INTERNAL_ERROR on every one of 3 independent
+    # runs at the identical training step — a cuBLAS shape-
+    # transition issue, not corrupted data (confirmed by
+    # decoding the exact crashing batch). No sequence packing
+    # implemented here, so just drop the outliers instead.
+    if full_ids.shape[0] < MixedTextDataset.MIN_SAMPLE_LEN:
+        return None
+
+    # Prompt for KD generation
+    if is_pretrain:
+        prompt_ids = torch.zeros(0, dtype=torch.long)
+        prompt_mask_t = torch.zeros(0, dtype=torch.long)
+    else:
+        prompt_enc = tokenizer(
+            prompt_text,
+            truncation=True,
+            max_length=max_prompt_len,
+            return_tensors="pt",
+            padding=False,
+        )
+        prompt_ids = prompt_enc["input_ids"].squeeze(0)
+        prompt_mask_t = prompt_enc["attention_mask"].squeeze(0)
+        prompt_len = prompt_ids.shape[0]
+
+    # Labels: mask problem tokens with -100 (pretrain: no masking)
+    labels = full_ids.clone()
+    if not is_pretrain:
+        labels[:prompt_len] = -100
+
+    return {
+        "input_ids": full_ids,
+        "attention_mask": full_mask,
+        "labels": labels,
+        "prompt_ids": prompt_ids,
+        "prompt_mask": prompt_mask_t,
+    }
+
+
+
 class MixedTextDataset(Dataset):
     """
     Loads math CoT traces from math_220k_cot.jsonl for hybrid NTP + KD training.
@@ -338,6 +495,16 @@ class MixedTextDataset(Dataset):
         # is not guaranteed to be visible to other processes the instant its
         # barrier call returns, which can (and did) throw FileNotFoundError.
         self.samples = None
+
+        # Prefer the memmap store when one exists (see _MemmapSamples): it is
+        # rank-independent and costs almost no resident memory, so both the
+        # rank0 branch and the non-rank0 poll below are skipped entirely.
+        mm_dir = _memmap_cache_dir(cache_path)
+        if os.path.exists(os.path.join(mm_dir, "meta.json")):
+            self.samples = _MemmapSamples(mm_dir)
+            logging.info(f"MixedTextDataset: loaded {len(self.samples)} samples from memmap cache {mm_dir}")
+            return
+
         if is_rank0:
             if os.path.exists(cache_path):
                 try:
@@ -359,92 +526,10 @@ class MixedTextDataset(Dataset):
             self.samples = []
             from tqdm import tqdm
             for rec in tqdm(records, desc=f"MixedTextDataset: tokenizing {os.path.basename(jsonl_path)}"):
-                text = rec.get("text", "")
-                if not text:
+                _s = _cot_tokenize_record(rec, tokenizer, max_len, max_prompt_len, append_eos)
+                if _s is None:
                     continue
-
-                is_pretrain = rec.get("pretrain", False)
-
-                if is_pretrain:
-                    # Pretrain data (e.g. FineWeb-Edu): no prompt masking, gradient flows everywhere.
-                    prompt_text = ""
-                    prompt_len = 0
-                else:
-                    # Split at <think>
-                    idx = text.find(self.THINK_TAG)
-                    if idx == -1:
-                        # fallback: split at first double-newline
-                        idx = text.find("\n\n")
-                        if idx == -1:
-                            continue
-                        prompt_text = text[:idx]
-                    else:
-                        prompt_text = text[:idx + len(self.THINK_TAG)]
-
-                    cot_text = text[len(prompt_text):]
-                    if not cot_text.strip():
-                        continue
-
-                # Full sequence for NTP
-                full_enc = tokenizer(
-                    text,
-                    truncation=True,
-                    max_length=max_len - 1 if append_eos else max_len,
-                    return_tensors="pt",
-                    padding=False,
-                )
-                if append_eos:
-                    full_ids = torch.cat([
-                        full_enc["input_ids"].squeeze(0),
-                        torch.tensor([tokenizer.eos_token_id], dtype=torch.long),
-                    ])
-                    full_mask = torch.cat([
-                        full_enc["attention_mask"].squeeze(0),
-                        torch.tensor([1], dtype=torch.long),
-                    ])
-                else:
-                    full_ids = full_enc["input_ids"].squeeze(0)
-                    full_mask = full_enc["attention_mask"].squeeze(0)
-
-                # Skip very short samples: a long run of ~max_len batches
-                # followed by an abrupt drop to a short one (e.g. an
-                # 82-token FineWeb-Edu snippet) reproducibly triggered a
-                # CUBLAS_STATUS_INTERNAL_ERROR on every one of 3 independent
-                # runs at the identical training step — a cuBLAS shape-
-                # transition issue, not corrupted data (confirmed by
-                # decoding the exact crashing batch). No sequence packing
-                # implemented here, so just drop the outliers instead.
-                if full_ids.shape[0] < self.MIN_SAMPLE_LEN:
-                    continue
-
-                # Prompt for KD generation
-                if is_pretrain:
-                    prompt_ids = torch.zeros(0, dtype=torch.long)
-                    prompt_mask_t = torch.zeros(0, dtype=torch.long)
-                else:
-                    prompt_enc = tokenizer(
-                        prompt_text,
-                        truncation=True,
-                        max_length=max_prompt_len,
-                        return_tensors="pt",
-                        padding=False,
-                    )
-                    prompt_ids = prompt_enc["input_ids"].squeeze(0)
-                    prompt_mask_t = prompt_enc["attention_mask"].squeeze(0)
-                    prompt_len = prompt_ids.shape[0]
-
-                # Labels: mask problem tokens with -100 (pretrain: no masking)
-                labels = full_ids.clone()
-                if not is_pretrain:
-                    labels[:prompt_len] = -100
-
-                self.samples.append({
-                    "input_ids": full_ids,
-                    "attention_mask": full_mask,
-                    "labels": labels,
-                    "prompt_ids": prompt_ids,
-                    "prompt_mask": prompt_mask_t,
-                })
+                self.samples.append(_s)
 
             # Atomic write (temp + rename) so a concurrent reader never sees a
             # partially-written or momentarily-missing file.
