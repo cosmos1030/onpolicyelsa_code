@@ -44,6 +44,40 @@ logger = logging.getLogger(__name__)
 
 # ─── calibration data ────────────────────────────────────────────────────────
 
+def load_calib_jsonl(path: str, nsamples: int, seqlen: int, seed: int = 42) -> Dataset:
+    """Calibration set from a prebuilt JSONL with a "text" column.
+
+    Used for the self-gen recipe: the OT3 side is the model's OWN completions
+    on the OT3 prompts rather than the original teacher's answers, already
+    mixed 80/20 with FineWeb-Edu and packed by
+    elsa/scripts/build_selfgen_ot3_fineweb_dataset.py -- the same files ALPS
+    calibrates on, so ALPS and SparseGPT numbers stay directly comparable.
+
+    No length filtering here (unlike build_calib_dataset): these files are
+    pre-packed to a fixed length, and dropping rows shorter than `seqlen`
+    would silently shrink an already-small (~127-row) calibration set. Rows
+    are shuffled and truncated to nsamples; if the file has fewer rows than
+    nsamples, every row is used and a warning is logged, since the effective
+    calibration budget is then smaller than the caller asked for.
+    """
+    rows = []
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                rows.append({"text": json.loads(line)["text"]})
+    if not rows:
+        raise ValueError(f"[calib] no rows read from {path}")
+    random.Random(seed).shuffle(rows)
+    if len(rows) < nsamples:
+        logger.warning(
+            f"[calib] {path} has only {len(rows)} rows < nsamples={nsamples}; "
+            f"using all {len(rows)} (effective calibration budget is smaller than requested)")
+    rows = rows[:nsamples]
+    logger.info(f"[calib] self-gen JSONL {path}: {len(rows)} samples")
+    return Dataset.from_list(rows)
+
+
 def build_calib_dataset(tokenizer, nsamples: int, seqlen: int, seed: int = 42) -> Dataset:
     """OpenThoughts3 80% + FineWeb-Edu 20%."""
     rng = random.Random(seed)
@@ -168,6 +202,10 @@ def main():
     parser.add_argument("--sparsity", type=float, default=0.5)
     parser.add_argument("--prune_n", type=int, default=0)
     parser.add_argument("--prune_m", type=int, default=0)
+    parser.add_argument("--calib_data_path", type=str, default=None,
+                        help="Prebuilt calibration JSONL with a \"text\" column (self-gen recipe). "
+                             "When omitted, calibration is built from HuggingFace as "
+                             "OpenThoughts3 80%% + FineWeb-Edu 20%% (the original behavior).")
     parser.add_argument("--nsamples", type=int, default=128)
     parser.add_argument("--seqlen", type=int, default=2048)
     parser.add_argument("--seed", type=int, default=42)
@@ -210,7 +248,8 @@ def main():
             "seqlen": args.seqlen,
             "prune_n": args.prune_n,
             "prune_m": args.prune_m,
-            "calib_data": "openthoughts3_80pct_fineweb_20pct",
+            "calib_data": (args.calib_data_path if args.calib_data_path
+                           else "openthoughts3_80pct_fineweb_20pct"),
             "smoketest": args.smoketest,
         },
     )
@@ -239,8 +278,12 @@ def main():
         flops = 2 * n_params * n_tokens
         logger.info(f"[calib] FLOPs: {flops:.3e} ({n_params} params x {n_tokens} tokens, forward-only)")
         wandb.log({"flops": flops})
-        logger.info(f"Building calibration dataset (nsamples={args.nsamples})...")
-        calib_dataset = build_calib_dataset(tokenizer, args.nsamples, args.seqlen, args.seed)
+        if args.calib_data_path:
+            logger.info(f"Loading calibration dataset from {args.calib_data_path} (nsamples={args.nsamples})...")
+            calib_dataset = load_calib_jsonl(args.calib_data_path, args.nsamples, args.seqlen, args.seed)
+        else:
+            logger.info(f"Building calibration dataset (nsamples={args.nsamples})...")
+            calib_dataset = build_calib_dataset(tokenizer, args.nsamples, args.seqlen, args.seed)
 
         _src_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # src/open_r1 → src/
         if _src_dir not in sys.path:

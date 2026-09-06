@@ -5,18 +5,34 @@
 #SBATCH --gres=gpu:1
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=16
+#SBATCH --cpus-per-task=8
 #SBATCH --mem=128G
 #SBATCH --time=12:00:00
 #SBATCH --output=/home1/doyoonkim/projects/elsa/logs/sgpt_qwen3_8b_%j.out
-#SBATCH --exclude=n3,n42,n46,n51,n54,n60,n76,n77,n80,n87,n91,n61,n64
+#SBATCH --exclude=n3,n42,n46,n51,n54,n60,n77,n80,n87,n91,n61,n64
 exec 2>&1
 
 # SparseGPT prune + full eval for Qwen3-8B
-# Usage: sbatch slurm_sgpt_prune_eval_qwen3_8b.sh <SPARSITY> [NSAMPLES=128]
+# Usage: sbatch slurm_sgpt_prune_eval_qwen3_8b.sh <SPARSITY> [NSAMPLES=128] [CALIB=default|selfgen]
 
-SPARSITY=${1:?"Usage: sbatch slurm_sgpt_prune_eval_qwen3_8b.sh <SPARSITY> [NSAMPLES]"}
+SPARSITY=${1:?"Usage: sbatch slurm_sgpt_prune_eval_qwen3_8b.sh <SPARSITY> [NSAMPLES] [CALIB=default|selfgen]"}
 NSAMPLES=${2:-128}
+# CALIB=selfgen -> calibrate on THIS model's own CoT traces (v3) mixed 80/20
+# with FineWeb-Edu, the same JSONL ALPS calibrates on, instead of
+# prune_and_eval.py's default OpenThoughts3-80%/FineWeb-Edu-20% built from
+# HuggingFace. Anything else (default) keeps the original behavior.
+CALIB=${3:-default}
+SELFGEN_DATA="/home1/doyoonkim/projects/elsa/data/selfgen_ot3_fineweb_qwen3_8b_8192_v3.jsonl"
+if [ "$CALIB" = "selfgen" ]; then
+    if [ ! -f "$SELFGEN_DATA" ]; then
+        echo "ERROR: self-gen calibration file not found: $SELFGEN_DATA"; exit 1
+    fi
+    CALIB_ARG="--calib_data_path $SELFGEN_DATA"
+    CALIB_TAG="_selfgenv3"
+else
+    CALIB_ARG=""
+    CALIB_TAG=""
+fi
 SPARSITY_PCT=$(python3 -c "print(int(${SPARSITY}*100))")
 
 PYTHON=/home1/doyoonkim/miniconda3/envs/rac/bin/python
@@ -26,7 +42,7 @@ if [ -z "$MODEL" ] || [ ! -f "$MODEL/config.json" ]; then
     echo "ERROR: Qwen3-8B not found in HF cache" >&2
     exit 1
 fi
-SAVE_PATH="/home1/doyoonkim/projects/elsa/models/qwen3_8b_sgpt_s${SPARSITY_PCT}pct_n${NSAMPLES}"
+SAVE_PATH="/home1/doyoonkim/projects/elsa/models/qwen3_8b_sgpt_s${SPARSITY_PCT}pct_n${NSAMPLES}${CALIB_TAG}"
 
 LOCAL_JOB_BASE="/local-data/user-data/${USER}/job_${SLURM_JOB_ID}"
 mkdir -p "$LOCAL_JOB_BASE/wandb" "$LOCAL_JOB_BASE/lighteval"
@@ -59,10 +75,11 @@ $PYTHON src/open_r1/prune_and_eval.py \
     --model_path "$MODEL" \
     --sparsity "$SPARSITY" \
     --nsamples "$NSAMPLES" \
+    $CALIB_ARG \
     --seqlen 2048 \
     --save_path "$SAVE_PATH" \
     --wandb_project reasoning_qwen3_8b \
-    --wandb_name "qwen3_8b_sgpt_s${SPARSITY_PCT}" \
+    --wandb_name "qwen3_8b_sgpt_s${SPARSITY_PCT}${CALIB_TAG}" \
     --push_to_hub
 
 echo "##### END #####"
