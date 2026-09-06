@@ -2529,6 +2529,41 @@ def _compute_tr_kl(model: nn.Module, cal_batch: dict, cand_masks: dict,
     return max(result, 0.0), kl_vals  # (scalar, per-token KL tensor)
 
 
+@torch.no_grad()
+def _pgd_diag_nll(model: nn.Module, batch: dict, maskmgr: 'GradualMaskManager', device: str) -> float:
+    """Mean NLL over valid positions under the CURRENT maskmgr.masks (no candidate-mask
+    swap -- caller is responsible for maskmgr.masks already reflecting whichever policy
+    Q it wants measured, e.g. calling this right before vs. right after applying a PGD
+    projection's mask update). Deliberately separate from _compute_tr_kl: that function
+    measures KL between an old and a candidate mask via two forward passes and a
+    save/restore of newly-pruned weights; this one just needs a single forward pass'
+    label-conditioned NLL under whatever mask is live right now, for
+    --gmp_pgd_recovery_diag's before/after/next-before loss triple. `labels` may be
+    absent (prompt-only batches never used here, but mirrors _compute_tr_kl's fallback
+    for consistency): falls back to non-padding positions as the target via input_ids
+    itself (teacher-forced self-NLL), matching what \"loss under this policy\" means for
+    a batch with no external supervision.
+    """
+    input_ids = batch['input_ids'].to(device)
+    attn_mask = batch['attention_mask'].to(device)
+    if 'labels' in batch:
+        labels = batch['labels'].to(device)
+        valid  = (labels[:, 1:] != -100)
+        targets = labels[:, 1:].clamp(min=0)
+    else:
+        valid   = (attn_mask[:, 1:] == 1)
+        targets = input_ids[:, 1:].clamp(min=0)
+    if not valid.any():
+        return 0.0
+    with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+        logits = model(input_ids=input_ids, attention_mask=attn_mask).logits
+    lp = F.log_softmax(logits[:, :-1, :].float(), dim=-1)
+    del logits
+    token_nll = -lp.gather(-1, targets.unsqueeze(-1)).squeeze(-1)
+    del lp
+    return token_nll[valid].float().mean().item()
+
+
 def _mc_fisher_named_params(model, named_params, cal_batch, device, nsamples=3):
     """MC Fisher diagonal over `named_params` (the same Linear-weight tensors
     maskmgr/PGD prune): F_ii = mean_n(grad[-log Q(y|h)]_i^2), y ~ Q_theta(.|h).
@@ -3706,6 +3741,33 @@ def globalprune_gmp(
                      f"once the ramp is done (budget={pgd_kl_budget}).")
     elif pgd_grow_rule != 'kl':
         raise ValueError(f"--gmp_pgd_grow_rule must be 'kl' or 'schedule', got {pgd_grow_rule!r}")
+    # --gmp_pgd_jump_to_target: one-shot ablation arm. The first PGD projection
+    # accepts ALL prune candidates (skipping the self-KL bisection), so the mask
+    # lands on _pgd_desired -- i.e. final_sparsity -- immediately; every later
+    # step runs the normal KL-gated bisection, which by then has nothing left to
+    # grow and degrades to pure maintenance. Isolates the gradual KL-paced
+    # approach itself from the final mask + recovery training.
+    pgd_jump_to_target = getattr(FLAGS, 'gmp_pgd_jump_to_target', False)
+    _pgd_jump_done = False  # flips True once the one-shot jump has been applied
+    if pgd_jump_to_target:
+        if not pgd_grow_to_target:
+            raise ValueError("--gmp_pgd_jump_to_target=true requires --gmp_pgd_grow_to_target=true "
+                             "(it overrides that path's first bisection; there is no growth path to "
+                             "short-circuit otherwise).")
+        if not (pgd_kl_budget and pgd_kl_budget > 0):
+            raise ValueError("--gmp_pgd_jump_to_target=true requires --gmp_pgd_kl_budget>0 -- it only "
+                             "modifies the kl_budget branch's first projection; the swap_frac and "
+                             "fully-uncapped branches are keep-count-conserving and cannot grow sparsity "
+                             "at all.")
+        # sparsity_type is parsed into prune_n/prune_m further down (after this
+        # block), so check the flag string directly rather than those names.
+        if getattr(FLAGS, 'sparsity_type', 'unstructured') != 'unstructured':
+            raise ValueError("--gmp_pgd_jump_to_target=true is unstructured-only for now -- the N:M "
+                             "grow_to_target path needs the one-shot target to respect per-group "
+                             "structural caps, which is not implemented.")
+        logging.info("  PGD one-shot jump ENABLED (--gmp_pgd_jump_to_target): the FIRST PGD projection "
+                     f"will accept every prune candidate, snapping sparsity to {final_sparsity} in one "
+                     "step; the self-KL bisection resumes as pure maintenance from the next PGD step on.")
     _pgd_kl_cal_batch = None  # small/short batch, refreshed every mask_interval steps (see below), reused every PGD step in between
     _pgd_scratch   = {}  # name -> preallocated fp32 buffer, reused in-place every PGD step (see below)
     pgd_debug_repeat_swap = getattr(FLAGS, 'gmp_pgd_debug_repeat_swap', False)  # diagnostic: track what fraction of each step's flips are positions that ALSO flipped within the last gmp_pgd_debug_repeat_window steps (are the same weights repeatedly swapping back and forth, or is a growing set of distinct weights each swapping once)
@@ -3713,6 +3775,19 @@ def globalprune_gmp(
     pgd_debug_repeat_window = getattr(FLAGS, 'gmp_pgd_debug_repeat_window', 5)
     _pgd_last_flip_step = {}  # name -> int64 tensor, step index each position last flipped (revive or prune), -1e9 sentinel = never
     _pgd_last_k_actual = 0  # warm-start anchor for gmp_pgd_kl_budget's bisection (see below) -- last step's accepted k, so a persistently-collapsed (k=0) or persistently-generous regime converges in 1-2 forward passes instead of always spending the full bisect_iters budget
+
+    # --gmp_pgd_recovery_diag: read-only projection-shock/recovery-ratio logging,
+    # see the flag docstring in main.py and _pgd_diag_nll above. State persists
+    # across projection events (one "window" = one gmp_pgd_interval-spaced gap
+    # between consecutive projections); _pgd_recdiag_batch is intentionally its
+    # OWN cache, independent of _pgd_kl_cal_batch's mask_interval-tied refresh
+    # cadence, so L_pre/L_post/L_next_pre for a given window are guaranteed to
+    # share the exact same batch regardless of what mask_interval does in between.
+    pgd_recovery_diag = getattr(FLAGS, 'gmp_pgd_recovery_diag', False)
+    _pgd_recdiag_batch = None       # this window's fixed cache batch (resampled once per window)
+    _pgd_recdiag_L_pre = None       # L(Q_t^-) measured at this window's open
+    _pgd_recdiag_S = None           # L_post - L_pre for the currently-open window
+    _pgd_recdiag_open_step = None   # step at which the currently-open window's projection happened
     # ── STE mode (opt-in, --gmp_ste=true) ───────────────────────────────────
     # Replaces the earlier shadow-weight-replay approach entirely (removed --
     # mathematically the two give the same accumulated trajectory for a plain
@@ -3916,16 +3991,28 @@ def globalprune_gmp(
         from vllm.inputs import TokensPrompt as _TokensPrompt
         print(f"[DBG use_onpolicy] rank={local_rank} after vllm import, prebuilt={prebuilt_vllm_engine is not None}", flush=True)
         if prebuilt_vllm_engine is not None:
-            # vLLM was pre-initialized in main.py BEFORE dist.init_process_group (FSDP path).
-            # vLLM calls torch.distributed.new_group() internally — a global collective that
-            # requires ALL world ranks. Pre-init avoids the deadlock by running vLLM before
-            # dist is initialized, so new_group() is a no-op.
+            # An out-of-process engine (VLLMServerAdapter) built by main.py.
+            # Two callers put one here:
+            #  - FSDP (_use_fsdp_opkd): launched BEFORE dist.init_process_group,
+            #    because vLLM calls torch.distributed.new_group() internally --
+            #    a global collective needing ALL world ranks -- so pre-init makes
+            #    it a no-op instead of a deadlock. Sidecar owns a dedicated GPU.
+            #  - single-GPU --gmp_opkd_vllm_sidecar: sidecar SHARES this
+            #    process's GPU, launched with sleep support so its footprint is
+            #    released between rollout batches.
             if is_main_process:
                 _opkd_vllm_engine = prebuilt_vllm_engine
                 _opkd_vllm_params = prebuilt_vllm_params
-                logging.info("  OPKD vLLM: using pre-built engine (standalone init before dist.init_process_group)")
+                logging.info("  OPKD vLLM: using pre-built out-of-process engine (sidecar); "
+                             f"sleep support={hasattr(prebuilt_vllm_engine, 'sleep')}")
         elif not is_distributed:
-            # Single-GPU path: no FSDP, no dist conflict — init vLLM normally here.
+            # Single-GPU, sidecar not requested: build vLLM inside this process.
+            # NOTE: enable_sleep_mode=True below installs vLLM's CuMemAllocator
+            # as a PyTorch pluggable allocator in the TRAINING process. That has
+            # been traced to mid-training SIGSEGV inside loss.backward() and to
+            # the "Trying to free a pointer not allocated here" teardown abort.
+            # --gmp_opkd_vllm_sidecar=true avoids it entirely; this path is kept
+            # as the default only so existing runs stay comparable.
             from vllm import LLM, SamplingParams as _VLLMSamplingParams
             _opkd_vllm_enforce_eager = getattr(FLAGS, 'gmp_opkd_vllm_enforce_eager', False)
             logging.info(f"  OPKD vLLM: initializing engine (single-GPU, enforce_eager={_opkd_vllm_enforce_eager}) gpu_mem={opkd_vllm_gpu_mem} ...")
@@ -3973,7 +4060,7 @@ def globalprune_gmp(
         with _fsdp_ctx:
             if is_main_process and _opkd_vllm_engine is not None:
                 _opkd_vllm_wake(_opkd_vllm_engine)
-                if _in_fsdp and hasattr(_opkd_vllm_engine, 'sync_weights'):
+                if hasattr(_opkd_vllm_engine, 'sync_weights'):
                     _sd = {n: p.data.cpu() for n, p in model.named_parameters()}
                     logging.info("  OPKD vLLM: syncing weights (initial pool, FSDP→subprocess)")
                     _opkd_vllm_engine.sync_weights(_sd)
@@ -4778,7 +4865,7 @@ def globalprune_gmp(
                     if fsdp_model is None:
                         _offload_optimizer_state(optimizer)
                     _opkd_vllm_wake(_opkd_vllm_engine)
-                    if _in_fsdp_refill_mid and hasattr(_opkd_vllm_engine, 'sync_weights'):
+                    if hasattr(_opkd_vllm_engine, 'sync_weights'):
                         _sd = {n: p.data.cpu() for n, p in model.named_parameters()}
                         _opkd_vllm_engine.sync_weights(_sd)
                         del _sd
@@ -4831,9 +4918,15 @@ def globalprune_gmp(
             # When TR-GMP is off, refill happens after mask update as before.
             _opkd_refilled_pre_mask = False
             if use_onpolicy and tr_enabled and not tr_reached:
-                # Sync current student weights to vLLM subprocess (FSDP: collective
-                # summon_full_params + sync_weights; non-FSDP: direct internal API
-                # via _sync_opkd_weights_to_vllm, same as the initial pool fill above).
+                # Sync current student weights into the vLLM engine. The branch
+                # below dispatches on the ENGINE KIND, not on FSDP: any
+                # out-of-process engine is a VLLMServerAdapter and exposes
+                # sync_weights() over its socket (both the FSDP sidecar and the
+                # single-GPU --gmp_opkd_vllm_sidecar one), while an in-process
+                # vllm.LLM has no such method and must be written through its
+                # internals by _sync_opkd_weights_to_vllm. FSDP still decides
+                # separately whether a collective summon_full_params is needed
+                # to materialize the sharded weights first.
                 _in_fsdp_refill = fsdp_model is not None and _FSDP_AVAILABLE
                 _fsdp_sync_ctx = (FSDP.summon_full_params(fsdp_model, writeback=False, offload_to_cpu=True, rank0_only=True)
                                   if _in_fsdp_refill else nullcontext())
@@ -4842,7 +4935,7 @@ def globalprune_gmp(
                         if fsdp_model is None:
                             _offload_optimizer_state(optimizer)
                         _opkd_vllm_wake(_opkd_vllm_engine)
-                        if _in_fsdp_refill and hasattr(_opkd_vllm_engine, 'sync_weights'):
+                        if hasattr(_opkd_vllm_engine, 'sync_weights'):
                             _sd = {n: p.data.cpu() for n, p in model.named_parameters()}
                             _opkd_vllm_engine.sync_weights(_sd)
                             del _sd
@@ -5104,7 +5197,7 @@ def globalprune_gmp(
                         if fsdp_model is None:
                             _offload_optimizer_state(optimizer)
                         _opkd_vllm_wake(_opkd_vllm_engine)
-                        if _in_fsdp_refill2 and hasattr(_opkd_vllm_engine, 'sync_weights'):
+                        if hasattr(_opkd_vllm_engine, 'sync_weights'):
                             _sd = {n: p.data.cpu() for n, p in model.named_parameters()}
                             _opkd_vllm_engine.sync_weights(_sd)
                             del _sd
@@ -5179,7 +5272,7 @@ def globalprune_gmp(
                     if fsdp_model is None:
                         _offload_optimizer_state(optimizer)
                     _opkd_vllm_wake(_opkd_vllm_engine)
-                    if _in_fsdp_refill3 and hasattr(_opkd_vllm_engine, 'sync_weights'):
+                    if hasattr(_opkd_vllm_engine, 'sync_weights'):
                         _sd = {n: p.data.cpu() for n, p in model.named_parameters()}
                         _opkd_vllm_engine.sync_weights(_sd)
                         del _sd
@@ -6573,6 +6666,36 @@ def globalprune_gmp(
                 elif pgd_kl_budget > 0 and _pgd_kl_cal_batch is not None:
                     import time as _time_dbg
                     torch.cuda.synchronize(); _t_klb0 = _time_dbg.time()
+
+                    # --gmp_pgd_recovery_diag: measure L(Q_t^-) on this window's
+                    # fixed cache BEFORE anything below touches maskmgr.masks.
+                    # See the flag docstring (main.py) and the state-init comment
+                    # near _pgd_recdiag_batch above for the window semantics.
+                    if pgd_recovery_diag and pgd_grow_to_target and not _pgd_use_fsdp and is_main_process:
+                        _recdiag_L_now = _pgd_diag_nll(model, _pgd_recdiag_batch, maskmgr, str(device)) \
+                            if _pgd_recdiag_batch is not None else None
+                        if _recdiag_L_now is not None and _pgd_recdiag_open_step is not None:
+                            # Closes the PREVIOUS window: this step's pre-projection
+                            # state (still measured on THAT window's batch) is exactly
+                            # Q_{t+1}^-.
+                            _recdiag_R = _recdiag_L_now - _pgd_recdiag_L_pre
+                            _recdiag_rho = 1.0 - _recdiag_R / (_pgd_recdiag_S + 1e-8)
+                            logging.info(f"  [pgd_recovery_diag] window_open_step={_pgd_recdiag_open_step} "
+                                         f"L_pre={_pgd_recdiag_L_pre:.4f} S={_pgd_recdiag_S:.4f} "
+                                         f"R={_recdiag_R:.4f} rho={_recdiag_rho:.4f} (closed at step={step})")
+                            if use_wandb:
+                                wandb.log({"pgd/recovery_diag/window_open_step": _pgd_recdiag_open_step,
+                                           "pgd/recovery_diag/L_pre": _pgd_recdiag_L_pre,
+                                           "pgd/recovery_diag/S": _pgd_recdiag_S,
+                                           "pgd/recovery_diag/R": _recdiag_R,
+                                           "pgd/recovery_diag/rho": _recdiag_rho}, step=step)
+                        # Open THIS window: fresh independent cache batch, so
+                        # L_pre/L_post/L_next_pre for this window never depend on
+                        # _pgd_kl_cal_batch's own (mask_interval-tied) refresh.
+                        _pgd_recdiag_batch = _pgd_kl_calib_batch(prompt_iter, pgd_kl_calib_size, pgd_kl_calib_seqlen, str(device))
+                        _pgd_recdiag_L_pre = _pgd_diag_nll(model, _pgd_recdiag_batch, maskmgr, str(device))
+                        _pgd_recdiag_open_step = step
+
                     _revive_cand = {_n: _pgd_desired[_n] & ~maskmgr.masks[_n] for _n in maskmgr.named_params}
                     _prune_cand  = {_n: (~_pgd_desired[_n]) & maskmgr.masks[_n] for _n in maskmgr.named_params}
                     _n_prune_cand_t = torch.tensor(
@@ -6725,7 +6848,27 @@ def globalprune_gmp(
                     # still made afterwards purely to LOG D_t at the scheduled k.
                     _pgd_iters_left = 0 if _pgd_sched_k is not None else pgd_kl_bisect_iters
                     _pgd_probe = min(max(_pgd_last_k_actual, 1), _n_prune_cand) if _n_prune_cand > 0 else 0
-                    if _pgd_probe > 0 and _pgd_iters_left > 0:
+                    if pgd_jump_to_target and not _pgd_jump_done:
+                        # ONE-SHOT ABLATION ARM (--gmp_pgd_jump_to_target): skip the
+                        # search entirely on this, the first projection, and accept
+                        # every prune candidate -- _sel_prune below then selects all
+                        # of _prune_cand, so the applied mask IS _pgd_desired and
+                        # sparsity lands on final_sparsity in this single step.
+                        # (_k_revive saturates at min(k, n_revive_cand) as always,
+                        # which at step 1 is 0 -- nothing is masked out yet to
+                        # revive -- so this is pure net pruning, exactly the intent.)
+                        # _pgd_iters_left is left untouched so the bisection loop
+                        # below is skipped too (its `_pgd_k_hi <= _pgd_k_lo` guard
+                        # holds: both equal _n_prune_cand). Every later projection
+                        # takes the normal warm-started path.
+                        _pgd_k_lo = _pgd_k_hi = _n_prune_cand
+                        _pgd_kl_at_k_lo = _pgd_kl_at(_n_prune_cand) if _n_prune_cand > 0 else 0.0
+                        _pgd_jump_done = True
+                        logging.info(f"  [pgd_jump_to_target] ONE-SHOT: accepting all "
+                                     f"{_n_prune_cand} prune candidates (bisection skipped), "
+                                     f"kl={_pgd_kl_at_k_lo:.6f} vs budget={pgd_kl_budget} "
+                                     f"(step={step}) -- KL-gated maintenance resumes next projection.")
+                    elif _pgd_probe > 0 and _pgd_iters_left > 0:
                         _pgd_kl_probe = _pgd_kl_at(_pgd_probe)
                         _pgd_iters_left -= 1
                         if _pgd_kl_probe <= pgd_kl_budget:
@@ -6771,7 +6914,14 @@ def globalprune_gmp(
                                      f"k_sched={_k_actual} (of prune_cand={_n_prune_cand}, revive_cand={_n_revive_cand}) "
                                      f"kl_at(k_sched)={_pgd_kl_at_k_lo:.6f} budget={pgd_kl_budget} (unenforced during ramp)")
                     _pgd_last_k_actual = _k_actual
-                    _pgd_kl_at_full = _pgd_kl_at(_n_prune_cand)  # KL if pure/uncapped PGD had applied ALL prune_cand -- not visited by the search itself, so this is one extra forward pass purely for this reference number.
+                    # KL if pure/uncapped PGD had applied ALL prune_cand -- normally not
+                    # visited by the search itself, so it costs one extra forward pass
+                    # purely for this reference number. Whenever the accepted k already
+                    # IS n_prune_cand (the --gmp_pgd_jump_to_target one-shot step, or a
+                    # search that simply accepted everything), _pgd_kl_at_k_lo is that
+                    # same measurement -- reuse it instead of re-running the forward.
+                    _pgd_kl_at_full = (_pgd_kl_at_k_lo if _k_actual == _n_prune_cand
+                                       else _pgd_kl_at(_n_prune_cand))
                     logging.info(f"  [DBG kl_at_timing] calls={_pgd_kl_at_calls[0]} total_forward_time={_pgd_kl_at_time[0]:.3f}s "
                                  f"avg_per_call={(_pgd_kl_at_time[0]/max(1,_pgd_kl_at_calls[0])):.3f}s "
                                  f"topk_time={_pgd_topk_time[0]:.3f}s fwd_time={_pgd_fwd_time[0]:.3f}s (step={step})")
@@ -6826,6 +6976,28 @@ def globalprune_gmp(
                     _pgd_post_sparsity = maskmgr.current_sparsity()
                     logging.info(f"  [pgd_kl_budget] applied revivals={_pgd_revivals} prunings={_pgd_prunings} "
                                  f"post_sparsity={_pgd_post_sparsity:.4f} (step={step})")
+                    if pgd_recovery_diag and pgd_grow_to_target and not _pgd_use_fsdp and is_main_process \
+                            and _pgd_recdiag_batch is not None:
+                        # BUGFIX: maskmgr.masks[_n] = _new (just above) only updates the
+                        # logical mask dict -- the actual weight zeroing happens later,
+                        # at this whole if/elif chain's single shared maskmgr.apply(fsdp_model)
+                        # call (see gmp_trainer.py's "maskmgr.apply(fsdp_model)" right after
+                        # this chain closes). Without forcing it here too, this forward pass
+                        # would run on param.data still reflecting Q_t^- (the PRE-projection
+                        # weights), making L_post identically equal to L_pre every single
+                        # time -- observed empirically as S=0.0000 on every window even at
+                        # post_sparsity=0.50, which is what caught this. apply() just zeros
+                        # newly-pruned positions in param.data to match the current mask, so
+                        # calling it again at the chain's own regular apply() point right
+                        # after is a harmless no-op re-zero, not a double-apply of anything.
+                        maskmgr.apply(fsdp_model)
+                        # Same batch just opened above -- L(Q_t^+) right after the
+                        # real projection actually applied this step.
+                        _recdiag_L_post = _pgd_diag_nll(model, _pgd_recdiag_batch, maskmgr, str(device))
+                        _pgd_recdiag_S = _recdiag_L_post - _pgd_recdiag_L_pre
+                        logging.info(f"  [pgd_recovery_diag] window_open_step={_pgd_recdiag_open_step} "
+                                     f"L_pre={_pgd_recdiag_L_pre:.4f} L_post={_recdiag_L_post:.4f} "
+                                     f"S={_pgd_recdiag_S:.4f} (step={step})")
                     if use_wandb and is_main_process:
                         # Ground-truth applied counts (real mask diff, not the
                         # search's own k_actual/k_revive) -- the metric that

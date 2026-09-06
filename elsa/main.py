@@ -189,6 +189,17 @@ def main(argv):
         and getattr(FLAGS, 'gmp_use_fsdp', False)
         and getattr(FLAGS, 'gmp_onpolicy_kd_lambda', 0.0) > 0
     )
+    # --gmp_opkd_vllm_sidecar: same isolation for SINGLE-GPU OPKD, where the
+    # sidecar shares the one training GPU rather than getting its own. Opt-in
+    # (default off) so in-flight comparisons against runs built on the
+    # in-process engine stay meaningful. See the flag's own docstring for why
+    # the in-process engine is a problem at all.
+    _use_singlegpu_opkd_sidecar = (
+        not is_distributed
+        and getattr(FLAGS, 'do_gmp', False)
+        and getattr(FLAGS, 'gmp_onpolicy_kd_lambda', 0.0) > 0
+        and getattr(FLAGS, 'gmp_opkd_vllm_sidecar', False)
+    )
     # OPD's vLLM always runs isolated on a dedicated GPU (index = world_size,
     # i.e. one GPU beyond the training world — world_size=1 for single-GPU
     # training). This doesn't require FSDP/distributed training: a single
@@ -278,6 +289,40 @@ def main(argv):
         dist.barrier()
         if local_rank != 0:
             logging.info(f"[rank {local_rank}] vLLM barrier passed — proceeding")
+
+    if _use_singlegpu_opkd_sidecar:
+        from lib.vllm_proc import launch_vllm_server as _launch_vllm
+        _sc_gpu_mem = getattr(FLAGS, 'gmp_opkd_vllm_gpu_mem', 0.25)
+        _sc_max_prompt = getattr(FLAGS, 'gmp_max_prompt_len', 512)
+        _sc_max_new = getattr(FLAGS, 'gmp_onpolicy_max_new_tokens', 256)
+        _sc_temp = getattr(FLAGS, 'gmp_onpolicy_temp', 0.6)
+        # cuda_device_str='0' is a RELATIVE index that the server maps through
+        # its inherited CUDA_VISIBLE_DEVICES (see vllm_server_standalone.py) --
+        # i.e. the same single GPU this process trains on, which is the intent
+        # here. No dist.barrier(): world_size==1, there is no other rank to
+        # wait for. enforce_eager mirrors the in-process engine's own flag
+        # rather than the FSDP path's hardcoded True -- that True guards
+        # against CUDA-graph address space being P2P-mapped into a DIFFERENT
+        # GPU's trainer, which cannot arise when both share one device.
+        _sc_eager = getattr(FLAGS, 'gmp_opkd_vllm_enforce_eager', False)
+        logging.info(f"Launching vLLM sidecar on the shared training GPU "
+                     f"(gpu_mem={_sc_gpu_mem}, enforce_eager={_sc_eager}, sleep_mode=True)")
+        _prebuilt_vllm_engine = _launch_vllm(
+            FLAGS.model,
+            cuda_device_str='0',
+            gpu_mem=_sc_gpu_mem,
+            max_len=_sc_max_new + _sc_max_prompt,
+            enforce_eager=_sc_eager,
+            default_max_new=_sc_max_new,
+            default_temp=_sc_temp,
+            startup_timeout=480,
+            tensor_parallel_size=1,
+            # Shares the trainer's GPU, so its footprint MUST be releasable
+            # between rollout batches -- unlike the FSDP sidecar above.
+            sleep_mode=True,
+        )
+        _prebuilt_vllm_params = None
+        logging.info("vLLM sidecar ready (single-GPU, shared device)")
 
     # ADMM + OPD: vLLM subprocess on dedicated GPU (index = world_size, e.g.
     # GPU 1 for single-GPU training). Requires requesting world_size+1 GPUs
@@ -1067,6 +1112,8 @@ if __name__ == '__main__':
                        'separate from gmp_pruning_end_ratio, which would also re-enable the schedule-driven '
                        'maskmgr.update() path and put a second mechanism on the mask.')
     flags.DEFINE_bool('gmp_pgd_grow_to_target', False, 'PGD-driven growth: instead of a separate TR-GMP growth mechanism, PGD\'s own gmp_pgd_kl_budget self-KL bisection drives sparsity from 0 to final_sparsity directly -- _pgd_desired targets final_sparsity (not current keep-count), and revive is no longer forced equal to prune (revive saturates at min(k, revive_cand) while prune keeps going up to k), so whenever prune candidates outnumber revive candidates the accepted swap set is net-pruning, at whatever pace the self-KL budget allows. Requires --gmp_pgd=true --gmp_pgd_kl_budget=<budget> --gmp_tr_enabled=false. Now also supports sparsity_type=N:M: the N:M pattern is treated as a constraint on the FINAL target only, not on intermediate masks (a group is free to sit at any dead-count 0..prune_m-prune_n mid-training) -- _pgd_desired is a per-group top-prune_n projection of current importance, everything else identical to the unstructured path.')
+    flags.DEFINE_bool('gmp_pgd_jump_to_target', False, 'Ablation (requires --gmp_pgd_grow_to_target=true --gmp_pgd_kl_budget>0): on the FIRST PGD projection only, bypass the self-KL bisection entirely and accept every prune candidate (k_actual = n_prune_cand), snapping the mask straight onto _pgd_desired -- i.e. reach final_sparsity in one shot at the first PGD step instead of creeping toward it over hundreds of steps. Every subsequent PGD step is unchanged (the normal KL-gated bisection resumes), so PGD degrades to pure post-target polish/maintenance from step 2 onward. Isolates "does the GRADUAL, KL-paced approach to the target matter, or only the final mask + recovery training?" -- measured reach-steps for the gradual path: 4B S70 kl_budget=0.02 took 272 steps, kl_budget=99999 took 48, 1.7B S70 kl_budget=0.01 took 464. Unstructured only for now -- NOT wired into the N:M (2:4/4:8) grow_to_target path, which would additionally need the one-shot target to respect per-group structural caps.')
+    flags.DEFINE_bool('gmp_pgd_recovery_diag', False, 'Diagnostic (gmp_pgd_grow_to_target + gmp_pgd_kl_budget>0 only): at every PGD projection event, measure NLL on a small fixed cache batch three times per recovery window -- immediately before this projection (L_pre = L(Q_t^-)), immediately after it (L_post = L(Q_t^+)), and again immediately before the NEXT projection, gmp_pgd_interval steps later (L_next_pre = L(Q_{t+1}^-), on the SAME batch as L_pre/L_post so the three are directly comparable). Logs projection shock S_t=L_post-L_pre, residual damage R_t=L_next_pre-L_pre, and recovery ratio rho_t=1-R_t/(S_t+eps) to wandb (pgd/recovery_diag/*), joinable by window_open_step against that step\'s existing pgd/kl_at_k_actual and pgd/net_growth -- lets a post-hoc correlation check (does higher projection KL predict lower recovery ratio?) run on an otherwise-unmodified fixed-delta run. Read-only: never changes the mask actually applied, only adds two cheap extra forward passes per projection event (no fresh rollout generation, unlike a surrogate-gap sweep).')
     flags.DEFINE_bool('gmp_pgd_debug_repeat_swap', False, 'Diagnostic (fully-uncapped PGD path only): log what fraction of each step\'s revive/prune flips are positions that ALSO flipped within the last gmp_pgd_debug_repeat_window steps -- tests whether PGD churn is a small set of weights repeatedly swapping back and forth (unstable near-threshold weights) vs. a growing set of distinct weights each swapping once.')
     flags.DEFINE_integer('gmp_pgd_debug_repeat_window', 5, 'Lookback window (steps) for gmp_pgd_debug_repeat_swap\'s repeat-flip detection.')
     flags.DEFINE_bool('gmp_pgd_debug_importance_hist', False, 'Diagnostic: every 5 steps, dump the fisher*weight^2 importance distribution\'s quantiles + local density near each quantile to check where the pruning threshold sits. Off by default -- costs a real GPU sync + CPU transfer + torch.quantile over up to 10M sampled values every 5th step (measured ~3s/occurrence, i.e. ~0.6s/step amortized) for a value that\'s purely informational.')
@@ -1193,6 +1240,7 @@ if __name__ == '__main__':
     flags.DEFINE_boolean('gmp_opkd_prev_mask_teacher', False, 'Use pre-mask-update model snapshot as OPKD teacher instead of the dense teacher.')
     flags.DEFINE_float('gmp_prevmask_opkd_lambda', 0.0, 'Weight for prev-mask-teacher OPKD loss added on top of dense teacher OPKD (0=disabled).')
     flags.DEFINE_float('gmp_opkd_vllm_gpu_mem', 0.35, 'GPU memory utilization for the OPKD vLLM engine.')
+    flags.DEFINE_bool('gmp_opkd_vllm_sidecar', False, 'Single-GPU OPKD only (no effect under FSDP, which always uses the sidecar): run vLLM in an independent OS process sharing the training GPU, instead of building it in-process with vllm.LLM(..., enable_sleep_mode=True). The in-process engine installs vLLM\'s CuMemAllocator as a PyTorch pluggable allocator, so two allocators coexist in the training process -- empirically the cause of mid-training SIGSEGV inside loss.backward() (observed in 6 of 7 sampled 1.7B grow_to_target runs, at unpredictable steps 23-235, and of the "CUDAPluggableAllocator::raw_delete: Trying to free a pointer not allocated here" abort at teardown; runs with on-policy KD disabled, hence no vLLM, never showed either). The sidecar keeps that allocator confined to a process owning no training tensors. It is launched with sleep support so its ~gpu_mem-fraction footprint is still released back to the trainer between rollout batches, unlike the FSDP sidecar which owns a dedicated GPU and never sleeps.')
     flags.DEFINE_integer('gmp_opkd_vllm_gpu_index', -1, 'CUDA device index for the OPKD vLLM subprocess. -1 (default) = dedicated GPU at index=world_size. >=0 shares that training rank\'s physical GPU instead (no extra GPU needed).')
     flags.DEFINE_integer('gmp_opkd_vllm_tp_size', 1, 'Tensor-parallel size for the OPKD vLLM engine. >1 spreads vLLM weights+KV cache evenly across that many training GPUs (indices 0..tp_size-1) instead of piling onto one -- takes priority over gmp_opkd_vllm_gpu_index.')
     flags.DEFINE_boolean('gmp_opkd_vllm_enforce_eager', False, 'If True, disable vLLM CUDA graph capture (enforce_eager=True) to save peak memory.')

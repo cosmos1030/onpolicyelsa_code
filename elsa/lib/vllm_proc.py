@@ -84,11 +84,14 @@ class VLLMServerAdapter:
     Returns: list of _FakeRequestOutput with .outputs[0].token_ids.
     """
 
-    def __init__(self, conn, proc, default_max_new, default_temp):
+    def __init__(self, conn, proc, default_max_new, default_temp, sleep_mode=False):
         self._conn = conn
         self._proc = proc
         self._default_max_new = default_max_new
         self._default_temp = default_temp
+        if sleep_mode:
+            self.sleep = self._sleep_impl
+            self.wake_up = self._wake_impl
 
     def _recv_with_alive_check(self, poll_secs=30):
         import multiprocessing.connection as _mpc
@@ -116,6 +119,31 @@ class VLLMServerAdapter:
         if result != 'synced':
             logging.warning(f"[VLLMServerAdapter] unexpected sync_weights response: {result!r}")
 
+    # _sleep_impl/_wake_impl are bound to the public names `sleep`/`wake_up` in
+    # __init__ ONLY when the server was launched with --sleep-mode.
+    # gmp_trainer.py's _opkd_vllm_sleep/_opkd_vllm_wake gate on
+    # hasattr(engine, 'sleep'), so leaving them unbound makes an adapter
+    # correctly report "no sleep support" and degrade to never sleeping --
+    # the right behavior for the FSDP layout, where the sidecar owns a
+    # dedicated GPU and releasing its memory between rollouts buys nothing.
+    # Defining them unconditionally on the class would make that hasattr
+    # always true and start sleeping the FSDP sidecar against a server that
+    # cannot honor it.
+    def _sleep_impl(self, level=1):
+        """Offload weights to CPU + drop KV cache, releasing this sidecar's GPU
+        memory back to the trainer sharing the same device."""
+        self._conn.send(('sleep', level))
+        result = self._recv_with_alive_check()
+        if result != 'ok':
+            raise RuntimeError(f"[VLLMServerAdapter] sleep failed: {result!r}")
+
+    def _wake_impl(self):
+        """Re-map weights/KV cache before a rollout batch."""
+        self._conn.send(('wake',))
+        result = self._recv_with_alive_check()
+        if result != 'ok':
+            raise RuntimeError(f"[VLLMServerAdapter] wake_up failed: {result!r}")
+
     def shutdown(self):
         try:
             self._conn.send(None)
@@ -141,10 +169,16 @@ _ELASTIC_LAUNCH_ENV_KEYS = (
 
 def launch_vllm_server(model_path, cuda_device_str, gpu_mem, max_len,
                         enforce_eager, default_max_new, default_temp,
-                        startup_timeout=300, tensor_parallel_size=1):
+                        startup_timeout=300, tensor_parallel_size=1,
+                        sleep_mode=False):
     """Launch vLLM as an independent OS process; return a VLLMServerAdapter.
 
     Waits up to startup_timeout seconds for the server's readiness marker.
+
+    sleep_mode=True builds the engine with vLLM's sleep support and exposes
+    .sleep()/.wake_up() on the returned adapter -- needed when this sidecar
+    SHARES a GPU with the trainer, so its footprint is not permanently
+    resident. Leave False when it has a dedicated GPU (the FSDP layout).
     """
     addr = str(pathlib.Path(tempfile.gettempdir()) / f'vllm_server_{uuid.uuid4().hex}.sock')
     authkey = uuid.uuid4().hex
@@ -167,6 +201,8 @@ def launch_vllm_server(model_path, cuda_device_str, gpu_mem, max_len,
            '--authkey', authkey]
     if enforce_eager:
         cmd.append('--enforce-eager')
+    if sleep_mode:
+        cmd.append('--sleep-mode')
 
     log_fh = open(log_path, 'w')
     proc = subprocess.Popen(cmd, env=clean_env, stdout=log_fh, stderr=subprocess.STDOUT)
@@ -199,4 +235,4 @@ def launch_vllm_server(model_path, cuda_device_str, gpu_mem, max_len,
         raise RuntimeError(f"Could not connect to vLLM server socket at {addr}; see {log_path}")
 
     logging.info("[vllm_proc] standalone vLLM server ready")
-    return VLLMServerAdapter(conn, proc, default_max_new, default_temp)
+    return VLLMServerAdapter(conn, proc, default_max_new, default_temp, sleep_mode=sleep_mode)

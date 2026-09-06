@@ -59,6 +59,12 @@ def main():
     ap.add_argument('--gpu-mem', type=float, default=0.15)
     ap.add_argument('--max-len', type=int, default=768)
     ap.add_argument('--enforce-eager', action='store_true')
+    ap.add_argument('--sleep-mode', action='store_true',
+                    help="Build the engine with enable_sleep_mode=True so the client can "
+                         "issue ('sleep', level)/('wake',) to release this process's GPU "
+                         "memory between rollout batches. Required when the sidecar SHARES a "
+                         "GPU with the trainer (single-GPU OPKD); unnecessary when it has a "
+                         "dedicated GPU of its own (the FSDP multi-GPU layout).")
     ap.add_argument('--address', required=True, help='Unix socket path')
     ap.add_argument('--authkey', required=True)
     args = ap.parse_args()
@@ -133,6 +139,13 @@ def main():
 
     from vllm import LLM, SamplingParams
 
+    # enable_sleep_mode installs vLLM's CuMemAllocator as a PyTorch pluggable
+    # allocator. That is exactly the thing we must NOT do inside the training
+    # process (two allocators in one process -> "Trying to free a pointer not
+    # allocated here" / mid-training SIGSEGV, see gmp_trainer.py's single-GPU
+    # in-process engine). Here it is safe and is the whole point of the
+    # sidecar: the allocator lives only in THIS process, which owns no
+    # training tensors, so it can never meet the trainer's allocator.
     engine = LLM(
         args.model,
         dtype='bfloat16',
@@ -141,6 +154,7 @@ def main():
         max_model_len=args.max_len,
         enforce_eager=args.enforce_eager,
         tensor_parallel_size=args.tp_size,
+        enable_sleep_mode=args.sleep_mode,
     )
 
     from multiprocessing.connection import Listener
@@ -162,6 +176,26 @@ def main():
                     conn.send('synced')
                 except Exception as e:
                     conn.send(f'sync_error: {e}')
+                continue
+            if isinstance(req, tuple) and req[0] in ('sleep', 'wake'):
+                # Errors are reported back rather than raised: the client must
+                # be able to tell "engine is awake" from "engine is asleep"
+                # with certainty, since writing weights into memory vLLM has
+                # unmapped segfaults instead of raising (see
+                # gmp_trainer.py:_opkd_vllm_wake). Silence here would let the
+                # trainer proceed on a false belief about the engine's state.
+                try:
+                    if not args.sleep_mode:
+                        raise RuntimeError(
+                            "server was started without --sleep-mode; "
+                            "engine has no sleep/wake support")
+                    if req[0] == 'sleep':
+                        engine.sleep(req[1] if len(req) > 1 else 1)
+                    else:
+                        engine.wake_up()
+                    conn.send('ok')
+                except Exception as e:
+                    conn.send(f'{req[0]}_error: {e}')
                 continue
             prompt_ids_list, max_new, temp = req
             params = SamplingParams(max_tokens=max_new, temperature=temp, top_p=0.95)

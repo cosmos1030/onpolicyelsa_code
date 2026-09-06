@@ -8,7 +8,12 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=80G
 #SBATCH --time=3-00:00:00
-#SBATCH --exclude=n3,n42,n46,n51,n52,n54,n55,n58,n60,n76,n77,n80,n91,n87,n61,n64,n31,n19
+# n52/n55/n58 (2026-07-26 curl api.wandb.ai 성공) and n76 (2026-08-02 인터넷
+# 복구 확인) were being excluded here despite being confirmed healthy -- that
+# left only 6 of the A100-80GB partition's 14 nodes eligible. Dropped
+# 2026-09-06. Remaining exclusions: internet-blocked (n46,n51,n54,n77,n87,
+# n61,n64), GPU faults (n80,n91,n31,n19), broken (n3,n60), NCCL-slow (n42).
+#SBATCH --exclude=n3,n42,n46,n51,n54,n60,n77,n80,n87,n91,n61,n64,n31,n19
 #SBATCH --output=/home1/doyoonkim/projects/elsa/logs/gmp_pgd_grow_1.7b_%j.out
 exec 2>&1
 
@@ -38,7 +43,20 @@ exec 2>&1
 # PGD paths fixed this session -- _pgd_nm_pre_target/_pgd_nm_post_target --
 # still only MAINTAIN sparsity, they don't drive growth toward target).
 #
-# Usage: sbatch slurm_gmp_pgd_grow_to_target_qwen3_1.7b.sh <SPARSITY> <KL_BUDGET> [OPD_GEN_LEN] [MASK_INTERVAL] [LR_SCHEDULER] [STEPS] [LR] [DATA_PATH] [SEQLEN] [GRAD_CKPT] [WANDB_PROJECT]
+# Usage: sbatch slurm_gmp_pgd_grow_to_target_qwen3_1.7b.sh <SPARSITY> <KL_BUDGET> [OPD_GEN_LEN] [MASK_INTERVAL] [LR_SCHEDULER] [STEPS] [LR] [DATA_PATH] [SEQLEN] [GRAD_CKPT] [WANDB_PROJECT] [SALIENCY] [PRUNING_SCOPE] [LOSS_WEIGHTS] [ROLLOUT_INTERVAL] [KD_NSAMPLES] [CALIB_SIZE] [PGD_INTERVAL] [VLLM_GPU_MEM] [JUMP_TO_TARGET] [SIDECAR]
+#
+# The 4B/8B "dense rollout once + PGD-driven growth" ablation is
+# ROLLOUT_INTERVAL > STEPS (e.g. 4096): with --gmp_tr_enabled=false the OPKD
+# vLLM pool refill is gated purely on `step % onpolicy_interval == 0`
+# (gmp_trainer.py's "pgd2growth OPKD pool refill" block), fully decoupled from
+# MASK_INTERVAL, so one pool built from the dense weights before step 1 is
+# reused for the whole run.
+#
+# JUMP_TO_TARGET=true additionally makes the FIRST PGD projection accept every
+# prune candidate, so sparsity reaches final_sparsity at step=PGD_INTERVAL in
+# one shot rather than creeping there over hundreds of steps under the self-KL
+# bisection (measured on the gradual path: 1.7B S70 kl_budget=0.01 reached
+# target at step 464; 4B S70 kl_budget=0.02 at 272, kl_budget=99999 at 48).
 # e.g.: sbatch slurm_gmp_pgd_grow_to_target_qwen3_1.7b.sh 0.7 0.02 512 32 cosine 2048 1e-4 \
 #         /home1/doyoonkim/projects/elsa/data/ot3_fineweb_40k_qwen3_nostrip_8192.jsonl 8192 true reasoning_qwen3_1.7b_nostrip8192
 
@@ -61,6 +79,8 @@ KD_NSAMPLES=${16:-0}  # 0 = full dataset (production)
 CALIB_SIZE=${17:-4}   # gmp_pgd_kl_calib_size
 PGD_INTERVAL=${18:-8}  # gmp_pgd_interval -- also the effective growth cadence in this mode (no separate mask_interval-triggered growth)
 VLLM_GPU_MEM=${19:-0.15}  # gmp_opkd_vllm_gpu_mem -- 0.15 sized for OPD_GEN_LEN=256, raise for 512+
+JUMP_TO_TARGET=${20:-false}  # gmp_pgd_jump_to_target -- one-shot ablation: first PGD projection accepts ALL prune candidates (no self-KL bisection), so sparsity hits final_sparsity at step=PGD_INTERVAL instead of creeping there over hundreds of steps; PGD is pure maintenance from the next projection on. Unstructured only.
+SIDECAR=${21:-false}  # gmp_opkd_vllm_sidecar -- run vLLM in its own OS process sharing this GPU instead of in-process. The in-process engine installs vLLM's CuMemAllocator into the TRAINING process, traced to mid-training SIGSEGV in loss.backward() (6 of 7 sampled runs died at steps 23-235) and to the "Trying to free a pointer not allocated here" teardown abort. Validated on a 0.6B/40-step smoke (job 870390: EXIT 0, 0 segfaults, 6 sleep/5 wake cycles) vs the same smoke on the in-process engine (job 869907: SIGSEGV).
 NTP_LAMBDA=$(echo "$LOSS_WEIGHTS" | cut -d, -f1)
 KD_LAMBDA=$(echo "$LOSS_WEIGHTS" | cut -d, -f2)
 OPKD_LAMBDA=$(echo "$LOSS_WEIGHTS" | cut -d, -f3)
@@ -92,7 +112,7 @@ export TRITON_CACHE_DIR=/tmp/triton_cache_${USER}
 export HF_DATASETS_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 
-echo "=== PGD-driven growth (no TR-GMP) Qwen3-1.7B s${SPARSITY_PCT} kl_budget=${KL_BUDGET} lr=${LR} pgd_interval=${PGD_INTERVAL} lr_scheduler=${LR_SCHEDULER} steps=${STEPS} saliency=${SALIENCY} (OT80/FW20) ==="
+echo "=== PGD-driven growth (no TR-GMP) Qwen3-1.7B s${SPARSITY_PCT} kl_budget=${KL_BUDGET} lr=${LR} pgd_interval=${PGD_INTERVAL} rollout_interval=${ROLLOUT_INTERVAL} jump_to_target=${JUMP_TO_TARGET} sidecar=${SIDECAR} lr_scheduler=${LR_SCHEDULER} steps=${STEPS} saliency=${SALIENCY} (OT80/FW20) ==="
 echo "NODE=$(hostname)  JOB=$SLURM_JOB_ID"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 
@@ -139,6 +159,8 @@ $PYTHON main.py \
     --gmp_pruning_end_ratio=0.0 \
     --gmp_pgd=true \
     --gmp_pgd_grow_to_target=true \
+    --gmp_pgd_jump_to_target=${JUMP_TO_TARGET} \
+    --gmp_opkd_vllm_sidecar=${SIDECAR} \
     --gmp_pgd_kl_budget=${KL_BUDGET} \
     --gmp_pgd_kl_calib_size=${CALIB_SIZE} \
     --gmp_pgd_interval=${PGD_INTERVAL} \
@@ -150,7 +172,7 @@ $PYTHON main.py \
     --eval_zero_shot=true \
     --wandb=true \
     --wandb_project=${WANDB_PROJECT} \
-    --run_name_suffix="${RUN_TAG:+${RUN_TAG}_}pgd_grow2target_klbudget${KL_BUDGET}_lr${LR}_pgdi${PGD_INTERVAL}_${PRUNING_SCOPE}scope_$(basename "$DATA_PATH" .jsonl)" \
+    --run_name_suffix="${RUN_TAG:+${RUN_TAG}_}pgd_grow2target_klbudget${KL_BUDGET}_lr${LR}_pgdi${PGD_INTERVAL}_ri${ROLLOUT_INTERVAL}$([ "$JUMP_TO_TARGET" = "true" ] && echo "_jump")$([ "$SIDECAR" = "true" ] && echo "_sidecar")_${PRUNING_SCOPE}scope_$(basename "$DATA_PATH" .jsonl)" \
     --seed=42
 
 EXIT_CODE=$?
