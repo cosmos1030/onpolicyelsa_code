@@ -95,8 +95,23 @@ def _parse_results(out_dir: str) -> dict:
 
 
 def _compute_token_stats(out_dir: str, bench_name: str, max_new_tokens: int,
-                         correct_metric_keys: list[str]) -> dict:
-    """Parse lighteval details parquet and compute token/truncation stats."""
+                         correct_metric_keys: list[str], max_model_length: int) -> dict:
+    """Parse lighteval details parquet and compute token/truncation stats.
+
+    The generation ceiling is per-sample, not the flat max_new_tokens: vLLM can
+    only produce max_model_length - len(prompt) tokens, and lighteval hands it
+    max_new_tokens without subtracting the prompt (see VLLMModel.greedy_until --
+    it tries to left-truncate the context to max_length - max_new_tokens, which
+    for our profiles is 0, and `inputs[-0:]` is Python for "the whole list", so
+    the prompt survives intact and the generation budget silently shrinks).
+
+    This mattered: with the quick profile's max_new_tokens == max_model_length
+    == 8192, `l >= max_new_tokens * 0.99` can never fire, so LCB reported a
+    0.0% truncation rate while 81.7% of its generations (219/268) were actually
+    hitting their real ceiling of 8192 - 594 avg -- and every single truncated
+    generation scored 0, because the model was cut off mid-reasoning before it
+    ever emitted a code block. A metric that reads 0.0% while four of five
+    samples are being cut off is worse than no metric at all."""
     try:
         import numpy as np
         import pandas as pd
@@ -119,7 +134,9 @@ def _compute_token_stats(out_dir: str, bench_name: str, max_new_tokens: int,
             return False
 
         correct   = [is_correct(m) for m in df["metric"]]
-        truncated = [l >= max_new_tokens * 0.99 for l in out_lens]
+        # Real ceiling per sample; -2 absorbs off-by-one around EOS accounting.
+        caps      = [min(max_new_tokens, max_model_length - i) for i in in_lens]
+        truncated = [l >= c - 2 for l, c in zip(out_lens, caps)]
 
         correct_lens  = [l for l, c in zip(out_lens, correct) if c]
         wrong_lens    = [l for l, c in zip(out_lens, correct) if not c]
@@ -132,6 +149,8 @@ def _compute_token_stats(out_dir: str, bench_name: str, max_new_tokens: int,
             f"{p}_avg_input_tokens":          float(np.mean(in_lens)),
             f"{p}_max_output_tokens":         float(np.max(out_lens)),
             f"{p}_truncation_rate":           float(np.mean(truncated)),
+            f"{p}_avg_gen_cap":               float(np.mean(caps)),
+            f"{p}_min_gen_cap":               float(np.min(caps)),
             f"{p}_correct_avg_output_tokens": float(np.mean(correct_lens))  if correct_lens  else float("nan"),
             f"{p}_wrong_avg_output_tokens":   float(np.mean(wrong_lens))    if wrong_lens    else float("nan"),
             f"{p}_correct_truncation_rate":   float(np.mean(correct_trunc)) if correct_trunc else float("nan"),
@@ -266,7 +285,7 @@ def run_lighteval_bench(
             v = t.get("extractive_match", t.get("acc"))
             metrics["lighteval/gsm8k"] = float(v) if v is not None else float("nan")
 
-        metrics.update(_compute_token_stats(out_dir, name, max_tok, correct_keys))
+        metrics.update(_compute_token_stats(out_dir, name, max_tok, correct_keys, ctx_len))
 
     for k, v in metrics.items():
         logger.info(f"[lighteval_bench] {k}: {v:.4f}")
