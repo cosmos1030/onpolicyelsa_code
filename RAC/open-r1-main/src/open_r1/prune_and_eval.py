@@ -186,12 +186,19 @@ def eval_zero_shot(model, tokenizer, limit=None) -> dict:
 # (ELSA/GMP via main.py, ALPS/SparseLLM via eval_full.py) get.
 
 def eval_bench(model_path: str, out_base: str, gpu_util: float,
-              max_samples: int | None = None) -> dict:
+              max_samples: int | None = None, profile: str = "quick") -> dict:
+    # profile is passed EXPLICITLY. It used to be omitted, so this path silently
+    # inherited run_lighteval_bench's default -- which became "official" on
+    # 2026-08-10, quadrupling every generation budget (8192 -> 32768) and adding
+    # aime24/aime25. That is what pushed the 2026-09-06 self-gen sweep past its
+    # 12h wall mid-lighteval, and it also made those numbers incomparable with
+    # the quick-profile results every other baseline here reports.
     if ELSA_PATH not in sys.path:
         sys.path.insert(0, ELSA_PATH)
     from lib.lighteval_bench import run_lighteval_bench
     return run_lighteval_bench(model_path, out_base, gpu_util=gpu_util,
-                               max_samples=max_samples, log_to_wandb=False)
+                               max_samples=max_samples, log_to_wandb=False,
+                               profile=profile)
 
 
 # ─── main ────────────────────────────────────────────────────────────────────
@@ -206,6 +213,11 @@ def main():
                         help="Prebuilt calibration JSONL with a \"text\" column (self-gen recipe). "
                              "When omitted, calibration is built from HuggingFace as "
                              "OpenThoughts3 80%% + FineWeb-Edu 20%% (the original behavior).")
+    parser.add_argument("--eval_profile", default="quick", choices=["quick", "official"],
+                        help="lighteval budget profile. quick = 8192-token budgets, 5 tasks "
+                             "(what every other baseline in this project reports). official = "
+                             "32768/38912 Qwen3-protocol budgets plus aime24/aime25; several "
+                             "times slower, only for final-table numbers.")
     parser.add_argument("--nsamples", type=int, default=128)
     parser.add_argument("--seqlen", type=int, default=2048)
     parser.add_argument("--seed", type=int, default=42)
@@ -250,6 +262,7 @@ def main():
             "prune_m": args.prune_m,
             "calib_data": (args.calib_data_path if args.calib_data_path
                            else "openthoughts3_80pct_fineweb_20pct"),
+            "eval_profile": args.eval_profile,
             "smoketest": args.smoketest,
         },
     )
@@ -382,7 +395,8 @@ def main():
 
     os.makedirs(args.save_path, exist_ok=True)
     out_base = os.path.join(args.save_path, "lighteval")
-    le_metrics = eval_bench(eval_model_path, out_base, gpu_util, le_samples)
+    le_metrics = eval_bench(eval_model_path, out_base, gpu_util, le_samples,
+                            profile=args.eval_profile)
     wandb.log(le_metrics)
 
     all_metrics = {**ppl_metrics, **zs_metrics, **le_metrics}
