@@ -7,7 +7,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=80G
-#SBATCH --time=12:00:00
+#SBATCH --time=1-00:00:00
 #SBATCH --exclude=n3,n51,n54,n60,n80,n61,n64
 #SBATCH --output=/home1/doyoonkim/projects/elsa/logs/sgpt_qwen3_4b_%j.out
 exec 2>&1

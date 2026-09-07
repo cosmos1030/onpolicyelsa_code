@@ -5,9 +5,9 @@
 #SBATCH --gres=gpu:1
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=16
+#SBATCH --cpus-per-task=8
 #SBATCH --mem=80G
-#SBATCH --time=12:00:00
+#SBATCH --time=1-00:00:00
 #SBATCH --exclude=n3,n42,n46,n51,n54,n60,n77,n80,n91,n61,n64
 #SBATCH --output=/local-data/user-data/%u/job_%j/slurm/%x_%j.out
 exec 2>&1

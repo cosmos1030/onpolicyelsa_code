@@ -26,7 +26,13 @@ import os
 import sys
 from datetime import datetime
 
-sys.path.insert(0, "/NHNHOME/log-postech/doyoonkim/onpolicyelsa_code/elsa")
+# elsa/ must be importable for lib.lighteval_bench. This file lives in
+# <repo>/b200_scripts/, so derive the sibling elsa/ from __file__ rather than
+# hardcoding the B200 container's checkout path -- the same script is used on
+# the log_cluster, where that path does not exist. ELSA_PATH overrides.
+_ELSA = os.environ.get("ELSA_PATH") or os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "elsa")
+sys.path.insert(0, _ELSA)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
