@@ -103,7 +103,26 @@ export WANDB_INIT_TIMEOUT=120
 export TMPDIR=/tmp
 export HF_TOKEN=$(cat ~/.hf_token 2>/dev/null || echo "")
 export WANDB_API_KEY=$(grep WANDB_API_KEY ~/.bashrc | cut -d'=' -f2 | tail -1)
-export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:256
+# Allocator config depends on WHERE vLLM lives.
+#
+# max_split_size_mb:256 was only ever a workaround: vLLM's CuMemAllocator
+# (enable_sleep_mode=True) hard-asserts if it sees expandable_segments:True,
+# so the in-process OPKD engine forced this second-best option. But it forbids
+# splitting blocks larger than 256MB, which makes fragmentation WORSE for
+# exactly the large allocations this job depends on -- _kl_loss builds a
+# (1, kl_chunk_size, ~152k-vocab) fp32 tensor, 1.24GiB at chunk_size=2048, and
+# needs it contiguous. Job 879605 died there (SIGSEGV inside kl_div, step 177)
+# with only 4 PGD calls behind it, so this is memory layout, not PGD churn.
+#
+# With --gmp_opkd_vllm_sidecar=true vLLM runs in its own process, the trainer
+# never loads cumem_allocator (verified: 0 occurrences in 879605's log), and
+# the assertion cannot fire -- so the sidecar path gets expandable_segments,
+# which is the option that actually addresses this fragmentation.
+if [ "$SIDECAR" = "true" ]; then
+    export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+else
+    export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:256
+fi
 export TOKENIZERS_PARALLELISM=false
 export VLLM_USE_V1=0
 export VLLM_NO_USAGE_STATS=1

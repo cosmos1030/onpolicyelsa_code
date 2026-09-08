@@ -392,7 +392,7 @@ def _pgd_topk_mask(imps_by_name, cand_by_name, k, want_highest, dev, use_fsdp, g
     return _pgd_topk_mask_from_vals(vals, lo, hi, k, dev, use_fsdp, want_highest)
 
 
-def _pgd_build_topk_vals(imps_by_name, cand_by_name, want_highest, global_lo, global_hi):
+def _pgd_build_topk_vals(imps_by_name, cand_by_name, want_highest, global_lo, global_hi, scratch=None):
     """One-time setup half of _pgd_topk_mask -- builds the log-space `vals`
     dict (the expensive part: one full-model-sized tensor allocation per
     param) plus the initial (lo, hi) search bracket. Split out so a caller
@@ -417,11 +417,39 @@ def _pgd_build_topk_vals(imps_by_name, cand_by_name, want_highest, global_lo, gl
     # 8B/N:M scale (n_total in the billions) that redundant second full copy
     # was ~27GiB of pure overlap, measured as the difference between OOM and
     # fitting at the first growth step's overshoot-pool bisection setup.
-    vals = {}
+    #
+    # FRAGMENTATION: this used to allocate TWO fresh full-model-sized fp32
+    # tensors per parameter on every call (torch.log(...) and the
+    # torch.where(...) result), and it is called on every PGD projection --
+    # 256 times over a 2048-step run at pgd_interval=8, ~7GiB per call at
+    # 1.7B. That is the same alloc/free churn the PGD importance path was
+    # already fixed for with a persistent _pgd_scratch buffer (see the long
+    # comment at the PGD projection call site), and it produced the same
+    # failure: a SIGSEGV inside an unrelated later kernel once fragmentation
+    # left no contiguous block, at unpredictable step counts rather than a
+    # fixed memory ceiling. Measured across 675 runs: 12.3% of PGD runs died
+    # this way vs 2.0% without PGD and 0/23 with neither PGD nor OPKD.
+    #
+    # Fix: write into a persistent per-name buffer (scratch) and do the log +
+    # sentinel fill in-place, so the hot path allocates nothing. `scratch` is
+    # owned by the caller so it survives across PGD calls; when it is None the
+    # old allocating behavior is kept for callers that have not been wired up.
+    vals = {} if scratch is None else scratch
     for n in imps_by_name:
-        _log_imp = torch.log(imps_by_name[n].clamp(min=_floor))
-        vals[n] = torch.where(cand_by_name[n], _log_imp, torch.full_like(_log_imp, sentinel))
-        del _log_imp
+        src = imps_by_name[n]
+        buf = vals.get(n)
+        if buf is None or buf.shape != src.shape or buf.dtype != torch.float32 or buf.device != src.device:
+            buf = torch.empty_like(src, dtype=torch.float32)
+            vals[n] = buf
+        # buf <- log(clamp(src)), then sentinel wherever this name is not a
+        # candidate. copy_ first so a non-fp32 `src` converts cleanly (an
+        # out=-style op would reject the dtype mismatch). The only transient
+        # left is the negated bool mask, which is 1 byte/element -- an eighth
+        # of the two fp32 tensors this replaced.
+        buf.copy_(src)
+        buf.clamp_(min=_floor)
+        buf.log_()
+        buf.masked_fill_(~cand_by_name[n], sentinel)
     lo, hi = _log_floor - 1.0, _log_hi_bound + 1.0
     return vals, lo, hi
 
@@ -3770,6 +3798,13 @@ def globalprune_gmp(
                      "step; the self-KL bisection resumes as pure maintenance from the next PGD step on.")
     _pgd_kl_cal_batch = None  # small/short batch, refreshed every mask_interval steps (see below), reused every PGD step in between
     _pgd_scratch   = {}  # name -> preallocated fp32 buffer, reused in-place every PGD step (see below)
+    # Same idea, for _pgd_build_topk_vals' log-space candidate tensors. Three
+    # separate pools because a single PGD call can hold more than one live at
+    # once (the N:M path builds a prune pool and a revive pool simultaneously),
+    # so they must not share a buffer.
+    _pgd_vals_scratch      = {}   # unstructured / prune pool
+    _pgd_vals_scratch_nm_a = {}   # N:M overshoot (prune-only) pool
+    _pgd_vals_scratch_nm_b = {}   # N:M undershoot (revive-only) pool
     pgd_debug_repeat_swap = getattr(FLAGS, 'gmp_pgd_debug_repeat_swap', False)  # diagnostic: track what fraction of each step's flips are positions that ALSO flipped within the last gmp_pgd_debug_repeat_window steps (are the same weights repeatedly swapping back and forth, or is a growing set of distinct weights each swapping once)
     pgd_debug_importance_hist = getattr(FLAGS, 'gmp_pgd_debug_importance_hist', False)  # diagnostic: dump the importance distribution's quantile/density every 5 steps (off by default -- ~0.6s/step amortized cost for a purely informational value)
     pgd_debug_repeat_window = getattr(FLAGS, 'gmp_pgd_debug_repeat_window', 5)
@@ -6198,9 +6233,9 @@ def globalprune_gmp(
                     _pv_a = _pv_b = _cand_final = None
                     if (_n_a > 0 or _n_b > 0 or _n_c > 0) and pgd_kl_budget > 0 and _pgd_kl_cal_batch is not None:
                         _dbg_mem("before _pgd_build_topk_vals")
-                        _pv_a, _plo_a, _phi_a = _pgd_build_topk_vals(_pgd_imps, _pgd_elig_prune_dir, False, _pgd_lo, _pgd_hi) if _n_a > 0 else (None, None, None)
+                        _pv_a, _plo_a, _phi_a = _pgd_build_topk_vals(_pgd_imps, _pgd_elig_prune_dir, False, _pgd_lo, _pgd_hi, scratch=_pgd_vals_scratch_nm_a) if _n_a > 0 else (None, None, None)
                         _dbg_mem("after _pv_a build")
-                        _pv_b, _plo_b, _phi_b = _pgd_build_topk_vals(_pgd_imps, _pgd_elig_revive_dir, True, _pgd_lo, _pgd_hi) if _n_b > 0 else (None, None, None)
+                        _pv_b, _plo_b, _phi_b = _pgd_build_topk_vals(_pgd_imps, _pgd_elig_revive_dir, True, _pgd_lo, _pgd_hi, scratch=_pgd_vals_scratch_nm_b) if _n_b > 0 else (None, None, None)
                         # MEMORY: _pgd_elig_prune_dir/_revive_dir (each a
                         # ~6.9GiB dense bool dict, same n_total as the masks)
                         # are consumed ONLY by the _pgd_build_topk_vals calls
@@ -6410,7 +6445,7 @@ def globalprune_gmp(
                                 _dist.all_reduce(_n_swap_cand_t, op=_dist.ReduceOp.SUM)
                             _n_swap_cand = int(_n_swap_cand_t.item())
                             _prune_vals, _prune_vlo, _prune_vhi = _pgd_build_topk_vals(
-                                _pgd_imps, _prune_cand, False, _pgd_lo, _pgd_hi)
+                                _pgd_imps, _prune_cand, False, _pgd_lo, _pgd_hi, scratch=_pgd_vals_scratch)
                             _pgd_kl_ref_cache = {}
 
                             def _pgd_kl_at_nm_post(k):
@@ -6545,7 +6580,7 @@ def globalprune_gmp(
                         if pgd_kl_budget > 0 and _pgd_kl_cal_batch is not None:
                             _n_prune_cand_nm = min(_n_elig, _n_revive_cand)
                             _prune_vals, _prune_vlo, _prune_vhi = _pgd_build_topk_vals(
-                                _pgd_imps, _eligible_prune, False, _pgd_lo, _pgd_hi)
+                                _pgd_imps, _eligible_prune, False, _pgd_lo, _pgd_hi, scratch=_pgd_vals_scratch)
                             _pgd_kl_ref_cache = {}
 
                             def _pgd_kl_at_nm(k):
@@ -6747,7 +6782,7 @@ def globalprune_gmp(
                     # tensors just for setup, x pgd_kl_bisect_iters times, on top
                     # of everything else already live at a mask_interval boundary).
                     _prune_vals, _prune_vlo, _prune_vhi = _pgd_build_topk_vals(
-                        _pgd_imps, _prune_cand, False, _pgd_lo, _pgd_hi)
+                        _pgd_imps, _prune_cand, False, _pgd_lo, _pgd_hi, scratch=_pgd_vals_scratch)
 
                     # maskmgr.masks doesn't change across this whole bisection
                     # search (only after it's done, when the winning k is

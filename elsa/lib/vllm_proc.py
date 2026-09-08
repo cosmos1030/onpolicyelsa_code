@@ -191,6 +191,18 @@ def launch_vllm_server(model_path, cuda_device_str, gpu_mem, max_len,
     # runtime never sees state it would try to (mis)interpret as its own.
     clean_env = {k: v for k, v in os.environ.items() if k not in _ELASTIC_LAUNCH_ENV_KEYS}
 
+    # PYTORCH_CUDA_ALLOC_CONF must NOT be inherited when this engine uses sleep
+    # mode: vLLM's CuMemAllocator greps that string for "expandable_segments:True"
+    # and hard-asserts at load_model(). Moving vLLM out of process is precisely
+    # what frees the TRAINER to use expandable_segments (the option that fixes
+    # the large-contiguous-block fragmentation killing these runs), so the
+    # trainer now sets it -- and the subprocess would inherit it and die at
+    # startup, which is exactly what happened to jobs 880059/880060
+    # ("vLLM server process exited early (code=1)", 40s in, before any step).
+    # Give the sidecar the allocator setting that is safe for it instead.
+    if sleep_mode:
+        clean_env['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:256'
+
     cmd = [sys.executable, script,
            '--model', model_path,
            '--cuda-devices', cuda_device_str,
