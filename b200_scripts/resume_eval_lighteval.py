@@ -84,7 +84,17 @@ def main():
             wandb.init(project=args.wandb_project, id=args.wandb_run_id, resume="allow",
                        settings=wandb.Settings(init_timeout=300))
             use_wandb = True
-            logger.info(f"resumed wandb run {args.wandb_run_id} in {args.wandb_project}")
+            # Stamp which lighteval budget produced the metrics about to be
+            # logged. Without this the run's own record cannot answer it: the
+            # numbers land in a run whose config was written by whatever
+            # produced the checkpoint, which may have used a different profile
+            # (or, before 2026-09-07, recorded none at all). "quick" (8192
+            # budgets, 5 tasks) and "official" (32768/38912, +aime24/25) are
+            # NOT comparable, so a row without this is unusable in a table.
+            wandb.config.update({"eval_profile": args.profile,
+                                 "eval_resumed": True}, allow_val_change=True)
+            logger.info(f"resumed wandb run {args.wandb_run_id} in {args.wandb_project} "
+                        f"(profile={args.profile})")
         except Exception as e:
             logger.warning(f"wandb resume failed ({e}); continuing without wandb")
 
