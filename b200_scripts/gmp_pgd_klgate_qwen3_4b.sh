@@ -42,7 +42,13 @@ set -e
 SPARSITY=${1:?"Usage: <SPARSITY> <KL_BUDGET> <KL_THRESHOLD> [OPD_GEN_LEN] [MASK_INTERVAL] [LR_SCHEDULER] [STEPS] [POST_TARGET_STEPS] [LR] [DATA_PATH] [SEQLEN] [GRAD_CKPT] [WANDB_PROJECT] [SALIENCY] [PRUNING_SCOPE] [LOSS_WEIGHTS] [SPARSITY_TYPE] [L1_LAMBDA] [ROLLOUT_INTERVAL] [KD_NSAMPLES] [CALIB_SIZE] [DEBUG_IMPORTANCE_HIST] [PGD_INTERVAL] [PGD_POST_TARGET_ONLY]"}
 KL_BUDGET=${2:?"Usage: <SPARSITY> <KL_BUDGET> <KL_THRESHOLD> ..."}
 KL_THRESHOLD=${3:-0.02}
-OPD_GEN_LEN=${4:-256}
+# 512, not 256: every 8B PGD run in this project passed 512 explicitly, and the
+# 4B launchers already default to 512 -- leaving the default at 256 meant the
+# ALPS+SFT baselines silently trained on HALF the on-policy KD tokens per
+# rollout that the method they are compared against used (same 256 rollouts per
+# refill window either way, but 256 vs 512 tokens each). Do not lower it back
+# without re-running both sides.
+OPD_GEN_LEN=${4:-512}
 MASK_INTERVAL=${5:-32}
 LR_SCHEDULER=${6:-cosine}
 STEPS=${7:-2048}

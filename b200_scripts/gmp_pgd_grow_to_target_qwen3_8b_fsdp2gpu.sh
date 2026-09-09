@@ -39,6 +39,17 @@
 # **This container has no SLURM** -- run directly with `bash`. Machine-local
 # launcher (paths under /NHNHOME/log-postech/doyoonkim/).
 #
+# Env passthroughs (all optional): CKPT_EVERY / CKPT_DIR / RESUME_FROM for
+# resumable checkpoints, and JUMP=true for the one-shot ablation arm
+# (--gmp_pgd_jump_to_target: the FIRST PGD projection accepts every prune
+# candidate and snaps the mask onto final_sparsity, instead of creeping
+# there under the KL budget). JUMP is the correct way to run the "without
+# trust region" arm: simply setting KL_BUDGET=99999 does NOT reach the
+# target immediately, because the per-step bisection only gets
+# gmp_pgd_kl_bisect_iters=6 iterations over the candidate pool -- measured
+# reach-steps at 99999 are 48, not 1, so that arm still spends 48 steps
+# growing and is not a clean "no pacing" control.
+#
 # Usage: CUDA_VISIBLE_DEVICES=0,1 bash b200_scripts/gmp_pgd_grow_to_target_qwen3_8b_fsdp2gpu.sh \
 #   <SPARSITY> <KL_BUDGET> [MASTER_PORT] [OPD_GEN_LEN] [MASK_INTERVAL] [LR_SCHEDULER] [STEPS] [LR] [DATA_PATH] [SEQLEN] [GRAD_CKPT] [WANDB_PROJECT] [SALIENCY] [PRUNING_SCOPE] [LOSS_WEIGHTS] [ROLLOUT_INTERVAL] [KD_NSAMPLES] [CALIB_SIZE] [PGD_INTERVAL] [VLLM_GPU_MEM]
 # e.g. (S50, matched lr/kl to the existing 4B grow_to_target S50 launch):
@@ -50,7 +61,13 @@ set -e
 SPARSITY=${1:?"Usage: <SPARSITY> <KL_BUDGET> [MASTER_PORT] ..."}
 KL_BUDGET=${2:?"Usage: <SPARSITY> <KL_BUDGET> [MASTER_PORT] ..."}
 MASTER_PORT=${3:-29500}
-OPD_GEN_LEN=${4:-256}
+# 512, not 256: every 8B PGD run in this project passed 512 explicitly, and the
+# 4B launchers already default to 512 -- leaving the default at 256 meant the
+# ALPS+SFT baselines silently trained on HALF the on-policy KD tokens per
+# rollout that the method they are compared against used (same 256 rollouts per
+# refill window either way, but 256 vs 512 tokens each). Do not lower it back
+# without re-running both sides.
+OPD_GEN_LEN=${4:-512}
 MASK_INTERVAL=${5:-32}
 LR_SCHEDULER=${6:-cosine}
 STEPS=${7:-2048}
@@ -106,6 +123,19 @@ export VLLM_USE_V1=0
 export VLLM_HOST_IP=127.0.0.1
 export VLLM_NO_USAGE_STATS=1
 export NCCL_DEBUG=WARN
+# NCCL heartbeat budget. The default TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC is 480s,
+# and that is what killed both frozen-pool ablation arms on 2026-09-08
+# (s70_B1frozen at step 39, s70_A3B1jump at step 43, both rank 1, exitcode -6):
+#   [rank1] ProcessGroupNCCL's watchdog got stuck for 480 seconds
+#           without making progress in monitoring
+# That is the MONITOR thread killing the process because the WATCHDOG thread
+# stopped heartbeating -- not a collective timing out (the process-group timeout
+# is already 2h). The watchdog starves when rank-local Python holds the GIL too
+# long, and the OPKD sharding fix doubled the frozen pool it has to handle
+# (total_steps*grad_accum*world_size: 8192 -> 16384 rollouts), which pushed that
+# stretch past 480s. Monitoring stays ON -- a real hang should still be killed --
+# just with enough slack to survive the pool handling.
+export TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=3600
 
 echo "=== PGD-driven growth (no TR-GMP) Qwen3-8B s${SPARSITY_PCT} kl_budget=${KL_BUDGET} lr=${LR} pgd_interval=${PGD_INTERVAL} lr_scheduler=${LR_SCHEDULER} steps=${STEPS} saliency=${SALIENCY} -- 2xB200 FSDP, vLLM sharing GPU0 of this pair, master_port=${MASTER_PORT} ==="
 echo "NODE=$(hostname)  MODEL=$MODEL  CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-<all>}"
@@ -156,6 +186,7 @@ $TORCHRUN --nproc_per_node=2 --master_port=${MASTER_PORT} main.py \
     --gmp_pgd=true \
     --gmp_pgd_grow_to_target=true \
     --gmp_pgd_kl_budget=${KL_BUDGET} \
+    --gmp_pgd_jump_to_target=${JUMP:-false} \
     --gmp_pgd_kl_calib_size=${CALIB_SIZE} \
     --gmp_pgd_interval=${PGD_INTERVAL} \
     --gmp_ckpt_every_steps=${CKPT_EVERY:-0} --gmp_ckpt_dir="${CKPT_DIR:-}" --gmp_resume_from="${RESUME_FROM:-}" \

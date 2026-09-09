@@ -29,6 +29,17 @@
 # **This container has no SLURM** -- run directly with `bash`. Machine-local
 # launcher (paths under /NHNHOME/log-postech/doyoonkim/).
 #
+# Env passthroughs (optional): JUMP=true runs the one-shot ablation arm
+# (--gmp_pgd_jump_to_target -- the FIRST PGD projection accepts every prune
+# candidate and lands on final_sparsity immediately). This is the correct
+# 'without trust region' control: KL_BUDGET=99999 does NOT reach the target
+# at once, because the per-step search only gets gmp_pgd_kl_bisect_iters=6,
+# and every 4B w/o-TR arm in the paper so far used that looser variant --
+# measured reach step 48, not 1. At 8B the corrected control cost 7.26 avg5
+# against its anchor versus 1.96 for kl=99999, i.e. the published arm
+# understates the trust region badly.
+# CKPT_EVERY / CKPT_DIR / RESUME_FROM enable resumable checkpoints.
+#
 # Usage: bash b200_scripts/gmp_pgd_grow_to_target_qwen3_4b.sh <SPARSITY> <KL_BUDGET> [OPD_GEN_LEN] [MASK_INTERVAL] [LR_SCHEDULER] [STEPS] [LR] [DATA_PATH] [SEQLEN] [GRAD_CKPT] [WANDB_PROJECT] [SALIENCY] [PRUNING_SCOPE] [LOSS_WEIGHTS] [ROLLOUT_INTERVAL] [KD_NSAMPLES] [CALIB_SIZE] [PGD_INTERVAL] [VLLM_GPU_MEM]
 # e.g. (S50, matched lr to the existing 4B S50 capped entry 3w6q8hdw):
 #   bash b200_scripts/gmp_pgd_grow_to_target_qwen3_4b.sh 0.5 0.02 512 32 cosine 2048 5e-5 "$OT3_DATA" 8192 true reasoning_qwen3_4b_nostrip8192 fisher global 0.33,0.33,0.33 32 0 4 8 0.15
@@ -142,6 +153,8 @@ $PYTHON main.py \
     --gmp_pgd_kl_budget=${KL_BUDGET} \
     --gmp_pgd_kl_calib_size=${CALIB_SIZE} \
     --gmp_pgd_interval=${PGD_INTERVAL} \
+    --gmp_pgd_jump_to_target=${JUMP:-false} \
+    --gmp_ckpt_every_steps=${CKPT_EVERY:-0} --gmp_ckpt_dir="${CKPT_DIR:-}" --gmp_resume_from="${RESUME_FROM:-}" \
     --gmp_save_path=/NHNHOME/log-postech/doyoonkim/models \
     --save_model=true \
     --push_to_hub=true \

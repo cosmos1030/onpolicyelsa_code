@@ -50,7 +50,13 @@ set -e
 SPARSITY=${1:?"Usage: <SPARSITY> <KL_BUDGET> [MASTER_PORT] ..."}
 KL_BUDGET=${2:?"Usage: <SPARSITY> <KL_BUDGET> [MASTER_PORT] ..."}
 MASTER_PORT=${3:-29500}
-OPD_GEN_LEN=${4:-256}
+# 512, not 256: every 8B PGD run in this project passed 512 explicitly, and the
+# 4B launchers already default to 512 -- leaving the default at 256 meant the
+# ALPS+SFT baselines silently trained on HALF the on-policy KD tokens per
+# rollout that the method they are compared against used (same 256 rollouts per
+# refill window either way, but 256 vs 512 tokens each). Do not lower it back
+# without re-running both sides.
+OPD_GEN_LEN=${4:-512}
 MASK_INTERVAL=${5:-32}
 LR_SCHEDULER=${6:-cosine}
 STEPS=${7:-2048}
@@ -106,6 +112,19 @@ export VLLM_USE_V1=0
 export VLLM_HOST_IP=127.0.0.1
 export VLLM_NO_USAGE_STATS=1
 export NCCL_DEBUG=WARN
+# NCCL heartbeat budget. The default TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC is 480s,
+# and that is what killed both frozen-pool ablation arms on 2026-09-08
+# (s70_B1frozen at step 39, s70_A3B1jump at step 43, both rank 1, exitcode -6):
+#   [rank1] ProcessGroupNCCL's watchdog got stuck for 480 seconds
+#           without making progress in monitoring
+# That is the MONITOR thread killing the process because the WATCHDOG thread
+# stopped heartbeating -- not a collective timing out (the process-group timeout
+# is already 2h). The watchdog starves when rank-local Python holds the GIL too
+# long, and the OPKD sharding fix doubled the frozen pool it has to handle
+# (total_steps*grad_accum*world_size: 8192 -> 16384 rollouts), which pushed that
+# stretch past 480s. Monitoring stays ON -- a real hang should still be killed --
+# just with enough slack to survive the pool handling.
+export TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=3600
 
 echo "=== PGD-driven growth (no TR-GMP) Qwen3-8B s${SPARSITY_PCT} kl_budget=${KL_BUDGET} lr=${LR} pgd_interval=${PGD_INTERVAL} lr_scheduler=${LR_SCHEDULER} steps=${STEPS} saliency=${SALIENCY} -- 2xB200 FSDP, vLLM sharing GPU0 of this pair, master_port=${MASTER_PORT} ==="
 echo "NODE=$(hostname)  MODEL=$MODEL  CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-<all>}"

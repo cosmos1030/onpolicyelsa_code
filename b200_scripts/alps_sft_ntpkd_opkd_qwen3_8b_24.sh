@@ -19,7 +19,13 @@
 set -e
 
 LR=${1:-1e-4}
-OPD_GEN_LEN=${2:-256}
+# 512, not 256: every 8B PGD run in this project passed 512 explicitly, and the
+# 4B launchers already default to 512 -- leaving the default at 256 meant the
+# ALPS+SFT baselines silently trained on HALF the on-policy KD tokens per
+# rollout that the method they are compared against used (same 256 rollouts per
+# refill window either way, but 256 vs 512 tokens each). Do not lower it back
+# without re-running both sides.
+OPD_GEN_LEN=${2:-512}
 LR_SCHEDULER=${3:-cosine}
 DATA_PATH=${4:-/NHNHOME/log-postech/doyoonkim/data/ot3_fineweb_40k_qwen3_nostrip_8192.jsonl}
 SEQLEN=${5:-8192}

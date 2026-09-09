@@ -67,7 +67,13 @@ SPARSITY=${1:?"Usage: <SPARSITY> <KL_BUDGET> <KL_THRESHOLD> [MASTER_PORT] ..."}
 KL_BUDGET=${2:?"Usage: <SPARSITY> <KL_BUDGET> <KL_THRESHOLD> [MASTER_PORT] ..."}
 KL_THRESHOLD=${3:-0.02}
 MASTER_PORT=${4:-29500}
-OPD_GEN_LEN=${5:-256}
+# 512, not 256: every 8B PGD run in this project passed 512 explicitly, and the
+# 4B launchers already default to 512 -- leaving the default at 256 meant the
+# ALPS+SFT baselines silently trained on HALF the on-policy KD tokens per
+# rollout that the method they are compared against used (same 256 rollouts per
+# refill window either way, but 256 vs 512 tokens each). Do not lower it back
+# without re-running both sides.
+OPD_GEN_LEN=${5:-512}
 MASK_INTERVAL=${6:-32}
 LR_SCHEDULER=${7:-cosine}
 STEPS=${8:-2048}
