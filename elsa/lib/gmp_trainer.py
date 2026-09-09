@@ -1503,6 +1503,7 @@ class GradualMaskManager:
     def __init__(self, named_params, fsdp_model=None, prune_n=0, prune_m=0, pruning_scope='global', ste=False,
                  named_shapes=None):
         self.named_params = named_params
+        self._group_cov = None  # name -> [n_groups, m, m] input covariance for N:M survivor compensation
         self.named_shapes = named_shapes  # {name: (out_features, in_features)}, FSDP-storage-agnostic; see _fsdp_nm_reconstruct
         self.prune_n = prune_n  # N for N:M semi-structured sparsity (0 = unstructured)
         self.prune_m = prune_m  # M for N:M semi-structured sparsity
@@ -1515,6 +1516,79 @@ class GradualMaskManager:
                       for n, p in named_params.items()}
 
     @torch.no_grad()
+    def capture_group_cov(self, model, cal_batch, device, m=4, chunk_size=8):
+        """Per-N:M-group input covariance C_g = E[x_g x_g^T], one m x m block per
+        group of m contiguous input dims -- the only statistic local survivor
+        compensation needs. Same hook pattern as capture_wanda_stats (which
+        accumulates only C's diagonal); the full 4x4 block is what lets a
+        survivor absorb a doomed coordinate's contribution.
+
+        All output rows of a Linear see the SAME input, so C is per input group,
+        not per row: for in_features=4096 that is 1024 blocks of 4x4 = 16k
+        floats per layer, negligible next to the weights themselves."""
+        # Match modules to mask names by PARAMETER IDENTITY, not by path string.
+        # named_params keys are synthesised as model.layers.{i}.{sub} by
+        # _find_linear_weights, while `model` here may be FSDP- and/or
+        # checkpoint-wrapped, splicing `_fsdp_wrapped_module` /
+        # `_checkpoint_wrapped_module` into every path; string normalisation is a
+        # guessing game that silently matched 0/252 layers on the 8B FSDP path.
+        # The weight object itself is the same Python object either way.
+        _by_id = {id(_p): _n for _n, _p in self.named_params.items()}
+        name_to_module = {}
+        for _mn, _mod in model.named_modules():
+            if isinstance(_mod, nn.Linear):
+                _n = _by_id.get(id(_mod.weight))
+                if _n is not None:
+                    name_to_module[_n[:-len('.weight')]] = _mod
+        accum, ntok = {}, {}
+
+        def _make_hook(pname):
+            def hook(module, inp, out):
+                x = inp[0]
+                if x.dim() == 3:
+                    x = x.reshape(-1, x.shape[-1])
+                x = x.detach().float()
+                f = x.shape[1]; ng = f // m
+                if ng == 0:
+                    return
+                xg = x[:, :ng * m].reshape(-1, ng, m)
+                c = torch.einsum('tgi,tgj->gij', xg, xg)
+                if pname in accum:
+                    accum[pname] += c; ntok[pname] += x.shape[0]
+                else:
+                    accum[pname] = c; ntok[pname] = x.shape[0]
+            return hook
+
+        handles = []
+        for name in self.named_params:
+            module = name_to_module.get(name[:-len('.weight')]) if name.endswith('.weight') else None
+            if not isinstance(module, nn.Linear):
+                continue
+            handles.append(module.register_forward_hook(_make_hook(name)))
+        if not handles:
+            _ex_m = [n for n, _ in zip(dict(model.named_modules()), range(400))][-3:]
+            logging.warning('[pgd_nm_compensate] capture_group_cov matched 0 nn.Linear '
+                            'modules for %d mask names -- no covariance captured, so '
+                            'compensation is a NO-OP. sample mask names=%s sample module '
+                            'paths=%s', len(self.named_params),
+                            list(self.named_params)[:2], _ex_m)
+            return
+        was_training = model.training
+        model.eval()
+        ids_full = cal_batch['input_ids']; am_full = cal_batch.get('attention_mask')
+        with torch.no_grad():
+            for i in range(0, ids_full.shape[0], chunk_size):
+                ids = ids_full[i:i + chunk_size].to(device)
+                am = am_full[i:i + chunk_size].to(device) if am_full is not None else None
+                model(input_ids=ids, attention_mask=am)
+        if was_training:
+            model.train()
+        for h in handles:
+            h.remove()
+        self._group_cov = {n: (c / max(1, ntok[n])) for n, c in accum.items()}
+        logging.info('[pgd_nm_compensate] captured group covariance for %d/%d layers '
+                     '(m=%d)', len(self._group_cov), len(self.named_params), m)
+
     def init_from_weights(self, fsdp_model=None):
         """Initialize mask from existing zero pattern (for sparse SFT on pre-pruned models)."""
         for n, p in self.named_params.items():
@@ -2424,6 +2498,72 @@ def _pgd_kl_calib_batch(prompt_iter, n: int, seqlen: int, device: str) -> dict:
 
 
 @torch.no_grad()
+
+def _nm_compensation_delta(param, cur_mask, cand_mask, cov, prune_m, ridge=1e-6):
+    """Survivor compensation for one N:M layer.
+
+    For a group whose surviving set is S and whose doomed set is D, the survivor
+    update that minimises the group's expected output error is the least-squares
+    solution  delta_S = C_SS^{-1} C_SD w_D  (so w'_S = w_S + delta_S, w'_D = 0);
+    this is the OBS/SparseGPT/ALPS local reconstruction restricted to the m
+    coordinates the N:M constraint couples.
+
+    Only groups that actually lose a coordinate on THIS transition are touched
+    (cur_mask alive & cand_mask dead), so the returned delta is as sparse as the
+    transition itself. C is shared by every output row, and the alive pattern
+    can only take C(m,2)=6 values, so the m x m solves are done once per
+    (group, pattern) and reused across all rows instead of once per (row, group).
+
+    Returns a dense delta with the same shape as param (zero outside S), or None
+    when this transition prunes nothing in this layer.
+    """
+    w = param.data
+    if w.dim() != 2 or cov is None:
+        return None
+    rows, cols = w.shape
+    ng = cov.shape[0]
+    if ng == 0:
+        return None
+    nm = ng * prune_m
+    alive = cand_mask[:, :nm].reshape(rows, ng, prune_m)
+    was = cur_mask[:, :nm].reshape(rows, ng, prune_m)
+    dying = was & ~alive
+    if not bool(dying.any()):
+        return None
+    wg = w[:, :nm].reshape(rows, ng, prune_m).float()
+    wD = wg * (~alive).float()                      # doomed values, S slots zeroed
+    dev = w.device
+    cov = cov.to(dev).float()
+    I = torch.eye(prune_m, device=dev)
+    reg = ridge * torch.diagonal(cov, dim1=1, dim2=2).abs().mean(-1).clamp(min=1e-12)
+    delta = torch.zeros(rows, ng, prune_m, device=dev, dtype=torch.float32)
+    # a group's alive pattern as an m-bit code; enumerate the 6 two-alive codes
+    powers = (2 ** torch.arange(prune_m, device=dev)).view(1, 1, -1)
+    code = (alive.int() * powers).sum(-1)           # [rows, ng]
+    codes = []
+    for i in range(prune_m):
+        for j in range(i + 1, prune_m):
+            codes.append((int(2 ** i + 2 ** j), (i, j)))
+    for cval, (si, sj) in codes:
+        sel = (code == cval) & dying.any(-1)
+        if not bool(sel.any()):
+            continue
+        r_idx, g_idx = sel.nonzero(as_tuple=True)
+        cg = cov[g_idx]                             # [n, m, m]
+        n = cg.shape[0]
+        Css = torch.stack([torch.stack([cg[:, si, si], cg[:, si, sj]], -1),
+                           torch.stack([cg[:, sj, si], cg[:, sj, sj]], -1)], -2)  # [n,2,2]
+        Css = Css + reg[g_idx].view(n, 1, 1) * torch.eye(2, device=dev)
+        rhs = torch.stack([torch.einsum('ni,ni->n', cg[:, si, :], wD[r_idx, g_idx]),
+                           torch.einsum('ni,ni->n', cg[:, sj, :], wD[r_idx, g_idx])], -1)  # [n,2]
+        sol = torch.linalg.solve(Css, rhs.unsqueeze(-1)).squeeze(-1)               # [n,2]
+        sol = torch.nan_to_num(sol, nan=0.0, posinf=0.0, neginf=0.0)
+        delta[r_idx, g_idx, si] = sol[:, 0]
+        delta[r_idx, g_idx, sj] = sol[:, 1]
+    out = torch.zeros_like(w, dtype=torch.float32)
+    out[:, :nm] = delta.reshape(rows, nm)
+    return out.to(w.dtype)
+
 def _compute_tr_kl(model: nn.Module, cal_batch: dict, cand_masks: dict,
                    maskmgr: 'GradualMaskManager', device: str,
                    kl_reduce: str = 'mean', kl_quantile: float = 0.95,
@@ -3758,6 +3898,13 @@ def globalprune_gmp(
     # NOTE: this deliberately does NOT reuse gmp_pruning_end_ratio -- that flag
     # also re-enables the schedule-driven maskmgr.update() path, which would put
     # a second, independent mechanism on the mask and confound the comparison.
+    pgd_nm_compensate = bool(getattr(FLAGS, 'gmp_pgd_nm_compensate', False))
+    pgd_nm_comp_ridge = float(getattr(FLAGS, 'gmp_pgd_nm_comp_ridge', 1e-6))
+    if pgd_nm_compensate:
+        logging.info(f"  [pgd_nm_compensate] ENABLED: survivors absorb the doomed coordinates' "
+                     f"contribution at every N:M projection (ridge={pgd_nm_comp_ridge}). "
+                     f"Target support, shared-alpha path and the KL rule are unchanged; only the "
+                     f"applied transition is compensated.")
     pgd_grow_rule = str(getattr(FLAGS, 'gmp_pgd_grow_rule', 'kl')).lower()
     _pgd_grow_rule_end_ratio = float(getattr(FLAGS, 'gmp_pgd_grow_rule_end_ratio', 0.5))
     _pgd_grow_rule_end_steps = max(1, int(total_steps * _pgd_grow_rule_end_ratio))
@@ -4836,11 +4983,22 @@ def globalprune_gmp(
         # boundary onward.
         if pgd_enabled and pgd_kl_budget > 0 and _pgd_kl_cal_batch is None:
             _pgd_kl_cal_batch = _refresh_pgd_kl_cal_batch()
+            maskmgr._group_cov = None  # recapture the group covariance against the fresh batch
+        # Group covariance for survivor compensation: refreshed on the same
+        # cadence as the KL calibration batch, and from the same sequences, so
+        # the statistic the compensation solves against is the one the screen
+        # measures on. Cheap: one m x m block per input group per layer.
+        if (pgd_nm_compensate and getattr(maskmgr, 'prune_m', 0) > 0
+                and _pgd_kl_cal_batch is not None
+                and getattr(maskmgr, '_group_cov', None) is None):
+            maskmgr.capture_group_cov(fsdp_model if fsdp_model is not None else model,
+                                      _pgd_kl_cal_batch, str(device), m=maskmgr.prune_m)
 
         _saliency_diag_step = getattr(FLAGS, 'gmp_saliency_diag_step', 0)
         if _saliency_diag_step > 0 and step == _saliency_diag_step and is_main_process:
             if _pgd_kl_cal_batch is None:
                 _pgd_kl_cal_batch = _refresh_pgd_kl_cal_batch()
+                maskmgr._group_cov = None  # recapture the group covariance against the fresh batch
             _diag_ref_batch = _pgd_kl_calib_batch(prompt_iter, pgd_kl_calib_size, pgd_kl_calib_seqlen, str(device))
             saliency_snapshot_diagnostic(
                 model, maskmgr, fisher, _pgd_kl_cal_batch, _diag_ref_batch, str(device),
@@ -4855,6 +5013,7 @@ def globalprune_gmp(
         if _saliency_corr_steps and step in _saliency_corr_steps and is_main_process:
             if _pgd_kl_cal_batch is None:
                 _pgd_kl_cal_batch = _refresh_pgd_kl_cal_batch()
+                maskmgr._group_cov = None  # recapture the group covariance against the fresh batch
             _corr_ref_batch = _pgd_kl_calib_batch(prompt_iter, pgd_kl_calib_size, pgd_kl_calib_seqlen, str(device))
             saliency_random_group_correlation_diagnostic(
                 model, maskmgr, fisher, _pgd_kl_cal_batch, _corr_ref_batch, str(device),
@@ -5020,6 +5179,7 @@ def globalprune_gmp(
             # re-sampling every single step.
             if pgd_enabled and pgd_kl_budget > 0:
                 _pgd_kl_cal_batch = _refresh_pgd_kl_cal_batch()
+                maskmgr._group_cov = None  # recapture the group covariance against the fresh batch
 
             if step <= dense_warmup_steps:
                 pass  # dense warmup: no mask update or apply
@@ -6387,6 +6547,42 @@ def globalprune_gmp(
                                     f"[pgd_nm_invariant] step={step}: whole-step self-KL check failed at apply time -- "
                                     f"D_KL(before||after)={_kl_final:.6f} > budget={pgd_kl_budget} "
                                     f"(alpha={_alpha_lo:.4f}, k_a={_k_a_final} k_b={_k_b_final} k_c={_k_c_final}).")
+                            # Survivor compensation (--gmp_pgd_nm_compensate): before the
+                            # accepted transition zeroes each group's two doomed weights, push
+                            # their contribution onto the two survivors. The covariance is
+                            # captured from the very calibration batch the KL screen just used,
+                            # so it reflects the current model. Applied to param.data here;
+                            # maskmgr.apply() does the zeroing right after, as before.
+                            _comp_n = 0; _comp_absmax = 0.0
+                            if pgd_nm_compensate:
+                                _cov_all = getattr(maskmgr, '_group_cov', None) or {}
+                                for _n, _p in maskmgr.named_params.items():
+                                    _d = _nm_compensation_delta(
+                                        _p, _pgd_nm_masks_before[_n], _cand_final[_n],
+                                        _cov_all.get(_n), maskmgr.prune_m, pgd_nm_comp_ridge)
+                                    if _d is None:
+                                        continue
+                                    _nz = int((_d != 0).sum().item())
+                                    if _nz:
+                                        _comp_n += _nz
+                                        _comp_absmax = max(_comp_absmax, float(_d.abs().max().item()))
+                                        _p.data.add_(_d)
+                                    del _d
+                                if _comp_n == 0:
+                                    # Under this codebase's FSDP setup param.data is the LOCAL
+                                    # FLAT SHARD (see _find_linear_shapes), not the logical 2D
+                                    # weight, so _nm_compensation_delta bails on every layer and
+                                    # the arm silently degenerates into the uncompensated
+                                    # baseline. Say so instead of reporting a clean zero.
+                                    logging.warning(
+                                        f"  [pgd_nm_compensate] step={step} adjusted NOTHING "
+                                        f"({len(_cov_all)} layers had covariance, "
+                                        f"{sum(1 for _p in maskmgr.named_params.values() if _p.data.dim() == 2)}"
+                                        f"/{len(maskmgr.named_params)} params are 2D) -- this run is "
+                                        f"NOT compensated, it is the plain baseline.")
+                                else:
+                                    logging.info(f"  [pgd_nm_compensate] step={step} adjusted {_comp_n:,} survivor "
+                                                 f"weights, max |delta|={_comp_absmax:.3e}")
                             for _n in maskmgr.named_params:
                                 _old = _pgd_nm_masks_before[_n]
                                 _new = _cand_final[_n]

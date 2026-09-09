@@ -140,6 +140,8 @@ $PYTHON main.py \
     --gmp_pgd=true \
     --gmp_pgd_grow_to_target=true \
     --gmp_pgd_kl_budget=${KL_BUDGET} \
+    --gmp_pgd_nm_compensate=${NM_COMP:-false} \
+    --gmp_pgd_nm_comp_ridge=${NM_COMP_RIDGE:-1e-6} \
     --gmp_pgd_kl_calib_size=${CALIB_SIZE} \
     --gmp_pgd_interval=${PGD_INTERVAL} \
     --gmp_save_path=/NHNHOME/log-postech/doyoonkim/models \
