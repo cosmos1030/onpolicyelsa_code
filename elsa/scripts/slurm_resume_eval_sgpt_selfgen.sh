@@ -1,5 +1,11 @@
 #!/bin/bash
 #SBATCH --job-name=resume_eval_sgpt
+# QOS must match the partition: A100-80GB only admits hpgpu/add_hpgpu/test,
+# while RTX3090/RTX6000ADA take normal. Passing the wrong one does not fail
+# fast -- the job sits PENDING forever with
+# "Job's QOS not permitted to use this partition", which is how job 874824
+# waited two days with a free GPU on n52. Override per submission:
+#   sbatch --partition=A100-80GB --qos=hpgpu ...
 #SBATCH --qos=normal
 #SBATCH --gres=gpu:1
 #SBATCH --nodes=1
