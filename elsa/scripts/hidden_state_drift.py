@@ -154,6 +154,11 @@ def main():
     ap.add_argument("--gpu_mem", type=float, default=0.85)
     ap.add_argument("--prompt_source", default="ot3", choices=["math500", "ot3"])
     ap.add_argument("--outdir", required=True)
+    ap.add_argument("--save_states", action="store_true",
+                    help="dump the collected hidden states so projections can be "
+                         "explored on CPU without re-encoding")
+    ap.add_argument("--skip_figures", action="store_true",
+                    help="probe + save only; leave t-SNE to the CPU-side script")
     args = ap.parse_args()
 
     os.makedirs(args.outdir, exist_ok=True)
@@ -236,7 +241,32 @@ def main():
 
     json.dump(results, open(os.path.join(args.outdir, "probe_auc.json"), "w"), indent=2)
 
+    # Encoding costs a GPU and ~20 min; every downstream projection is CPU work
+    # that we will want to redo many times. Save the states so the two can be
+    # scheduled apart.
+    if args.save_states:
+        blob, meta = {}, []
+        for (enc, cond), packed in states.items():
+            for L in args.layers:
+                for w in windows:
+                    X, g = packed[L][w]
+                    if X.shape[0] == 0:
+                        continue
+                    key = f"{enc}|{cond}|L{L}|{w}"
+                    blob[key] = X
+                    blob[key + "|g"] = g
+                    meta.append(key)
+        p = os.path.join(args.outdir, "states.npz")
+        np.savez(p, **blob)
+        json.dump({"keys": meta, "layers": args.layers,
+                   "windows": {k: list(v) for k, v in windows.items()},
+                   "labels": labels, "per_window": args.per_window},
+                  open(os.path.join(args.outdir, "states_meta.json"), "w"), indent=2)
+        print(f"[drift] wrote {p} ({len(meta)} arrays)", flush=True)
+
     # -- figures
+    if args.skip_figures:
+        return
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
