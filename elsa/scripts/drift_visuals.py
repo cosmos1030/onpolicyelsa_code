@@ -341,7 +341,10 @@ def main():
             if not xs:
                 continue
             ax.plot(xs, ys, "-o", color=C.get(lab, None), label=lab, ms=4)
-            stats[lab] = {"depth": xs, "y": ys}
+            # Keep the null, not just draw it: an MMD ratio means nothing until
+            # you know how large the statistic runs when the labels carry no
+            # information.
+            stats[lab] = {"depth": xs, "y": ys, "null95": nulls or None}
             if nulls:
                 ax.plot(xs, nulls, ":", color=C.get(lab, None), alpha=.5, lw=1)
             # dense-encoder control on the same tokens
@@ -365,7 +368,17 @@ def main():
                                    else mmd2(Xdf[mf], Xds[ms], args.seed))
                     if xs2:
                         ax.plot(xs2, ys2, "--", color=C.get(lab, None), alpha=.55, lw=1.4)
-                        stats[lab + "_dense_encoder"] = {"depth": xs2, "y": ys2}
+                        n2 = []
+                        if args.variant == "depth_mmd":
+                            for b in range(args.n_bins):
+                                mf = (ddf >= edges[b]) & (ddf < edges[b + 1])
+                                ms = (dds >= edges[b]) & (dds < edges[b + 1])
+                                if mf.sum() < 30 or ms.sum() < 30:
+                                    continue
+                                n2.append(mmd_null(Xdf[mf], gdf[mf], Xds[ms],
+                                                   gds[ms], seed=args.seed))
+                        stats[lab + "_dense_encoder"] = {"depth": xs2, "y": ys2,
+                                                         "null95": n2 or None}
         ax.set_xlabel("token depth into the continuation")
         if args.variant == "depth_auc":
             ax.set_ylabel("cross-fitted probe AUC  (fixed vs self)")
