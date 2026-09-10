@@ -101,6 +101,24 @@ def mmd_null(A, gA, B, gB, reps=20, seed=0):
     return (float(np.percentile(vals, 95)) if vals else float("nan"))
 
 
+def clip_outliers(arrays, ref=None, k=10.0):
+    """Bound the outlying states, leaving every dimension's own scale alone.
+
+    Use this, not robust_scale, whenever a DISTANCE between two state vectors is
+    the quantity of interest. Dividing by MAD reweights the space: low-variance
+    dimensions get amplified, and small differences carried there are inflated.
+    That is not cosmetic -- on the cross-model comparison it flipped the sign of
+    the result (own minus dense-rollout read +0.0224 under MAD rescaling and
+    -0.0095 under plain L2 on the same states), and the rescaled version was the
+    odd one out against both raw L2 and cosine.
+    """
+    src = ref if ref is not None else np.concatenate(arrays)
+    med = np.median(src, axis=0)
+    mad = np.maximum(np.median(np.abs(src - med), axis=0) * 1.4826, 1e-6)
+    lo, hi = med - k * mad, med + k * mad
+    return [np.clip(a, lo, hi) for a in arrays]
+
+
 def robust_scale(arrays, ref=None, clip=10.0):
     """Put every dimension on a comparable scale before any geometry.
 
@@ -240,8 +258,9 @@ def main():
                     continue
                 Hd, Hp, g, d = al
                 if not args.raw_scale:
-                    # same units for both, fixed by the dense states
-                    Hd, Hp = robust_scale([Hd, Hp], ref=Hd)
+                    # bound the outliers; do NOT reweight dimensions -- this is
+                    # a distance, and MAD rescaling flips its sign here
+                    Hd, Hp = clip_outliers([Hd, Hp], ref=Hd)
                 edges, _ = depth_bins(d, args.n_bins)
                 xs, rel, cos = [], [], []
                 for b in range(args.n_bins):
@@ -288,7 +307,7 @@ def main():
                     ax.axis("off"); continue
                 Hd, Hp, g, d = al
                 if not args.raw_scale:
-                    Hd, Hp = robust_scale([Hd, Hp], ref=Hd)
+                    Hd, Hp = clip_outliers([Hd, Hp], ref=Hd)
                 # one shared basis per panel, fit on the dense states, so the
                 # pruned cloud is shown as a displacement from the reference
                 pca = PCA(n_components=2, random_state=args.seed).fit(Hd)
