@@ -289,8 +289,13 @@ def main():
                     blob[key + "|g"] = g
                     blob[key + "|d"] = d
                     meta.append(key)
+        # Write then rename: CPU analysis jobs read this same path, and a reader
+        # that opens it mid-write gets "BadZipFile: Bad magic number" rather than
+        # anything it can recover from. os.replace is atomic within a filesystem.
         p = os.path.join(args.outdir, "states.npz")
-        np.savez(p, **blob)
+        tmp = p + ".tmp.npz"
+        np.savez(tmp, **blob)
+        os.replace(tmp, p)
         json.dump({"keys": meta, "layers": args.layers,
                    "windows": {k: list(v) for k, v in windows.items()},
                    "labels": labels, "per_window": args.per_window},
