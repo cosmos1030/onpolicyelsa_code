@@ -127,11 +127,20 @@ def build_prompts(tokenizer, n_prompts, seed, enable_thinking, source="math500")
     raise ValueError(f"unknown prompt source {source!r}")
 
 
-def generate(model_path, prompts, max_new_tokens, temperature, gpu_mem, seed):
-    """Rollouts from one model. Returns list of generated token-id lists."""
+def generate(model_path, prompts, max_new_tokens, temperature, gpu_mem, seed,
+             max_model_len=None):
+    """Rollouts from one model. Returns list of generated token-id lists.
+
+    max_model_len must cover the longest PROMPT plus the generation budget. The
+    old fixed 1024-token allowance for the prompt was wrong for OpenThoughts3,
+    where the median prompt is ~91 tokens but the tail reaches ~5.9k, so ~4% of
+    prompts overflowed and vLLM refused the batch outright.
+    """
     from vllm import LLM, SamplingParams
+    if max_model_len is None:
+        max_model_len = max_new_tokens + 1024
     llm = LLM(model=model_path, trust_remote_code=True, dtype="bfloat16",
-              gpu_memory_utilization=gpu_mem, max_model_len=max_new_tokens + 1024,
+              gpu_memory_utilization=gpu_mem, max_model_len=max_model_len,
               enforce_eager=False, seed=seed)
     sp = SamplingParams(temperature=temperature, top_p=0.95, top_k=20,
                         max_tokens=max_new_tokens)

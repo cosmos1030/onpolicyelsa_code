@@ -195,6 +195,14 @@ def main():
         models[lab] = path
     labels = list(models)
 
+    # vLLM rejects the whole batch if any prompt exceeds max_model_len, and the
+    # OT3 prompt tail is long (median ~91 tokens, max ~5.9k), so size the window
+    # from the prompts actually selected rather than a fixed allowance.
+    prompt_lens = [len(tok(p, add_special_tokens=False).input_ids) for p in prompts]
+    mml = max(prompt_lens) + args.max_new_tokens + 64
+    print(f"[drift] prompt tokens: median {int(np.median(prompt_lens))} "
+          f"max {max(prompt_lens)} -> max_model_len {mml}", flush=True)
+
     # -- rollouts, cached so a rerun of the analysis skips generation entirely
     rollouts = {}
     for lab, path in models.items():
@@ -205,7 +213,7 @@ def main():
             continue
         print(f"[drift] generating rollouts: {lab}", flush=True)
         g = generate(path, prompts, args.max_new_tokens, args.temperature,
-                     args.gpu_mem, args.seed)
+                     args.gpu_mem, args.seed, max_model_len=mml)
         json.dump(g, open(cache, "w"))
         rollouts[lab] = g
         print(f"[drift] {lab}: mean len {sum(map(len, g)) / max(1, len(g)):.0f}",
