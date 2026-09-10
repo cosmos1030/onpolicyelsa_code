@@ -319,6 +319,12 @@ def main():
                 continue
             Xf, gf, df = F
             Xs, gs, ds = S
+            # MMD is a euclidean-distance statistic, so the sink-dimension
+            # outliers set its bandwidth and dominate the first bin. The probe
+            # is already shielded by its StandardScaler, but rescaling both the
+            # same way keeps the two variants comparable.
+            if not args.raw_scale:
+                Xf, Xs = robust_scale([Xf, Xs])
             edges, _ = depth_bins(np.concatenate([df, ds]), args.n_bins)
             xs, ys, nulls = [], [], []
             for b in range(args.n_bins):
@@ -339,11 +345,13 @@ def main():
             if nulls:
                 ax.plot(xs, nulls, ":", color=C.get(lab, None), alpha=.5, lw=1)
             # dense-encoder control on the same tokens
-            if lab != "dense" and args.variant == "depth_auc":
+            if lab != "dense":
                 DF, DS = get("dense", "fixed"), get("dense", f"self:{lab}")
                 if DF is not None and DS is not None:
                     Xdf, gdf, ddf = DF
                     Xds, gds, dds = DS
+                    if not args.raw_scale:
+                        Xdf, Xds = robust_scale([Xdf, Xds])
                     ys2, xs2 = [], []
                     for b in range(args.n_bins):
                         mf = (ddf >= edges[b]) & (ddf < edges[b + 1])
@@ -352,7 +360,9 @@ def main():
                             continue
                         xs2.append(0.5 * (edges[b] + edges[b + 1]))
                         ys2.append(cross_fit_scores(Xdf[mf], gdf[mf], Xds[ms],
-                                                    gds[ms], args.seed)[1])
+                                                    gds[ms], args.seed)[1]
+                                   if args.variant == "depth_auc"
+                                   else mmd2(Xdf[mf], Xds[ms], args.seed))
                     if xs2:
                         ax.plot(xs2, ys2, "--", color=C.get(lab, None), alpha=.55, lw=1.4)
                         stats[lab + "_dense_encoder"] = {"depth": xs2, "y": ys2}
