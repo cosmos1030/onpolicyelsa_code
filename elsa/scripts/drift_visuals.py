@@ -72,8 +72,12 @@ def mmd2(A, B, seed=0, cap=800):
         A = A[rng.choice(len(A), cap, replace=False)]
     if len(B) > cap:
         B = B[rng.choice(len(B), cap, replace=False)]
-    Z = np.concatenate([A, B])
-    d2 = np.maximum(((Z[:, None, :] - Z[None, :, :]) ** 2).sum(-1), 0)
+    Z = np.concatenate([A, B]).astype(np.float32)
+    # ||a-b||^2 = ||a||^2 + ||b||^2 - 2a.b. Differencing the two broadcast
+    # tensors instead materialises (n, n, dim) -- 26GB at n=1600, dim=2560,
+    # which is what timed out the n=400 sweep rather than any real cost.
+    sq = (Z * Z).sum(1)
+    d2 = np.maximum(sq[:, None] + sq[None, :] - 2.0 * (Z @ Z.T), 0.0)
     med = np.median(d2[d2 > 0]) if (d2 > 0).any() else 1.0
     K = np.exp(-d2 / med)
     n, m = len(A), len(B)
