@@ -45,13 +45,24 @@ def load(npz, meta, enc, cond, L, w):
     return np.asarray(npz[k], np.float32), np.asarray(npz[k + "|g"], int)
 
 
-def per_prompt_center(X, g):
-    """Remove each prompt's own mean, so problem identity cannot organise the map."""
-    Xc = X.copy()
-    for p in np.unique(g):
-        m = g == p
-        Xc[m] -= Xc[m].mean(0, keepdims=True)
-    return Xc
+def pooled_prompt_center(Xa, ga, Xb, gb):
+    """Remove each prompt's mean, taken across BOTH regimes together.
+
+    Centering the two regimes separately would subtract, for every prompt, the
+    very difference between them -- the signal -- and leave chance-level AUC by
+    construction. Pooling the mean removes problem identity while preserving the
+    fixed-to-self displacement.
+    """
+    A, B = Xa.copy(), Xb.copy()
+    for p in np.unique(np.concatenate([ga, gb])):
+        ma, mb = ga == p, gb == p
+        n = ma.sum() + mb.sum()
+        if n == 0:
+            continue
+        mu = (A[ma].sum(0) + B[mb].sum(0)) / n
+        A[ma] -= mu
+        B[mb] -= mu
+    return A, B
 
 
 def seq_means(X, g):
@@ -182,8 +193,7 @@ def main():
             stats[lab] = auc
             Z = embed(X, args.seed, pca_dim=min(30, len(X) - 1), perplexity=15)
         elif args.variant == "centered":
-            Cf = per_prompt_center(Xf, gf)
-            Cs = per_prompt_center(Xs, gs)
+            Cf, Cs = pooled_prompt_center(Xf, gf, Xs, gs)
             _, auc = probe_scores(Cf, gf, Cs, gs, args.seed)
             stats[lab] = auc
             X, nf = np.concatenate([Cf, Cs]), len(Cf)
