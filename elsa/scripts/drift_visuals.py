@@ -101,6 +101,31 @@ def mmd_null(A, gA, B, gB, reps=20, seed=0):
     return (float(np.percentile(vals, 95)) if vals else float("nan"))
 
 
+def robust_scale(arrays, ref=None, clip=10.0):
+    """Put every dimension on a comparable scale before any geometry.
+
+    Qwen3 layer 18 carries a sink dimension (index 4) whose value reaches ~7000
+    on a handful of states while the rest of the tensor has std ~0.9. Only 1-2
+    states in 2880 are affected, but they hold 94% of the total variance, so
+    participation ratio, PCA, euclidean distance and t-SNE all end up describing
+    those two points. Median/MAD rather than mean/std so the outliers cannot set
+    the scale meant to tame them.
+
+    `ref` fixes the scale from one array (use the dense states when comparing
+    dense against pruned, so both are measured in the same units).
+
+    Note the rescaling alone does NOT solve this: dimension 4 is normal on 2878
+    of 2880 states, so its MAD is ordinary and dividing by it leaves the two
+    extreme values untouched. The problem is outlying POINTS, not an outlying
+    dimension's scale, so the values are also clipped after scaling.
+    """
+    src = ref if ref is not None else np.concatenate(arrays)
+    med = np.median(src, axis=0)
+    mad = np.median(np.abs(src - med), axis=0) * 1.4826
+    mad = np.maximum(mad, 1e-3)
+    return [np.clip((a - med) / mad, -clip, clip) for a in arrays]
+
+
 def per_prompt_center(X, g):
     Xc = X.copy()
     for p in np.unique(g):
@@ -144,6 +169,10 @@ def main():
     ap.add_argument("--window", default="grid")
     ap.add_argument("--n_bins", type=int, default=8)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--raw_scale", action="store_true",
+                    help="skip the robust per-dimension rescaling (see "
+                         "robust_scale -- layer 18 has a sink dimension that "
+                         "otherwise owns 94%% of the variance)")
     ap.add_argument("--outdir", default=None)
     args = ap.parse_args()
 
@@ -203,6 +232,9 @@ def main():
                 if al is None:
                     continue
                 Hd, Hp, g, d = al
+                if not args.raw_scale:
+                    # same units for both, fixed by the dense states
+                    Hd, Hp = robust_scale([Hd, Hp], ref=Hd)
                 edges, _ = depth_bins(d, args.n_bins)
                 xs, rel, cos = [], [], []
                 for b in range(args.n_bins):
@@ -248,6 +280,8 @@ def main():
                 if al is None:
                     ax.axis("off"); continue
                 Hd, Hp, g, d = al
+                if not args.raw_scale:
+                    Hd, Hp = robust_scale([Hd, Hp], ref=Hd)
                 # one shared basis per panel, fit on the dense states, so the
                 # pruned cloud is shown as a displacement from the reference
                 pca = PCA(n_components=2, random_state=args.seed).fit(Hd)
@@ -337,8 +371,12 @@ def main():
             F, S = get(lab, "fixed"), get(lab, f"self:{lab}")
             # per-prompt centering first: otherwise this measures how varied the
             # problems are, which is identical across panels by construction
-            pf.append(participation_ratio(per_prompt_center(F[0], F[1])) if F else np.nan)
-            ps.append(participation_ratio(per_prompt_center(S[0], S[1])) if S else np.nan)
+            if F is None or S is None:
+                pf.append(np.nan); ps.append(np.nan); continue
+            A, B = ((F[0], S[0]) if args.raw_scale
+                    else robust_scale([F[0], S[0]]))
+            pf.append(participation_ratio(per_prompt_center(A, F[1])))
+            ps.append(participation_ratio(per_prompt_center(B, S[1])))
         ax.bar(xs - .2, pf, .4, label="fixed CoT", color=C_FIX)
         ax.bar(xs + .2, ps, .4, label="self rollout", color=C_SELF)
         ax.set_xticks(xs); ax.set_xticklabels(labels)
@@ -357,9 +395,10 @@ def main():
             F, S = get(lab, "fixed"), get(lab, f"self:{lab}")
             if F is None or S is None:
                 continue
-            ax.semilogy(spectrum(per_prompt_center(F[0], F[1])), "-",
+            A, B = ((F[0], S[0]) if args.raw_scale else robust_scale([F[0], S[0]]))
+            ax.semilogy(spectrum(per_prompt_center(A, F[1])), "-",
                         color=C.get(lab), alpha=.55, lw=1.2)
-            ax.semilogy(spectrum(per_prompt_center(S[0], S[1])), "--",
+            ax.semilogy(spectrum(per_prompt_center(B, S[1])), "--",
                         color=C.get(lab), lw=1.8, label=f"{lab} self")
         ax.set_xlabel("component"); ax.set_ylabel("explained variance fraction")
         ax.set_title(f"state covariance spectra — layer {L}\n"
@@ -369,14 +408,32 @@ def main():
 
     # ------------------------------------------------------------- displacement
     elif args.variant == "displacement":
-        fig, axes = plt.subplots(1, 2, figsize=(12, 4.8))
-        mags, coss = {}, {}
+        fig, axes = plt.subplots(1, 3, figsize=(17, 4.8))
+        mags, coss, coss_ctl = {}, {}, {}
         for lab in labels:
             F, S = get(lab, "fixed"), get(lab, f"self:{lab}")
             if F is None or S is None:
                 continue
+            # Control: the same rollouts read by the dense model. If prompts drift
+            # in a shared direction only because the text itself went degenerate,
+            # the dense encoder lines up just as well and the alignment says
+            # nothing about the pruned model's representations.
+            if lab != "dense":
+                DF, DS = get("dense", "fixed"), get("dense", f"self:{lab}")
+                if DF is not None and DS is not None:
+                    Af, As = ((DF[0], DS[0]) if args.raw_scale
+                              else robust_scale([DF[0], DS[0]]))
+                    cm = sorted(set(DF[1].tolist()) & set(DS[1].tolist()))
+                    if len(cm) >= 5:
+                        Dc = np.stack([As[DS[1] == p].mean(0) - Af[DF[1] == p].mean(0)
+                                       for p in cm])
+                        Uc = Dc / np.maximum(np.linalg.norm(Dc, axis=1, keepdims=True), 1e-9)
+                        Mc = Uc @ Uc.T
+                        coss_ctl[lab] = Mc[np.triu_indices(len(Uc), 1)]
             Xf, gf, _ = F
             Xs, gs, _ = S
+            if not args.raw_scale:
+                Xf, Xs = robust_scale([Xf, Xs])
             common = sorted(set(gf.tolist()) & set(gs.tolist()))
             if len(common) < 5:
                 continue
@@ -396,8 +453,20 @@ def main():
         axes[1].axhline(0, color="k", lw=.8, ls=":")
         axes[1].set_ylabel("pairwise cosine between prompts' drift vectors")
         axes[1].set_title("do all prompts drift the SAME way?", fontsize=11)
+        if coss_ctl:
+            axes[2].boxplot([coss_ctl[l] for l in coss_ctl], labels=list(coss_ctl),
+                            showfliers=False)
+            axes[2].axhline(0, color="k", lw=.8, ls=":")
+            axes[2].set_ylim(axes[1].get_ylim())
+            axes[2].set_ylabel("same, but states read by the DENSE model")
+            axes[2].set_title("control: is the alignment just the text?", fontsize=11)
+        else:
+            axes[2].axis("off")
         stats = {l: {"mag_median": float(np.median(mags[l])),
-                     "cos_median": float(np.median(coss[l]))} for l in mags}
+                     "cos_median": float(np.median(coss[l])),
+                     "cos_median_dense_encoder":
+                         float(np.median(coss_ctl[l])) if l in coss_ctl else None}
+                 for l in mags}
         fig.suptitle(f"per-prompt displacement — layer {L}", fontsize=12)
         fig.tight_layout()
 
@@ -438,6 +507,8 @@ def main():
                 continue
             Xf, gf, df = F
             Xs, gs, ds = S
+            if not args.raw_scale:
+                Xf, Xs = robust_scale([Xf, Xs])
             common = sorted(set(gf.tolist()) & set(gs.tolist()))[:n_show]
             for r, p in enumerate(common):
                 ax = axes[r][c] if n_show > 1 else axes[c]
