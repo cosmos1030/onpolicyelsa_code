@@ -35,6 +35,12 @@ N_PROMPTS=${1:-50}
 MAX_NEW=${2:-3300}
 SOURCE=${3:-ot3}
 PER_WINDOW=${4:-32}
+# grid: sample one wide window densely instead of two fixed windows, so
+# divergence can be plotted against token depth. Drift is a claim about depth.
+GRID=${5:-false}
+GRID_FLAG=""
+[ "$GRID" = "true" ] && GRID_FLAG="--depth_grid"
+
 
 PYTHON=/home1/doyoonkim/miniconda3/envs/rac/bin/python
 DENSE="/home1/doyoonkim/.cache/huggingface/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c"
@@ -49,7 +55,8 @@ mkdir -p "$LOCAL_JOB_BASE/slurm"
 OUTROOT=/home1/doyoonkim/projects/elsa/logs/hstate_drift
 # Deliberately not job-scoped: rollout generation is ~12 min of the run and the
 # script caches it here, so a job that dies during encoding resumes cheaply.
-OUTDIR="$OUTROOT/${SOURCE}_n${N_PROMPTS}_pw${PER_WINDOW}"
+SUFFIX=""; [ "$GRID" = "true" ] && SUFFIX="_grid"
+OUTDIR="$OUTROOT/${SOURCE}_n${N_PROMPTS}_pw${PER_WINDOW}${SUFFIX}"
 mkdir -p "$OUTDIR"
 
 NFS_LOG="$OUTROOT/hstate_drift_${SLURM_JOB_ID}.out"
@@ -86,7 +93,7 @@ $PYTHON scripts/hidden_state_drift.py \
     --prompt_source ${SOURCE} \
     --per_window ${PER_WINDOW} \
     --layers 18 36 \
-    --save_states --skip_figures \
+    --save_states --skip_figures ${GRID_FLAG} \
     --outdir "$OUTDIR"
 
 EXIT_CODE=$?

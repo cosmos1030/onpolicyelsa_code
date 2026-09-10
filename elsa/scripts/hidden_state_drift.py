@@ -54,7 +54,7 @@ def collect_states(model, tokenizer, prompts, conts, layers, windows,
     Returns {layer: {window: (X, groups)}} where X is (n, hidden) float16 and
     groups holds the prompt index each row came from, for grouped CV.
     """
-    out = {L: {w: {"X": [], "g": []} for w in windows} for L in layers}
+    out = {L: {w: {"X": [], "g": [], "d": []} for w in windows} for L in layers}
     need = max(hi for _, hi in windows.values())
     for pi, (prompt, cont) in enumerate(zip(prompts, conts)):
         if not len(cont):
@@ -77,6 +77,10 @@ def collect_states(model, tokenizer, prompts, conts, layers, windows,
                 idx = np.linspace(a, b - 1, per_window).astype(int)
                 out[L][wname]["X"].append(h[idx].float().cpu().numpy().astype(np.float16))
                 out[L][wname]["g"].append(np.full(per_window, pi))
+                # Depth into the continuation, not absolute position: drift is a
+                # function of how far the model has been generating, and prompts
+                # differ in length.
+                out[L][wname]["d"].append(idx - n_prompt)
         del hs
         torch.cuda.empty_cache()
     packed = {}
@@ -85,9 +89,11 @@ def collect_states(model, tokenizer, prompts, conts, layers, windows,
         for w in windows:
             xs = out[L][w]["X"]
             if xs:
-                packed[L][w] = (np.concatenate(xs), np.concatenate(out[L][w]["g"]))
+                packed[L][w] = (np.concatenate(xs), np.concatenate(out[L][w]["g"]),
+                                np.concatenate(out[L][w]["d"]))
             else:
-                packed[L][w] = (np.zeros((0, 1), np.float16), np.zeros(0, int))
+                packed[L][w] = (np.zeros((0, 1), np.float16), np.zeros(0, int),
+                                np.zeros(0, int))
     if tag:
         for w in windows:
             n = packed[layers[0]][w][0].shape[0]
@@ -154,6 +160,10 @@ def main():
     ap.add_argument("--gpu_mem", type=float, default=0.85)
     ap.add_argument("--prompt_source", default="ot3", choices=["math500", "ot3"])
     ap.add_argument("--outdir", required=True)
+    ap.add_argument("--depth_grid", action="store_true",
+                    help="sample one wide window densely instead of two fixed "
+                         "windows, so divergence can be plotted against depth")
+    ap.add_argument("--depth_grid_max", type=int, default=3072)
     ap.add_argument("--save_states", action="store_true",
                     help="dump the collected hidden states so projections can be "
                          "explored on CPU without re-encoding")
@@ -165,7 +175,13 @@ def main():
     # Both windows sit inside what every model reaches, so no cloud is sampled
     # deeper than another. 2048-3072 is included because the KL gap at matched
     # depth grew with depth -- if drift does too, that should show here.
-    windows = {"early": (0, 1024), "mid": (2048, 3072)}
+    if args.depth_grid:
+        # One wide window sampled densely. Windows are then just bins of this,
+        # so nothing is lost -- but depth-resolved curves become possible, and
+        # drift is a claim about depth.
+        windows = {"grid": (0, args.depth_grid_max)}
+    else:
+        windows = {"early": (0, 1024), "mid": (2048, 3072)}
 
     from transformers import AutoModelForCausalLM, AutoTokenizer
     tok = AutoTokenizer.from_pretrained(args.dense_model, trust_remote_code=True)
@@ -225,14 +241,14 @@ def main():
         for w in windows:
             print(f"  layer {L}, window {w}:", flush=True)
             for lab in labels:
-                Xf, gf = states[(lab, "fixed")][L][w]
-                Xs, gs = states[(lab, f"self:{lab}")][L][w]
+                Xf, gf, _ = states[(lab, "fixed")][L][w]
+                Xs, gs, _ = states[(lab, f"self:{lab}")][L][w]
                 a_own = probe_auc(Xf, gf, Xs, gs, args.seed)
                 results[f"L{L}/{w}/{lab}/own"] = a_own
                 line = f"    {lab:<6} own-encoder AUC={a_own:.3f}"
                 if lab != "dense":
-                    Xdf, gdf = states[("dense", "fixed")][L][w]
-                    Xds, gds = states[("dense", f"self:{lab}")][L][w]
+                    Xdf, gdf, _ = states[("dense", "fixed")][L][w]
+                    Xds, gds, _ = states[("dense", f"self:{lab}")][L][w]
                     a_dense = probe_auc(Xdf, gdf, Xds, gds, args.seed)
                     results[f"L{L}/{w}/{lab}/dense_encoder"] = a_dense
                     line += (f"   dense-encoder(same tokens)={a_dense:.3f}"
@@ -249,12 +265,13 @@ def main():
         for (enc, cond), packed in states.items():
             for L in args.layers:
                 for w in windows:
-                    X, g = packed[L][w]
+                    X, g, d = packed[L][w]
                     if X.shape[0] == 0:
                         continue
                     key = f"{enc}|{cond}|L{L}|{w}"
                     blob[key] = X
                     blob[key + "|g"] = g
+                    blob[key + "|d"] = d
                     meta.append(key)
         p = os.path.join(args.outdir, "states.npz")
         np.savez(p, **blob)
