@@ -38,6 +38,11 @@ PER_WINDOW=${4:-32}
 # grid: sample one wide window densely instead of two fixed windows, so
 # divergence can be plotted against token depth. Drift is a claim about depth.
 GRID=${5:-false}
+# full: every encoder reads every rollout set. Needed to tell "the state moves
+# further under self-generated text" from "under degenerate text".
+FULL=${6:-false}
+FULL_FLAG=""
+[ "$FULL" = "true" ] && FULL_FLAG="--full_matrix"
 GRID_FLAG=""
 [ "$GRID" = "true" ] && GRID_FLAG="--depth_grid"
 
@@ -93,7 +98,7 @@ $PYTHON scripts/hidden_state_drift.py \
     --prompt_source ${SOURCE} \
     --per_window ${PER_WINDOW} \
     --layers 18 36 \
-    --save_states --skip_figures ${GRID_FLAG} \
+    --save_states --skip_figures ${GRID_FLAG} ${FULL_FLAG} \
     --outdir "$OUTDIR"
 
 EXIT_CODE=$?

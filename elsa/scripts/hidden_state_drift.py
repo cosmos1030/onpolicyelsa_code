@@ -160,6 +160,8 @@ def main():
     ap.add_argument("--gpu_mem", type=float, default=0.85)
     ap.add_argument("--prompt_source", default="ot3", choices=["math500", "ot3"])
     ap.add_argument("--outdir", required=True)
+    ap.add_argument("--full_matrix", action="store_true",
+                    help="every encoder reads every rollout set, not just its own")
     ap.add_argument("--depth_grid", action="store_true",
                     help="sample one wide window densely instead of two fixed "
                          "windows, so divergence can be plotted against depth")
@@ -234,7 +236,13 @@ def main():
         states[(enc, "fixed")] = collect_states(
             m, tok, prompts, fixed, args.layers, windows, args.per_window,
             "cuda", tag=f"{enc}/fixed")
-        targets = labels if enc == "dense" else [enc]
+        # Every encoder reads every rollout set when --full_matrix. Without it a
+        # pruned model only ever sees its own rollouts, and then "the state moves
+        # further under self-generated text" cannot be told apart from "the state
+        # moves further under degenerate text" -- the dense model's rollouts are
+        # the needed middle case: model-generated, but not this model's, and not
+        # degenerate.
+        targets = labels if (enc == "dense" or args.full_matrix) else [enc]
         for src in targets:
             states[(enc, f"self:{src}")] = collect_states(
                 m, tok, prompts, rollouts[src], args.layers, windows,

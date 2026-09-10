@@ -226,8 +226,15 @@ def main():
         for lab in labels:
             if lab == "dense":
                 continue
-            for cond, style, aname in ((("fixed"), "--", "fixed CoT"),
-                                       ((f"self:{lab}"), "-", "self rollout")):
+            # Three texts, all read by both models. fixed is not model-generated
+            # at all; dense's rollout is model-generated but not this model's and
+            # not degenerate; the model's own rollout is both. If only the last
+            # one pulls the state further from dense, that is on-policy drift. If
+            # dense's rollout goes with it, the effect is about generated text in
+            # general, not about the trajectory being the model's own.
+            for cond, style, aname in (("fixed", "--", "fixed CoT"),
+                                       ("self:dense", ":", "dense's rollout"),
+                                       (f"self:{lab}", "-", "own rollout")):
                 al = aligned(cond, lab)
                 if al is None:
                     continue
