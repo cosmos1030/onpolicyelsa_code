@@ -142,6 +142,9 @@ $PYTHON main.py \
     --gmp_pgd_kl_budget=${KL_BUDGET} \
     --gmp_pgd_nm_compensate=${NM_COMP:-false} \
     --gmp_pgd_nm_comp_ridge=${NM_COMP_RIDGE:-1e-6} \
+    --gmp_ste=${STE:-false} \
+    --gmp_ckpt_every_steps=${CKPT_EVERY:-0} --gmp_ckpt_dir="${CKPT_DIR:-}" \
+    --gmp_resume_from="${RESUME_FROM:-}" --gmp_ckpt_keep=${CKPT_KEEP:-1} \
     --gmp_pgd_kl_calib_size=${CALIB_SIZE} \
     --gmp_pgd_interval=${PGD_INTERVAL} \
     --gmp_save_path=/NHNHOME/log-postech/doyoonkim/models \

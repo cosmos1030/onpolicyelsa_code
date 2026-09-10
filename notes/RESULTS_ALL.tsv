@@ -45,11 +45,13 @@ label	arm	state	model	avg5	MATH	GPQA	IFEval	LCB	GSM8K	n_bench	step	total	comp_ev
 8B 2:4 d=0.02 lr=1e-4	klb0.02	DONE	8B	51.31	74.20	38.38	54.90	13.43	75.66	5	2048	2048	0		gmp_s50pct_lr0.0001_onpol_lmda0.33_20260902_231340	queue_gmp_pgd_grow_to_target_8b_24/klb0.02.log
 8B 2:4 d=999 lr=1e-4	s50_24_duringgrowth	DONE	8B	51.20	71.80	38.38	55.45	14.18	76.19	5	2048	2048	0		gmp_s50pct_lr0.0001_onpol_lmda0.33_20260828_034431	queue_gmp_pgd_klgate_8b/s50_24_duringgrowth.log
 8B 2:4 lr=1e-4	gmp_pgd_klgate_8b_24_lr1e-4_fsdp2gpu_v2.launch	DONE	8B	50.47	73.80	32.83	53.97	16.79	74.98	5	2048	2048	0		gmp_s50pct_lr0.0001_onpol_lmda0.33_20260825_140422	gmp_pgd_klgate_8b_24_lr1e-4_fsdp2gpu_v2.launch.log
+4B S50	alps_retrain_4b_n24_tok512_lr5e-05	DONE	4B	50.15	78.40	35.86	47.87	13.43	75.21	5	2048	2048	0		gmp_s50pct_lr5e-05_onpol_lmda0.33_20260910_111011	alps_4b_24/alps_retrain_4b_n24_tok512_lr5e-05.log
 8B 2:4 d=0.01 lr=1e-4	klb0.01	DONE	8B	50.15	72.60	35.35	53.79	13.43	75.59	5	2048	2048	0		gmp_s50pct_lr0.0001_onpol_lmda0.33_20260902_222528	queue_gmp_pgd_grow_to_target_8b_24/klb0.01_v13.log
 8B S70 d=0.02 lr=1e-4	s70_delta0.02	DONE	8B	50.12	77.40	38.38	46.58	8.58	79.68	5	2048	2048	0		gmp_s70pct_lr0.0001_onpol_lmda0.33_20260907_061803	delta_resweep_opkdfix/s70_delta0.02.log
 4B S60 d=99999 lr=5e-5	s60_nogate	DONE	4B	50.03	75.60	29.80	51.57	13.43	79.76	5	2048	2048	0		gmp_s60pct_lr5e-05_onpol_lmda0.33_20260903_060508	ablation_A3_nogate_4b/s60_nogate.log
 8B S70 d=0.01 lr=1e-4	s70_delta0.01	DONE	8B	49.84	75.20	35.35	47.87	12.69	78.09	5	2048	2048	0		gmp_s70pct_lr0.0001_onpol_lmda0.33_20260908_021645	resweep2_opkdfix/s70_delta0.01.log
 8B S70 d=0.03 lr=1e-4	s70_delta0.03	DONE	8B	49.74	78.60	33.84	46.03	12.31	77.94	5	2048	2048	0		gmp_s70pct_lr0.0001_onpol_lmda0.33_20260905_210644	delta_sweep_8b_s70/s70_delta0.03.log
+4B S50	alps_retrain_4b_n24_tok512_lr1e-4	DONE	4B	49.46	77.80	32.83	44.36	15.67	76.65	5	2048	2048	0		gmp_s50pct_lr0.0001_onpol_lmda0.33_20260910_111232	alps_4b_24/alps_retrain_4b_n24_tok512_lr1e-4.log
 8B S70 d=0.05 lr=1e-4	s70_delta0.05	DONE	8B	49.11	77.40	35.86	45.47	7.84	79.00	5	2048	2048	0		gmp_s70pct_lr0.0001_onpol_lmda0.33_20260907_072207	delta_resweep_opkdfix/s70_delta0.05.log
 8B ?	eval	DONE	8B	48.95	76.20	36.87	43.99	10.45	77.26	5			0		gmp_s70pct_lr0.0001_onpol_lmda0.33_20260906_105649	opkdfix_8b_s70_delta0.03/eval_resume.log
 8B S70 d=0.02 lr=1e-4 B1frozen(ro=4096)	s70_B1frozen_retry	DONE	8B	48.92	76.00	39.39	42.51	10.07	76.65	5	2048	2048	0		gmp_s70pct_lr0.0001_onpol_lmda0.33_20260909_185223	resweep2_opkdfix/s70_B1frozen_retry_resume.log
@@ -96,8 +98,6 @@ label	arm	state	model	avg5	MATH	GPQA	IFEval	LCB	GSM8K	n_bench	step	total	comp_ev
 4B S70 rule=schedule	smoke	DEAD	4B							0	27	64	0			ablation_A2_schedule_4b/smoke.log
 4B S70 rule=schedule	smoke_er0.113_endsteps7_nofire	DEAD	4B							0	3	64	0			ablation_A2_schedule_4b/smoke_er0.113_endsteps7_nofire.log
 4B S70 d=0.02 lr=1e-4 ro=2048	s70_ro2048	DEAD	4B							0	12	2048	0			ablation_B1_frozen_pool_4b/s70_ro2048.log
-4B S50	alps_retrain_4b_n24_tok512_lr1e-4	LIVE	4B							0	973	2048	0			alps_4b_24/alps_retrain_4b_n24_tok512_lr1e-4.log
-4B S50	alps_retrain_4b_n24_tok512_lr5e-05	LIVE	4B							0	999	2048	0			alps_4b_24/alps_retrain_4b_n24_tok512_lr5e-05.log
 8B S70	alpssft512_s70.aborted_gpu_defrag	DEAD	8B							0	29	2048	0			alpssft512_8b/alpssft512_s70.aborted_gpu_defrag.log
 8B S60 ro=1	run	DEAD	8B							0	2048	2048	0		gmp_s60pct_lr5e-05_onpol_lmda0.33_20260820_033814	alpssft_8b_b200_s60pct_lr5e-5/run.log
 ? S60	debug_bs2_collatefix_s60_lr1e-4.launch	DEAD	?							0	9	2048	0			debug_bs2_collatefix_s60_lr1e-4.launch.log
@@ -125,6 +125,7 @@ label	arm	state	model	avg5	MATH	GPQA	IFEval	LCB	GSM8K	n_bench	step	total	comp_ev
 8B S60 lr=5e-5	gmp_pgd_klgate_8b_s60_lr5e-5_fsdp2gpu_vllm010.launch	DEAD	8B							0	39	2048	0			gmp_pgd_klgate_8b_s60_lr5e-5_fsdp2gpu_vllm010.launch.log
 8B 2:4 d=0.02 lr=1e-4 +comp	8b_24_klb0.02_comp	DEAD	8B							0	15	2048	2	0.0		nm_compensate/8b_24_klb0.02_comp.log
 8B S70 d=0.03 lr=1e-4	s70_delta0.03_opkdfix	DEAD	8B							0	2048	2048	0		gmp_s70pct_lr0.0001_onpol_lmda0.33_20260906_105649	opkdfix_8b_s70_delta0.03/s70_delta0.03_opkdfix.log
+4B 2:4 d=0.01 lr=1e-4	make_ckpt	DEAD	4B							0	7	2048	0			probe_blockfisher/make_ckpt.log
 8B S50 d=0.02 lr=5e-5	s50	DEAD	8B							0	7	2048	0			queue_gmp_pgd_grow_to_target_8b/s50.log
 8B S60 d=0.01 lr=5e-5	s60_klb0.01	DEAD	8B							0	823	2048	0			queue_gmp_pgd_grow_to_target_8b/s60_klb0.01.log
 8B 2:4 d=0.005 lr=1e-4	klb0.005	DEAD	8B							0	8	2048	0			queue_gmp_pgd_grow_to_target_8b_24/klb0.005.log
@@ -148,11 +149,12 @@ label	arm	state	model	avg5	MATH	GPQA	IFEval	LCB	GSM8K	n_bench	step	total	comp_ev
 4B S50 d=999 lr=5e-5	s50_uncapped_reversekl	DEAD	4B							0	2048	2048	0		gmp_s50pct_lr5e-05_onpol_lmda0.33_20260828_125050	queue_gmp_pgd_klgate_4b_reversekl/s50_uncapped_reversekl.log
 8B 2:4 d=0.02 lr=1e-4	s50_24_cubic	DEAD	8B							0	1543	2048	0			queue_gmp_pgd_klgate_8b_cubic/s50_24_cubic.log
 8B S60 d=0.02 lr=5e-5	s60_cubic	DEAD	8B			42.42	62.29	20.90	81.35	4	2048	2048	0		gmp_s60pct_lr5e-05_onpol_lmda0.33_20260831_174634	queue_gmp_pgd_klgate_8b_cubic/s60_cubic.log
-8B 2:4 d=0.005 lr=1e-4	n24_klb0.005	LIVE	8B							0	24	2048	0			resweep2_opkdfix/n24_klb0.005.log
+8B 2:4 d=0.005 lr=1e-4	n24_klb0.005	LIVE	8B							0	1662	2048	0			resweep2_opkdfix/n24_klb0.005.log
 8B 2:4 d=0.01 lr=1e-4	n24_klb0.01	SUPERSEDED	8B							0	559	2048	0			resweep2_opkdfix/n24_klb0.01.log
 8B S70 d=0.02 lr=1e-4 jump B1frozen(ro=4096)	s70_A3B1jump_delta0.02	DEAD	8B							0	43	2048	0			resweep2_opkdfix/s70_A3B1jump_delta0.02.log
 8B S70 d=0.02 lr=1e-4 B1frozen(ro=4096)	s70_B1frozen_delta0.02	DEAD	8B							0	39	2048	0			resweep2_opkdfix/s70_B1frozen_delta0.02.log
 8B S70 d=0.02 lr=1e-4 B1frozen(ro=4096)	s70_B1frozen	DEAD	8B							0	911	2048	0			resweep2_opkdfix/s70_B1frozen_retry.log
+8B S70 d=0.03 lr=1e-4	s70_delta0.03_opkdfix	LIVE	8B							0	289	2048	0			resweep2_opkdfix/s70_delta0.03_opkdfix.log
 4B S50 ro=4	smoke	DEAD	4B							0	8	8	0			smoke_gmp_pgd_klgate_4b/smoke.log
 4B S50 ro=4	smoke2	DEAD	4B							0	8	8	0			smoke_gmp_pgd_klgate_4b/smoke2.log
 8B S70 d=0.03 lr=1e-4	resume	DEAD	8B							0	36	48	0			smoke_opkd_slice_ckpt/resume.log

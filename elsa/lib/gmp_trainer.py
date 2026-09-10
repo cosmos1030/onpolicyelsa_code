@@ -2644,6 +2644,23 @@ def _compute_tr_kl(model: nn.Module, cal_batch: dict, cand_masks: dict,
         saved[name] = (newly_pruned, param.data[newly_pruned].clone())
         param.data[newly_pruned] = 0.0
 
+    # STE: zeroing param.data is NOT enough to realise the candidate here.
+    # Under --gmp_ste the forward is `param.data * maskmgr.masks[name]` (see
+    # install_ste_forward_hooks), so the OLD mask is still what gates the
+    # forward: newly-pruned coords are correctly killed by the zeroing above,
+    # but REVIVED ones (old_mask dead, candidate alive) stay blocked by the old
+    # mask even though their shadow weight is large and non-zero. The measured
+    # KL would then cover a prune-only transition while the accepted transition
+    # also revives -- the true function change exceeds the budget the gate
+    # thinks it enforced, silently breaking the trust region exactly in the mode
+    # whose entire purpose is to make revival possible.
+    # The hooks re-read maskmgr.masks on every call, so swapping the dict
+    # through is enough; restored in the same order below.
+    _ste_saved_masks = None
+    if getattr(maskmgr, 'ste', False):
+        _ste_saved_masks = maskmgr.masks
+        maskmgr.masks = {n: cand_masks.get(n, m) for n, m in _ste_saved_masks.items()}
+
     if _dbg_on:
         logging.info(f"[DBG mem][tr_kl] before cand forward alloc={torch.cuda.memory_allocated()/1e9:.2f}GB reserved={torch.cuda.memory_reserved()/1e9:.2f}GB")
     with torch.amp.autocast('cuda', dtype=torch.bfloat16):
@@ -2652,6 +2669,8 @@ def _compute_tr_kl(model: nn.Module, cal_batch: dict, cand_masks: dict,
         logging.info(f"[DBG mem][tr_kl] after cand forward alloc={torch.cuda.memory_allocated()/1e9:.2f}GB reserved={torch.cuda.memory_reserved()/1e9:.2f}GB")
 
     # Restore
+    if _ste_saved_masks is not None:
+        maskmgr.masks = _ste_saved_masks
     for name, (mask_idx, vals) in saved.items():
         maskmgr.named_params[name].data[mask_idx] = vals
 

@@ -3,7 +3,7 @@
 Avg is the mean of ALL FIVE quick-profile benchmarks (MATH, GPQA, IFEval, LCB, GSM8K). Blank Avg = eval incomplete.
 `+comp*` marks a run launched with compensation that adjusted NOTHING (FSDP flat-shard no-op) -- it is the plain baseline.
 
-## Completed (92)
+## Completed (94)
 
 | Run | Avg | MATH | GPQA | IFEval | LCB | GSM8K | log |
 |---|---|---|---|---|---|---||---|
@@ -53,11 +53,13 @@ Avg is the mean of ALL FIVE quick-profile benchmarks (MATH, GPQA, IFEval, LCB, G
 | 8B 2:4 d=0.02 lr=1e-4 | **51.31** | 74.20 | 38.38 | 54.90 | 13.43 | 75.66 | `queue_gmp_pgd_grow_to_target_8b_24/klb0.02.log` |
 | 8B 2:4 d=999 lr=1e-4 | **51.20** | 71.80 | 38.38 | 55.45 | 14.18 | 76.19 | `queue_gmp_pgd_klgate_8b/s50_24_duringgrowth.log` |
 | 8B 2:4 lr=1e-4 | **50.47** | 73.80 | 32.83 | 53.97 | 16.79 | 74.98 | `gmp_pgd_klgate_8b_24_lr1e-4_fsdp2gpu_v2.launch.log` |
+| 4B S50 | **50.15** | 78.40 | 35.86 | 47.87 | 13.43 | 75.21 | `alps_4b_24/alps_retrain_4b_n24_tok512_lr5e-05.log` |
 | 8B 2:4 d=0.01 lr=1e-4 | **50.15** | 72.60 | 35.35 | 53.79 | 13.43 | 75.59 | `queue_gmp_pgd_grow_to_target_8b_24/klb0.01_v13.log` |
 | 8B S70 d=0.02 lr=1e-4 | **50.12** | 77.40 | 38.38 | 46.58 | 8.58 | 79.68 | `delta_resweep_opkdfix/s70_delta0.02.log` |
 | 4B S60 d=99999 lr=5e-5 | **50.03** | 75.60 | 29.80 | 51.57 | 13.43 | 79.76 | `ablation_A3_nogate_4b/s60_nogate.log` |
 | 8B S70 d=0.01 lr=1e-4 | **49.84** | 75.20 | 35.35 | 47.87 | 12.69 | 78.09 | `resweep2_opkdfix/s70_delta0.01.log` |
 | 8B S70 d=0.03 lr=1e-4 | **49.74** | 78.60 | 33.84 | 46.03 | 12.31 | 77.94 | `delta_sweep_8b_s70/s70_delta0.03.log` |
+| 4B S50 | **49.46** | 77.80 | 32.83 | 44.36 | 15.67 | 76.65 | `alps_4b_24/alps_retrain_4b_n24_tok512_lr1e-4.log` |
 | 8B S70 d=0.05 lr=1e-4 | **49.11** | 77.40 | 35.86 | 45.47 | 7.84 | 79.00 | `delta_resweep_opkdfix/s70_delta0.05.log` |
 | 8B ? | **48.95** | 76.20 | 36.87 | 43.99 | 10.45 | 77.26 | `opkdfix_8b_s70_delta0.03/eval_resume.log` |
 | 8B S70 d=0.02 lr=1e-4 B1frozen(ro=4096) | **48.92** | 76.00 | 39.39 | 42.51 | 10.07 | 76.65 | `resweep2_opkdfix/s70_B1frozen_retry_resume.log` |
@@ -104,9 +106,8 @@ Avg is the mean of ALL FIVE quick-profile benchmarks (MATH, GPQA, IFEval, LCB, G
 
 | Run | state | progress | benches | comp events | max delta | log |
 |---|---|---|---|---|---|---|
-| 4B S50 | LIVE | 999/2048 | 0/5 | 0 | - | `alps_4b_24/alps_retrain_4b_n24_tok512_lr5e-05.log` |
-| 4B S50 | LIVE | 973/2048 | 0/5 | 0 | - | `alps_4b_24/alps_retrain_4b_n24_tok512_lr1e-4.log` |
-| 8B 2:4 d=0.005 lr=1e-4 | LIVE | 24/2048 | 0/5 | 0 | - | `resweep2_opkdfix/n24_klb0.005.log` |
+| 8B 2:4 d=0.005 lr=1e-4 | LIVE | 1662/2048 | 0/5 | 0 | - | `resweep2_opkdfix/n24_klb0.005.log` |
+| 8B S70 d=0.03 lr=1e-4 | LIVE | 289/2048 | 0/5 | 0 | - | `resweep2_opkdfix/s70_delta0.03_opkdfix.log` |
 | 8B S60 ro=1 | DEAD | 2048/2048 | 0/5 | 0 | - | `alpssft_8b_b200_s60pct_lr5e-5/run.log` |
 | 8B S70 d=0.03 lr=1e-4 | DEAD | 2048/2048 | 0/5 | 0 | - | `opkdfix_8b_s70_delta0.03/s70_delta0.03_opkdfix.log` |
 | 4B S50 d=0.02 lr=5e-5 | DEAD | 2048/2048 | 0/5 | 0 | - | `queue_gmp_pgd_klgate_4b_reversekl/s50_capped_reversekl.log` |
@@ -166,6 +167,7 @@ Avg is the mean of ALL FIVE quick-profile benchmarks (MATH, GPQA, IFEval, LCB, G
 | 4B S50 ro=4 | DEAD | 8/8 | 0/5 | 0 | - | `smoke_gmp_pgd_klgate_4b/smoke.log` |
 | 4B S50 ro=4 | DEAD | 8/8 | 0/5 | 0 | - | `smoke_gmp_pgd_klgate_4b/smoke2.log` |
 | 4B S60 d=0.02 lr=5e-5 | DEAD | 7/2048 | 0/5 | 0 | - | `gmp_pgd_klgate_4b_s60_lr5e-5_mi32_opd512.launch.log` |
+| 4B 2:4 d=0.01 lr=1e-4 | DEAD | 7/2048 | 0/5 | 0 | - | `probe_blockfisher/make_ckpt.log` |
 | 8B S50 d=0.02 lr=5e-5 | DEAD | 7/2048 | 0/5 | 0 | - | `queue_gmp_pgd_grow_to_target_8b/s50.log` |
 | 4B S70 rule=schedule | DEAD | 3/64 | 0/5 | 0 | - | `ablation_A2_schedule_4b/smoke_er0.113_endsteps7_nofire.log` |
 | 8B S50 ro=1 | DEAD | 3/2048 | 0/5 | 0 | - | `trgmp_8b_b200_n24_lr1e-4_kl0.02_mi32.launch.log` |
