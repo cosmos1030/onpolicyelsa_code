@@ -208,7 +208,7 @@ def main():
     # -- numbers
     labs = list(specs)
     results = {}
-    print("\n[pol] === dense 대비 분리도 (AUC / MMD), 프롬프트별 ===", flush=True)
+    print("\n[pol] === divergence from dense (AUC / MMD), per prompt ===", flush=True)
     for L in args.layers:
         for w in windows:
             print(f"  layer {L}, window {w}:", flush=True)
@@ -226,11 +226,30 @@ def main():
                 results[f"L{L}/{w}/{lab}"] = {
                     "auc_mean": float(np.mean(aucs)), "auc_per_prompt": aucs,
                     "mmd_mean": float(np.mean(mmds)), "mmd_per_prompt": mmds}
-                print(f"    {lab:<6} AUC {np.mean(aucs):.3f} "
-                      f"(프롬프트별 {' '.join(f'{a:.2f}' for a in aucs)})   "
-                      f"MMD {np.mean(mmds):.4f}", flush=True)
+                print(f"    {lab:<14} AUC {np.mean(aucs):.3f}   "
+                      f"MMD {np.mean(mmds):.4f}  "
+                      f"(per-prompt MMD {' '.join(f'{m:.3f}' for m in mmds)})", flush=True)
     json.dump(results, open(os.path.join(args.outdir, "divergence.json"), "w"),
               indent=2)
+
+    # Encoding is the expensive step and the figures are the part worth
+    # iterating on, so keep the pooled vectors. Written then renamed: the
+    # analysis side reads this path.
+    blob = {}
+    for pi in range(len(prompts)):
+        for k in specs:
+            for L in args.layers:
+                for w in windows:
+                    v = states[pi][k][L][w]
+                    if len(v):
+                        blob[f"p{pi}|{k}|L{L}|{w}"] = v
+    tmp = os.path.join(args.outdir, "pooled.npz.tmp.npz")
+    np.savez(tmp, **blob)
+    os.replace(tmp, os.path.join(args.outdir, "pooled.npz"))
+    json.dump({"prompts": len(prompts), "specs": {k: list(v) for k, v in specs.items()},
+               "layers": args.layers, "windows": {k: list(v) for k, v in windows.items()}},
+              open(os.path.join(args.outdir, "pooled_meta.json"), "w"), indent=2)
+    print(f"[pol] wrote pooled.npz ({len(blob)} arrays)", flush=True)
 
     # -- figures, one row per family
     import matplotlib
@@ -275,17 +294,21 @@ def main():
                                    c=palette.get(disp, "#888"), linewidths=0,
                                    label=disp)
                     ax.set_xticks([]); ax.set_yticks([])
+                    # MMD, not AUC: AUC saturates at 1.00 for every model at
+                    # every sparsity -- rollouts from different models are
+                    # trivially separable and the number says nothing about
+                    # HOW far apart they are.
                     sub = "  ".join(
-                        f"{specs[lab][1]} {results.get(f'L{L}/{w}/{lab}', {}).get('auc_per_prompt', [float('nan')] * 99)[pi]:.2f}"
+                        f"{specs[lab][1]} {results.get(f'L{L}/{w}/{lab}', {}).get('mmd_per_prompt', [float('nan')] * 99)[pi]:.3f}"
                         for lab in members[1:])
-                    ax.set_title(f"prompt {pi}\nAUC vs dense: {sub}", fontsize=9.5)
+                    ax.set_title(f"prompt {pi}\nMMD$^2$ to dense: {sub}", fontsize=8)
                 axes[0].legend(loc="upper left", markerscale=1.6, fontsize=8.5,
                                framealpha=.9)
                 fig.suptitle(
-                    f"{fam.upper()} — 같은 프롬프트, 모델별 {args.n_samples}개 rollout "
-                    f"(layer {L}, continuation {windows[w][0]}–{windows[w][1]} 토큰 평균, "
+                    f"{fam.upper()} — one prompt per panel, {args.n_samples} rollouts per model "
+                    f"(layer {L}, mean over continuation tokens {windows[w][0]}-{windows[w][1]}, "
                     f"dense encoder)", fontsize=12)
-                fig.tight_layout()
+                fig.tight_layout(rect=[0, 0, 1, 0.92])
                 p = os.path.join(args.outdir, f"tsne_{fam}_L{L}_{w}.png")
                 fig.savefig(p, dpi=150)
                 plt.close(fig)
@@ -326,17 +349,18 @@ def main():
                                    c=fam_palette.get(specs[k][0], "#888"),
                                    linewidths=0, label=specs[k][0])
                     ax.set_xticks([]); ax.set_yticks([])
-                    sub = "  ".join(
-                        f"{specs[k][0]} {results.get(f'L{L}/{w}/{k}', {}).get('auc_per_prompt', [float('nan')] * 99)[pi]:.2f}"
+                    sub = "\n".join(
+                        f"{specs[k][0]:<10}{results.get(f'L{L}/{w}/{k}', {}).get('mmd_per_prompt', [float('nan')] * 99)[pi]:.3f}"
                         for k in members[1:])
-                    ax.set_title(f"prompt {pi}\nAUC vs dense: {sub}", fontsize=9)
+                    ax.set_title(f"prompt {pi}\nMMD$^2$ to dense\n{sub}",
+                                 fontsize=7.5, fontfamily="monospace", loc="left")
                 axes[0].legend(loc="upper left", markerscale=1.6, fontsize=8.5,
                                framealpha=.9)
                 fig.suptitle(
-                    f"{lev.upper()} — 방법별 비교, 같은 프롬프트 {args.n_samples}개 rollout "
-                    f"(layer {L}, {windows[w][0]}–{windows[w][1]} 토큰 평균, dense encoder)",
-                    fontsize=12)
-                fig.tight_layout()
+                    f"{lev.upper()} — methods compared at one sparsity. One prompt per panel, "
+                    f"{args.n_samples} rollouts per model (layer {L}, mean over continuation "
+                    f"tokens {windows[w][0]}-{windows[w][1]}, dense encoder)", fontsize=11)
+                fig.tight_layout(rect=[0, 0, 1, 0.90])
                 p = os.path.join(args.outdir, f"tsne_bylevel_{lev}_L{L}_{w}.png")
                 fig.savefig(p, dpi=150)
                 plt.close(fig)
