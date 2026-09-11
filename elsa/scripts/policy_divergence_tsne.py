@@ -158,8 +158,32 @@ def main():
 
     from transformers import AutoModelForCausalLM, AutoTokenizer
     tok = AutoTokenizer.from_pretrained(args.dense_model, trust_remote_code=True)
-    prompts, solutions, pids = build_prompts(tok, args.n_prompts, args.seed, True,
-                                             args.prompt_source)
+    # build_prompts pulls all of OpenThoughts3-1.2M (120 files, ~25 min) and
+    # parses 1.2M rows to hand back six prompts. Cache the six.
+    pcache = os.path.join(args.outdir, "prompts.json")
+    _want = {"source": args.prompt_source, "seed": args.seed,
+             "n_prompts": args.n_prompts}
+    _c = json.load(open(pcache)) if os.path.exists(pcache) else None
+    # A cache keyed only on the path would silently serve the wrong prompts
+    # after a change of seed or count, and the rollouts cached beside it are
+    # keyed on nothing at all -- so refuse rather than mix them.
+    if _c and all(_c.get(k) == v for k, v in _want.items()):
+        prompts, solutions, pids = _c["prompts"], _c["solutions"], _c["ids"]
+        print(f"[pol] {len(prompts)} prompts from cache", flush=True)
+    else:
+        if _c:
+            raise SystemExit(
+                f"prompt cache in {args.outdir} was built for "
+                f"{ {k: _c.get(k) for k in _want} } but this run wants {_want}. "
+                "The cached rollouts belong to those prompts too -- use a "
+                "different --outdir rather than mixing them.")
+        prompts, solutions, pids = build_prompts(tok, args.n_prompts, args.seed,
+                                                 True, args.prompt_source)
+        tmp = pcache + ".tmp"
+        json.dump({"prompts": prompts, "solutions": solutions, "ids": pids,
+                   "source": args.prompt_source, "seed": args.seed,
+                   "n_prompts": args.n_prompts}, open(tmp, "w"))
+        os.replace(tmp, pcache)
     plens = [len(tok(p, add_special_tokens=False).input_ids) for p in prompts]
     mml = max(plens) + args.max_new_tokens + 64
     print(f"[pol] {len(prompts)} prompts, {args.n_samples} samples each, "
