@@ -237,8 +237,12 @@ def main():
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     fams = sorted({f for f, _, _ in specs.values()} - {"dense"})
+    # by-sparsity figures colour the sparsity; by-sparsity-level figures colour
+    # the METHOD, since that is what those panels contrast.
     palette = {"dense": "#3f4652", "s30": "#7fb2d4", "s40": "#4a93c4",
                "s50": "#2c7fb8", "s60": "#41a05d", "s70": "#d95f0e"}
+    fam_palette = {"dense": "#3f4652", "alps": "#d95f0e", "sparsegpt": "#8c4a9e",
+                   "ours": "#0f8b7e", "alps_sft": "#b08600"}
     for L in args.layers:
         for w in windows:
             for fam in fams:
@@ -283,6 +287,57 @@ def main():
                     f"dense encoder)", fontsize=12)
                 fig.tight_layout()
                 p = os.path.join(args.outdir, f"tsne_{fam}_L{L}_{w}.png")
+                fig.savefig(p, dpi=150)
+                plt.close(fig)
+                print(f"[pol] wrote {p}", flush=True)
+
+            # --- the comparison that carries the claim: at ONE sparsity, where
+            # each method's rollouts land relative to dense. A baseline drifting
+            # away only means something next to a method that does not.
+            levels = sorted({lab for _, lab, _ in specs.values()} - {"dense"})
+            for lev in levels:
+                members = ["dense"] + sorted(
+                    k for k, (f, l, _) in specs.items() if l == lev)
+                if len(members) < 3:
+                    continue          # nothing to contrast at this sparsity
+                ncol = min(len(prompts), 6)
+                fig, axes = plt.subplots(1, ncol, figsize=(3.6 * ncol, 4.0))
+                axes = np.atleast_1d(axes)
+                for pi in range(ncol):
+                    ax = axes[pi]
+                    Xs, labels = [], []
+                    for k in members:
+                        v = states[pi][k][L][w]
+                        if len(v) < 5:
+                            continue
+                        Xs.append(v)
+                        labels += [k] * len(v)
+                    if not Xs:
+                        ax.axis("off"); continue
+                    Z = embed(np.concatenate(Xs), args.seed)
+                    if Z is None:
+                        ax.axis("off"); continue
+                    labels = np.array(labels)
+                    for k in members:
+                        m = labels == k
+                        if not m.any():
+                            continue
+                        ax.scatter(Z[m, 0], Z[m, 1], s=13, alpha=.72,
+                                   c=fam_palette.get(specs[k][0], "#888"),
+                                   linewidths=0, label=specs[k][0])
+                    ax.set_xticks([]); ax.set_yticks([])
+                    sub = "  ".join(
+                        f"{specs[k][0]} {results.get(f'L{L}/{w}/{k}', {}).get('auc_per_prompt', [float('nan')] * 99)[pi]:.2f}"
+                        for k in members[1:])
+                    ax.set_title(f"prompt {pi}\nAUC vs dense: {sub}", fontsize=9)
+                axes[0].legend(loc="upper left", markerscale=1.6, fontsize=8.5,
+                               framealpha=.9)
+                fig.suptitle(
+                    f"{lev.upper()} — 방법별 비교, 같은 프롬프트 {args.n_samples}개 rollout "
+                    f"(layer {L}, {windows[w][0]}–{windows[w][1]} 토큰 평균, dense encoder)",
+                    fontsize=12)
+                fig.tight_layout()
+                p = os.path.join(args.outdir, f"tsne_bylevel_{lev}_L{L}_{w}.png")
                 fig.savefig(p, dpi=150)
                 plt.close(fig)
                 print(f"[pol] wrote {p}", flush=True)

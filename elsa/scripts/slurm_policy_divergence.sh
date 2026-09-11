@@ -52,6 +52,12 @@ export VLLM_NO_USAGE_STATS=1
 export VLLM_HOST_IP=127.0.0.1
 
 # Extra pruned models can be appended as a 5th argument onwards, same format.
+# One-shot baselines, our method, and ALPS followed by sparse SFT. That last one
+# is the control that matters: our method trains and the one-shot baselines do
+# not, so without it the figure would show "training keeps you near dense"
+# rather than anything about our method. On avg5 ours beats ALPS->SFT by
+# +0.86 / +2.99 / +4.72 at s50/s60/s70 -- a gap that widens with sparsity, which
+# is the ordering the picture should reproduce if it is measuring anything real.
 MODELS=(
   alps:s50=cosmos1030/alps-qwen3-4b-s50pct
   alps:s60=cosmos1030/alps-qwen3-4b-s60pct
@@ -59,7 +65,17 @@ MODELS=(
   sparsegpt:s50=cosmos1030/sparsegpt-qwen3-4b-s50pct
   sparsegpt:s60=cosmos1030/sparsegpt-qwen3-4b-s60pct
   sparsegpt:s70=cosmos1030/sparsegpt-qwen3-4b-s70pct
+  ours:s50=cosmos1030/gmp-kd3e-1-s50pct-lr5e-5_20260903_142204
+  ours:s60=cosmos1030/gmp-kd3e-1-s60pct-lr5e-5_20260903_071754
+  ours:s70=cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260901_080954
+  alps_sft:s50=cosmos1030/gmp-kd3e-1-s50pct-lr5e-5_20260812_132642
+  alps_sft:s60=cosmos1030/gmp-kd3e-1-s60pct-lr1e-4_20260814_193400
+  alps_sft:s70=cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260814_035030
 )
+# NOTE the ALPS->SFT checkpoints share the gmp-kd3e-1- prefix with ours and are
+# told apart only by date and wandb id: ours are 2026-09 (kp4bd255 / 4h0qqsze /
+# r5j1uw8d), ALPS->SFT are 2026-08 (miysnxlq / dqocd3f8 / 5x4prktp). Picked by
+# avg5 over the five reasoning tasks, not math500 alone.
 shift 4 2>/dev/null || shift $# 
 if [ $# -gt 0 ]; then MODELS+=("$@"); fi
 
