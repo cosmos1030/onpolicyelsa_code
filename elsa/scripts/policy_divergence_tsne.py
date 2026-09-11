@@ -148,6 +148,8 @@ def main():
     ap.add_argument("--gpu_mem", type=float, default=0.85)
     ap.add_argument("--layers", type=int, nargs="+", default=[18, 36])
     ap.add_argument("--prompt_source", default="ot3", choices=["ot3", "math500"])
+    ap.add_argument("--with_teacher", action="store_true",
+                    help="also embed the dataset's own CoT as a landmark point")
     ap.add_argument("--outdir", required=True)
     args = ap.parse_args()
 
@@ -156,8 +158,8 @@ def main():
 
     from transformers import AutoModelForCausalLM, AutoTokenizer
     tok = AutoTokenizer.from_pretrained(args.dense_model, trust_remote_code=True)
-    prompts, _, pids = build_prompts(tok, args.n_prompts, args.seed, True,
-                                     args.prompt_source)
+    prompts, solutions, pids = build_prompts(tok, args.n_prompts, args.seed, True,
+                                             args.prompt_source)
     plens = [len(tok(p, add_special_tokens=False).input_ids) for p in prompts]
     mml = max(plens) + args.max_new_tokens + 64
     print(f"[pol] {len(prompts)} prompts, {args.n_samples} samples each, "
@@ -201,6 +203,16 @@ def main():
             packed, cov = pool_states(dense, tok, prompt, rollouts[key][pi],
                                       args.layers, windows, "cuda")
             states[pi][key] = packed
+        # The dataset's own CoT, through the same encoder and the same windows.
+        # OT3 ships exactly one trace per problem, so this is a single landmark
+        # point per panel rather than a cloud -- it cannot carry an MMD, but it
+        # shows WHICH WAY the models sit relative to the text they were trained
+        # on, which "distance from dense" alone does not say.
+        if args.with_teacher:
+            t_ids = tok(solutions[pi], add_special_tokens=False).input_ids
+            tp, _ = pool_states(dense, tok, prompt, [t_ids], args.layers,
+                                windows, "cuda")
+            states[pi]["teacher"] = tp
         print(f"[pol]   prompt {pi}: done ({cov})", flush=True)
     del dense
     torch.cuda.empty_cache()
@@ -229,6 +241,32 @@ def main():
                 print(f"    {lab:<14} AUC {np.mean(aucs):.3f}   "
                       f"MMD {np.mean(mmds):.4f}  "
                       f"(per-prompt MMD {' '.join(f'{m:.3f}' for m in mmds)})", flush=True)
+    if args.with_teacher:
+        print("\n[pol] === distance from each cloud's centre to the dataset CoT ===",
+              flush=True)
+        print("      (in units of the dense cloud's own spread: 1.0 means the "
+              "teacher sits as far from that model as the model's rollouts "
+              "scatter)", flush=True)
+        for L in args.layers:
+            for w in windows:
+                print(f"  layer {L}, {w}:", flush=True)
+                for lab in labs:
+                    ds = []
+                    for pi in range(len(prompts)):
+                        X = states[pi][lab][L][w]
+                        T = states[pi].get("teacher", {}).get(L, {}).get(w)
+                        D = states[pi]["dense"][L][w]
+                        if T is None or len(T) == 0 or len(X) < 5 or len(D) < 5:
+                            continue
+                        spread = np.linalg.norm(D - D.mean(0), axis=1).mean()
+                        ds.append(float(np.linalg.norm(X.mean(0) - T[0]) /
+                                        max(spread, 1e-6)))
+                    if ds:
+                        results[f"L{L}/{w}/{lab}/to_teacher"] = ds
+                        print(f"    {lab:<14} {np.mean(ds):6.3f}   "
+                              f"(per prompt {' '.join(f'{d:.2f}' for d in ds)})",
+                              flush=True)
+
     json.dump(results, open(os.path.join(args.outdir, "divergence.json"), "w"),
               indent=2)
 
@@ -237,11 +275,11 @@ def main():
     # analysis side reads this path.
     blob = {}
     for pi in range(len(prompts)):
-        for k in specs:
+        for k in list(specs) + (["teacher"] if args.with_teacher else []):
             for L in args.layers:
                 for w in windows:
-                    v = states[pi][k][L][w]
-                    if len(v):
+                    v = states[pi].get(k, {}).get(L, {}).get(w)
+                    if v is not None and len(v):
                         blob[f"p{pi}|{k}|L{L}|{w}"] = v
     tmp = os.path.join(args.outdir, "pooled.npz.tmp.npz")
     np.savez(tmp, **blob)
@@ -321,6 +359,8 @@ def main():
             for lev in levels:
                 members = ["dense"] + sorted(
                     k for k, (f, l, _) in specs.items() if l == lev)
+                if args.with_teacher and "teacher" in states[0]:
+                    members = members + ["teacher"]
                 if len(members) < 3:
                     continue          # nothing to contrast at this sparsity
                 ncol = min(len(prompts), 6)
@@ -330,8 +370,10 @@ def main():
                     ax = axes[pi]
                     Xs, labels = [], []
                     for k in members:
-                        v = states[pi][k][L][w]
-                        if len(v) < 5:
+                        v = states[pi].get(k, {}).get(L, {}).get(w)
+                        # teacher is a single landmark row -- the >=5 floor that
+                        # guards the clouds would silently drop it
+                        if v is None or len(v) < (1 if k == "teacher" else 5):
                             continue
                         Xs.append(v)
                         labels += [k] * len(v)
@@ -345,13 +387,19 @@ def main():
                         m = labels == k
                         if not m.any():
                             continue
-                        ax.scatter(Z[m, 0], Z[m, 1], s=13, alpha=.72,
-                                   c=fam_palette.get(specs[k][0], "#888"),
-                                   linewidths=0, label=specs[k][0])
+                        if k == "teacher":
+                            ax.scatter(Z[m, 0], Z[m, 1], s=260, marker="*",
+                                       c="#c9184a", edgecolors="white",
+                                       linewidths=1.2, zorder=5,
+                                       label="dataset CoT")
+                        else:
+                            ax.scatter(Z[m, 0], Z[m, 1], s=13, alpha=.72,
+                                       c=fam_palette.get(specs[k][0], "#888"),
+                                       linewidths=0, label=specs[k][0])
                     ax.set_xticks([]); ax.set_yticks([])
                     sub = "\n".join(
                         f"{specs[k][0]:<10}{results.get(f'L{L}/{w}/{k}', {}).get('mmd_per_prompt', [float('nan')] * 99)[pi]:.3f}"
-                        for k in members[1:])
+                        for k in members[1:] if k != "teacher")
                     ax.set_title(f"prompt {pi}\nMMD$^2$ to dense\n{sub}",
                                  fontsize=7.5, fontfamily="monospace", loc="left")
                 axes[0].legend(loc="upper left", markerscale=1.6, fontsize=8.5,

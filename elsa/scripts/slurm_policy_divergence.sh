@@ -66,9 +66,13 @@ export VLLM_HOST_IP=127.0.0.1
 # +0.86 / +2.99 / +4.72 at s50/s60/s70 -- a gap that widens with sparsity, which
 # is the ordering the picture should reproduce if it is measuring anything real.
 MODELS=(
+  alps:s30=cosmos1030/alps-s30pct_20260911_120849
+  alps:s40=cosmos1030/alps-s40pct_20260911_120837
   alps:s50=cosmos1030/alps-qwen3-4b-s50pct
   alps:s60=cosmos1030/alps-qwen3-4b-s60pct
   alps:s70=cosmos1030/alps-qwen3-4b-s70pct
+  sparsegpt:s30=cosmos1030/sparsegpt-s30pct_20260911_103959
+  sparsegpt:s40=cosmos1030/sparsegpt-s40pct_20260911_103940
   sparsegpt:s50=cosmos1030/sparsegpt-qwen3-4b-s50pct
   sparsegpt:s60=cosmos1030/sparsegpt-qwen3-4b-s60pct
   sparsegpt:s70=cosmos1030/sparsegpt-qwen3-4b-s70pct
@@ -99,6 +103,7 @@ $PYTHON scripts/policy_divergence_tsne.py \
     --n_samples ${N_SAMPLES} \
     --max_new_tokens ${MAX_NEW} \
     --layers 18 36 \
+    --with_teacher \
     --outdir "$OUTDIR"
 
 EXIT_CODE=$?
