@@ -38,7 +38,14 @@ OUTDIR="$OUTROOT/n${N_PROMPTS}_k${N_SAMPLES}_${TAG}"
 mkdir -p "$OUTDIR"
 
 NFS_LOG="$OUTROOT/pol_diverge_${SLURM_JOB_ID}.out"
-trap 'cp "$LOCAL_JOB_BASE/slurm/pol_diverge_${SLURM_JOB_ID}.out" "$NFS_LOG" 2>/dev/null || true' EXIT
+LOCAL_LOG="$LOCAL_JOB_BASE/slurm/pol_diverge_${SLURM_JOB_ID}.out"
+trap 'cp "$LOCAL_LOG" "$NFS_LOG" 2>/dev/null || true' EXIT
+# Copy on exit is not enough: this job runs for hours and its log lives on
+# node-local storage the login node cannot read, so a run that is merely slow
+# looks identical to one that is stuck. Mirror it every 30s as well.
+( while true; do cp "$LOCAL_LOG" "$NFS_LOG" 2>/dev/null || true; sleep 30; done ) &
+LOG_MIRROR_PID=$!
+trap 'kill $LOG_MIRROR_PID 2>/dev/null; cp "$LOCAL_LOG" "$NFS_LOG" 2>/dev/null || true' EXIT
 
 export TMPDIR=/tmp
 export HF_TOKEN=$(cat ~/.hf_token 2>/dev/null || echo "")
