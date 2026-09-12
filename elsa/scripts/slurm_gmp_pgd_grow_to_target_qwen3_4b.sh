@@ -27,7 +27,7 @@
 # 2026-09-06. Remaining exclusions: internet-blocked (n46,n51,n54,n77,n87,
 # n61,n64), GPU faults (n80,n91,n31,n19), broken (n3,n60), NCCL-slow (n42).
 #SBATCH --exclude=n3,n42,n46,n51,n54,n60,n77,n80,n87,n91,n61,n64,n31,n19
-#SBATCH --output=/home1/doyoonkim/projects/elsa/logs/gmp_pgd_grow_1.7b_%j.out
+#SBATCH --output=/home1/doyoonkim/projects/elsa/logs/gmp_pgd_grow_4b_%j.out
 exec 2>&1
 
 # PGD-driven growth fork of slurm_gmp_pgd_klgate_qwen3_4b.sh: no separate
