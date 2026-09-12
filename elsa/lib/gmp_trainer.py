@@ -4085,10 +4085,11 @@ def globalprune_gmp(
                              "at all.")
         # sparsity_type is parsed into prune_n/prune_m further down (after this
         # block), so check the flag string directly rather than those names.
-        if getattr(FLAGS, 'sparsity_type', 'unstructured') != 'unstructured':
-            raise ValueError("--gmp_pgd_jump_to_target=true is unstructured-only for now -- the N:M "
-                             "grow_to_target path needs the one-shot target to respect per-group "
-                             "structural caps, which is not implemented.")
+        # N:M: the one-shot jump is exactly the post-target projection
+        # (_pgd_nm_post_target keeps the top-prune_n of every group from
+        # scratch), run on the FIRST projection and applied ungated, so every
+        # group lands on its structural cap in a single step instead of
+        # creeping there under the KL budget. See the _pgd_is_nm branch below.
         logging.info("  PGD one-shot jump ENABLED (--gmp_pgd_jump_to_target): the FIRST PGD projection "
                      f"will accept every prune candidate, snapping sparsity to {final_sparsity} in one "
                      "step; the self-KL bisection resumes as pure maintenance from the next PGD step on.")
@@ -6661,7 +6662,23 @@ def globalprune_gmp(
                         _alpha_lo, _alpha_hi = 0.0, 1.0
                         _kl_at_lo = 0.0
                         _cand_final = None
-                        for _ in range(pgd_kl_bisect_iters):
+                        # ONE-SHOT ABLATION ARM (--gmp_pgd_jump_to_target) for N:M.
+                        # alpha=1.0 takes EVERY overshoot prune, EVERY undershoot
+                        # revive and EVERY finished-group swap, which lands every
+                        # group on exactly prune_n:prune_m in this single step --
+                        # the N:M equivalent of the unstructured arm accepting all
+                        # prune candidates. The bisection is skipped entirely (that
+                        # is the point: no trust region), and KL is measured once
+                        # afterwards purely to log what the transition cost.
+                        _pgd_nm_jump_now = pgd_jump_to_target and not _pgd_jump_done
+                        if _pgd_nm_jump_now:
+                            _cand_final, _k_a_final, _k_b_final, _k_c_final = _nm_combined_candidate(1.0)
+                            _alpha_lo = 1.0
+                            _pgd_jump_done = True
+                            logging.info(f"  [pgd_jump_to_target][nm] ONE-SHOT: alpha=1.0, taking all "
+                                         f"{_n_a} overshoot prunes / {_n_b} undershoot revives / {_n_c} "
+                                         f"finished swaps -- bisection skipped (step={step}).")
+                        for _ in range(0 if _pgd_nm_jump_now else pgd_kl_bisect_iters):
                             _alpha_mid = (_alpha_lo + _alpha_hi) / 2.0
                             _kl_mid, _ka_mid, _kb_mid, _kc_mid, _cand_mid = _nm_kl_at(_alpha_mid)
                             if _kl_mid <= pgd_kl_budget:
@@ -6698,11 +6715,18 @@ def globalprune_gmp(
                                 _dist.broadcast(_kl_t, src=0)
                                 _kl_final = _kl_t.item()
                             torch.cuda.empty_cache()
-                            if _kl_final > pgd_kl_budget + 1e-6:
+                            if _kl_final > pgd_kl_budget + 1e-6 and not _pgd_nm_jump_now:
+                                # The one-shot jump arm is BY CONSTRUCTION outside the
+                                # budget -- that is the ablation. The invariant still
+                                # guards every gated step.
                                 raise RuntimeError(
                                     f"[pgd_nm_invariant] step={step}: whole-step self-KL check failed at apply time -- "
                                     f"D_KL(before||after)={_kl_final:.6f} > budget={pgd_kl_budget} "
                                     f"(alpha={_alpha_lo:.4f}, k_a={_k_a_final} k_b={_k_b_final} k_c={_k_c_final}).")
+                            if _pgd_nm_jump_now:
+                                logging.info(f"  [pgd_jump_to_target][nm] one-shot transition cost "
+                                             f"D_KL(before||after)={_kl_final:.6f} vs budget={pgd_kl_budget} "
+                                             f"(unbudgeted by design; gated maintenance resumes next projection).")
                             # Survivor compensation (--gmp_pgd_nm_compensate): before the
                             # accepted transition zeroes each group's two doomed weights, push
                             # their contribution onto the two survivors. The covariance is
@@ -6769,11 +6793,14 @@ def globalprune_gmp(
                     del _fin_scores, _fin_pg, _fin_rg, _fin_meta
                     del _pv_a, _pv_b, _cand_final
                 elif _pgd_is_nm:
-                    _pgd_at_target = maskmgr.current_sparsity() >= final_sparsity
+                    # One-shot ablation arm: force the exact-N:M projection on the
+                    # first event, whatever the current sparsity is.
+                    _pgd_jump_now = pgd_jump_to_target and not _pgd_jump_done
+                    _pgd_at_target = _pgd_jump_now or maskmgr.current_sparsity() >= final_sparsity
                     if _pgd_at_target:
                         _new_masks = _pgd_nm_post_target(_pgd_imps, maskmgr.masks, maskmgr.prune_n, maskmgr.prune_m,
                                                           shapes=(maskmgr.named_shapes if _pgd_use_fsdp else None))
-                        if pgd_kl_budget > 0 and _pgd_kl_cal_batch is not None:
+                        if pgd_kl_budget > 0 and _pgd_kl_cal_batch is not None and not _pgd_jump_now:
                             # Self-KL-gated swap instead of applying _new_masks
                             # unconditionally. _new_masks and maskmgr.masks both
                             # have EXACTLY (prune_m-prune_n) dead per group by
@@ -6885,6 +6912,12 @@ def globalprune_gmp(
                                 _pgd_revivals += int((_new & ~_old).sum().item())
                                 _pgd_prunings += int((~_new & _old).sum().item())
                                 maskmgr.masks[_n] = _new
+                        if _pgd_jump_now:
+                            _pgd_jump_done = True
+                            logging.info(f"  [pgd_jump_to_target][nm] ONE-SHOT: snapped every group to "
+                                         f"{maskmgr.prune_n}:{maskmgr.prune_m} ungated "
+                                         f"(sparsity={maskmgr.current_sparsity():.4f}, step={step}) -- "
+                                         f"KL-gated maintenance resumes next projection.")
                     else:
                         _revive_cand = {_n: _pgd_desired[_n] & ~maskmgr.masks[_n] for _n in maskmgr.named_params}
                         _eligible_prune = _pgd_nm_pre_target(_pgd_imps, maskmgr.masks, _pgd_desired, maskmgr.prune_n,
