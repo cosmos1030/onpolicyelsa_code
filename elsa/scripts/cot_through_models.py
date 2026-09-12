@@ -27,6 +27,7 @@ independent samples -- they are pieces of one text -- so read their spread as
 the extent of the CoT in representation space, not as a sampling distribution.
 """
 import argparse
+import gc
 import json
 import os
 import sys
@@ -129,7 +130,12 @@ def main():
                 scale[pi] = rollout_cloud(m, tok, prompt, dense_rolls[pi],
                                           args.layers, 0, args.seg_len * args.n_seg,
                                           "cuda", args.scale_cap)
+        # gc.collect() is not optional here: nn.Module holds parent/child
+        # reference cycles, so `del m` only drops the name and the 8GB stays
+        # until a collection pass runs. Without it each model leaks and the
+        # fifth one OOMs.
         del m
+        gc.collect()
         torch.cuda.empty_cache()
 
     labs = list(specs)

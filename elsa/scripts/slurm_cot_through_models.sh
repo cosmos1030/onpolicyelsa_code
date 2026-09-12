@@ -1,6 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=cot_models
-#SBATCH --partition=A100-80GB,4A100
+# 80GB only: ten 4B models are loaded in sequence and a 40GB card leaves no
+# margin if any one of them lingers a moment past its free.
+#SBATCH --partition=A100-80GB
 #SBATCH --qos=hpgpu
 #SBATCH --gres=gpu:1
 #SBATCH --nodes=1
