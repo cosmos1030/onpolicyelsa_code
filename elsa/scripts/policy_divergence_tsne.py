@@ -193,6 +193,12 @@ def main():
     # on the bare label silently drops one of them.
     specs = {"dense": ("dense", "dense", args.dense_model)}
     for m in args.models:
+        # Fail here with the offending token rather than inside an unpack: a
+        # stray shell argument landing in this list is easy to do and the
+        # ValueError it causes names nothing.
+        if "=" not in m or ":" not in m.split("=", 1)[0]:
+            raise SystemExit(
+                f"--models entries must look like family:label=path; got {m!r}")
         fam_lab, path = m.split("=", 1)
         fam, lab = fam_lab.split(":", 1)
         specs[f"{fam}:{lab}"] = (fam, lab, path)

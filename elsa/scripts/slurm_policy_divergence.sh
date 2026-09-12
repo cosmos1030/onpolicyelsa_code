@@ -95,8 +95,6 @@ fi
 # told apart only by date and wandb id: ours are 2026-09 (kp4bd255 / 4h0qqsze /
 # r5j1uw8d), ALPS->SFT are 2026-08 (miysnxlq / dqocd3f8 / 5x4prktp). Picked by
 # avg5 over the five reasoning tasks, not math500 alone.
-shift 4 2>/dev/null || shift $# 
-if [ $# -gt 0 ]; then MODELS+=("$@"); fi
 
 echo "=== policy divergence: $N_PROMPTS prompts x $N_SAMPLES samples ==="
 echo "NODE=$(hostname)  JOB=$SLURM_JOB_ID  OUTDIR=$OUTDIR"
