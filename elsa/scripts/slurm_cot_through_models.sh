@@ -7,7 +7,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=100G
-#SBATCH --time=02:00:00
+#SBATCH --time=03:00:00
 #SBATCH --exclude=n3,n42,n46,n51,n54,n60,n77,n80,n87,n91,n61,n64,n31,n19
 #SBATCH --output=/local-data/user-data/%u/job_%j/slurm/%x_%j.out
 exec 2>&1
@@ -46,9 +46,14 @@ cd /home1/doyoonkim/projects/elsa
 $PYTHON scripts/cot_through_models.py \
     --samples_dir "$SAMPLES" \
     --models dense=$DENSE \
+             alps_s50=cosmos1030/alps-qwen3-4b-s50pct \
+             alps_s60=cosmos1030/alps-qwen3-4b-s60pct \
              alps_s70=cosmos1030/alps-qwen3-4b-s70pct \
+             sparsegpt_s50=cosmos1030/sparsegpt-qwen3-4b-s50pct \
+             sparsegpt_s60=cosmos1030/sparsegpt-qwen3-4b-s60pct \
              sparsegpt_s70=cosmos1030/sparsegpt-qwen3-4b-s70pct \
-             alps_sft_s70=cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260814_035030 \
+             ours_s50=cosmos1030/gmp-kd3e-1-s50pct-lr5e-5_20260903_142204 \
+             ours_s60=cosmos1030/gmp-kd3e-1-s60pct-lr5e-5_20260903_071754 \
              ours_s70=cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260901_080954 \
     --layers 18 36 \
     --seg_len 256 --n_seg 8 \

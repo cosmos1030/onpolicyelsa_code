@@ -214,6 +214,32 @@ def main():
     json.dump(results, open(os.path.join(args.outdir, "cot_displacement.json"), "w"),
               indent=2)
 
+    # Keep the vectors: this run is cheap but the figures are not final, and
+    # without them every replot needs all the models loaded again.
+    blob = {}
+    for pi in range(len(prompts)):
+        for lab in labs:
+            for L in args.layers:
+                v = states[pi][lab].get(L)
+                if v is not None and len(v):
+                    blob[f"p{pi}|{lab}|L{L}|cot"] = v.astype(np.float16)
+        for L in args.layers:
+            v = scale[pi].get(L)
+            if v is not None and len(v):
+                blob[f"p{pi}|dense_rollouts|L{L}|scale"] = v.astype(np.float16)
+    tmp = os.path.join(args.outdir, "cot_states.npz.tmp.npz")
+    np.savez_compressed(tmp, **blob)
+    os.replace(tmp, os.path.join(args.outdir, "cot_states.npz"))
+    json.dump({"prompts": len(prompts), "labels": labs, "layers": args.layers,
+               "seg_len": args.seg_len, "n_seg": args.n_seg,
+               "scale_cap": args.scale_cap,
+               "note": "p{i}|{model}|L{layer}|cot = the dataset CoT cut into "
+                       "n_seg segments, each pooled, read by that model. "
+                       "p{i}|dense_rollouts|L{layer}|scale = dense's own rollouts "
+                       "pooled over the same span, the scale bar."},
+              open(os.path.join(args.outdir, "cot_states_meta.json"), "w"), indent=2)
+    print(f"[cot] wrote cot_states.npz ({len(blob)} arrays)", flush=True)
+
 
 if __name__ == "__main__":
     main()
