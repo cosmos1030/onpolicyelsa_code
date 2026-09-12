@@ -165,10 +165,10 @@ def main():
          "ours": "#0f8b7e", "alps_sft": "#b08600"}
 
     def col(lab):
-        for k, v in C.items():
-            if lab.startswith(k):
-                return v
-        return "#888"
+        # longest prefix wins: "alps_sft_s70" starts with "alps" too, and a
+        # first-match loop silently paints the control the baseline's colour
+        best = max((k for k in C if lab.startswith(k)), key=len, default=None)
+        return C[best] if best else "#888"
 
     for L in args.layers:
         ncol = min(len(prompts), 6)
@@ -194,9 +194,12 @@ def main():
                            c=col(lab), edgecolors="white", linewidths=.8,
                            zorder=5, label=f"CoT via {lab}")
             ax.set_xticks([]); ax.set_yticks([])
-            sub = "  ".join(f"{lab.split('_s')[0] if '_s' in lab else lab} "
-                            f"{np.mean(results.get(f'L{L}/{lab}', [np.nan])):.2f}"
-                            for lab in labs if lab != "dense")
+            # per-prompt, not the mean -- a panel labelled with the overall
+            # mean says the same thing six times
+            sub = "  ".join(
+                f"{lab.rsplit('_s', 1)[0]} "
+                f"{results.get(f'L{L}/{lab}', [np.nan] * 99)[pi]:.2f}"
+                for lab in labs if lab != "dense")
             ax.set_title(f"prompt {pi}\ndisplacement: {sub}", fontsize=8)
         axes[0].legend(loc="upper left", fontsize=7, markerscale=.9, framealpha=.9)
         fig.suptitle(f"The SAME dataset CoT, read by each model (layer {L}). "
