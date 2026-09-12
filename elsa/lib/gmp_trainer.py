@@ -1205,6 +1205,136 @@ def _apply_mask(param, mask, ste=False):
         param.data.mul_(mask)
 
 
+def _save_stamp():
+    """Unique suffix for a run's save directory.
+
+    `{_run_tag(FLAGS)}_{ts}` is NOT unique: _run_tag carries only sparsity, lr
+    and the OPKD lambda, so every arm of a sweep that varies anything else
+    (--gmp_ste, --gmp_ste_decay, --gmp_ste_shrink, saliency, ...) produces the
+    SAME tag, and ts has one-second resolution. Arms launched 20s apart run in
+    lockstep on identical data, so they reach the save within the same second
+    and write to the same directory.
+
+    That is not a naming annoyance, it silently destroys results: on
+    2026-09-11 ast24_shrink1e-4 and ast24_shrink5e-4 both saved to
+    .../gmp_s50pct_lr0.0001_onpol_lmda0.33_20260911_192839, one overwrote the
+    other's weights, and BOTH then evaluated the survivor -- reporting
+    byte-identical scores on all five benchmarks (63.40/25.76/36.60/9.33/75.59)
+    despite different training losses. One arm's 8 GPU-hours produced nothing.
+
+    The pid makes it unique among concurrent runs on this host.
+    """
+    import os as _os
+    return f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_p{_os.getpid()}"
+
+
+def _ste_shrink_step(maskmgr, step: int, total_steps: int, ste_enabled: bool,
+                     rho_max: float, warmup: int):
+    """Fisher-clean shrink of dead weights:  w <- w * (1 - rho_t * (1 - mask)).
+
+    The Fisher-compatible alternative to _srste_decay_step. AST puts its decay
+    on the GRADIENT (adamw.py: grad.add(p.data*(1-mask), alpha=decay)), which is
+    coherent for AST because AST ranks by |w| / wanda. It is NOT coherent here:
+    our saliency is F*w^2 with F = Adam's exp_avg_sq (see FisherAccumulator), so
+    a decay routed through the gradient is itself accumulated into exp_avg_sq
+    and PUSHES UP the Fisher of the very coordinates it is trying to suppress.
+    Measured over the first 320 steps at d=0.01, coordinates re-decided per PGD
+    event went 2.32M (no decay) -> 2.93M at decay=1e-3 -> 4.30M at 3e-3: the
+    gradient-side decay made the churn worse, monotonically in its own strength.
+
+    Applying the shrink to the weight AFTER optimizer.step() instead:
+      * leaves the straight-through gradient untouched, so STE still trains;
+      * never enters exp_avg_sq, so F is uncontaminated;
+      * lowers w^2 for dead coordinates only, which moves saliency F*w^2 in the
+        intended direction directly;
+      * changes nothing about the Fisher ranking itself.
+
+    rho is a DIRECT per-step shrink rate and is deliberately NOT multiplied by
+    the learning rate -- at lr ~1e-4 an lr-scaled rho would shrink nothing at
+    all over 2048 steps. Annealed like AST's Eq. 2:
+    rho_t = rho_max * min(1, t / T_warm), default T_warm = 25% of training.
+    """
+    if not ste_enabled:
+        return
+    rho_max = float(rho_max or 0.0)
+    if rho_max <= 0.0:
+        return
+    warm = int(warmup) if warmup is not None else -1
+    if warm < 0:
+        warm = max(1, int(0.25 * max(1, total_steps)))
+    rho = rho_max * min(1.0, step / float(max(1, warm)))
+    if rho <= 0.0:
+        return
+    with torch.no_grad():
+        for name, param in maskmgr.named_params.items():
+            m = maskmgr.masks.get(name)
+            if m is None or m.shape != param.data.shape:
+                continue
+            dead = (~m.bool()).to(param.data.dtype)
+            param.data.add_(param.data * dead, alpha=-rho)
+
+
+def _srste_decay_step(maskmgr, step: int, total_steps: int, ste_enabled: bool,
+                      decay: float, warmup: int):
+    """SR-STE: pull the PRUNED weights toward zero, with an annealed strength.
+
+    This is the half of AST (thu-ml/Adaptive-Sparse-Trainer, AAAI 2025) that
+    --gmp_ste alone does not implement, and without it STE loses at 2:4.
+
+    AST applies it inside its own AdamW (Adaptive-Sparse-Trainer/adamw.py):
+
+        if getattr(p, 'mask', None) is not None:
+            grad = grad.add(p.data * (1 - p.mask), alpha=decay)
+
+    with `mask == 1` meaning KEEP (their calculate_mask() selects the M-N
+    smallest and inverts), i.e. the decay lands only on dead coordinates. Our
+    maskmgr.masks uses the same convention (_apply_mask multiplies by it), so
+    the complement is simply ~mask.
+
+    Why it is needed, measured on our own 4B 2:4 STE run at step 1792: a masked
+    weight's straight-through gradient is the gradient it WOULD have if it were
+    active, evaluated in a network where it contributes nothing to the forward.
+    Nothing ever validates that update, so it never self-corrects -- dead
+    coordinates drifted 2-3x FURTHER from init than live ones (0.068-0.092 vs
+    0.020-0.057 of the layer's mean |w|). Their saliency F*w^2 therefore keeps
+    climbing until it overtakes a survivor, and since the 2:4 group's 3rd/2nd
+    saliency margin is tight (median 0.41, 7.5% of groups above 0.9) the
+    projection flips them: ~1.9M coordinates re-decided per PGD event versus
+    ~45K for the no-STE control, and the mask never converges (last event still
+    flipped 1.38M, while the control's last event flipped 0).
+
+    The annealing schedule is AST's Eq. 2 / main.py get_decay():
+
+        lambda(t) = alpha * t / T0   for t < T0,   alpha thereafter
+
+    weak early so connectivity can still be explored, strong later so the mask
+    freezes before the weights are exported. AST ramps over the first 25% of
+    training (increase_step=10000 of max_iters=40000).
+
+    No-op unless --gmp_ste is on: without STE the dead weights are hard-zeroed
+    every step, so there is nothing to decay.
+    """
+    if not ste_enabled:
+        return
+    decay = float(decay or 0.0)
+    if decay <= 0.0:
+        return
+    warm = int(warmup) if warmup is not None else -1
+    if warm < 0:                       # default: AST's 25%-of-training ramp
+        warm = max(1, int(0.25 * max(1, total_steps)))
+    lam = decay * min(1.0, step / float(max(1, warm)))
+    if lam <= 0.0:
+        return
+    with torch.no_grad():
+        for name, param in maskmgr.named_params.items():
+            if param.grad is None:
+                continue
+            m = maskmgr.masks.get(name)
+            if m is None or m.shape != param.data.shape:
+                continue
+            param.grad.add_((~m.bool()).to(param.grad.dtype) * param.data, alpha=lam)
+
+
 class _STEMaskFn(torch.autograd.Function):
     """Straight-through estimator for masked weights: forward computes
     weight*mask (so sparsity is respected in the actual computation), but
@@ -6037,7 +6167,14 @@ def globalprune_gmp(
         else:
             fisher.update()
             accum_grad_norm += grad_norm
+            _srste_decay_step(maskmgr, step, total_steps, ste_enabled,
+                              getattr(FLAGS, 'gmp_ste_decay', 0.0),
+                              getattr(FLAGS, 'gmp_ste_decay_warmup', -1))
             optimizer.step()
+            # after the Adam update, so the shrink never reaches exp_avg_sq
+            _ste_shrink_step(maskmgr, step, total_steps, ste_enabled,
+                             getattr(FLAGS, 'gmp_ste_shrink', 0.0),
+                             getattr(FLAGS, 'gmp_ste_shrink_warmup', -1))
             scheduler.step()
         optimizer.zero_grad()
 
@@ -7579,8 +7716,7 @@ def globalprune_gmp(
     saved_path = None
     if is_fsdp and do_save:
         if is_main_process:
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            saved_path = f"{FLAGS.gmp_save_path}/{_run_tag(FLAGS)}_{ts}"
+            saved_path = f"{FLAGS.gmp_save_path}/{_run_tag(FLAGS)}_{_save_stamp()}"
         with FSDP.summon_full_params(fsdp_model, writeback=False, recurse=True):
             if is_main_process:
                 model.save_pretrained(saved_path)
@@ -7588,8 +7724,7 @@ def globalprune_gmp(
             tokenizer.save_pretrained(saved_path)
             logging.info(f"Saved pruned model to {saved_path}")
     elif not is_fsdp and is_main_process and do_save:
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        saved_path = f"{FLAGS.gmp_save_path}/{_run_tag(FLAGS)}_{ts}"
+        saved_path = f"{FLAGS.gmp_save_path}/{_run_tag(FLAGS)}_{_save_stamp()}"
         model.save_pretrained(saved_path)
         tokenizer.save_pretrained(saved_path)
         logging.info(f"Saved pruned model to {saved_path}")

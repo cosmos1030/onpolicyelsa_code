@@ -143,6 +143,9 @@ $PYTHON main.py \
     --gmp_pgd_nm_compensate=${NM_COMP:-false} \
     --gmp_pgd_nm_comp_ridge=${NM_COMP_RIDGE:-1e-6} \
     --gmp_ste=${STE:-false} \
+    --gmp_pgd_jump_to_target=${JUMP:-false} \
+    --gmp_ste_decay=${STE_DECAY:-0.0} --gmp_ste_decay_warmup=${STE_DECAY_WARMUP:--1} \
+    --gmp_ste_shrink=${STE_SHRINK:-0.0} --gmp_ste_shrink_warmup=${STE_SHRINK_WARMUP:--1} \
     --gmp_ckpt_every_steps=${CKPT_EVERY:-0} --gmp_ckpt_dir="${CKPT_DIR:-}" \
     --gmp_resume_from="${RESUME_FROM:-}" --gmp_ckpt_keep=${CKPT_KEEP:-1} \
     --gmp_pgd_kl_calib_size=${CALIB_SIZE} \
