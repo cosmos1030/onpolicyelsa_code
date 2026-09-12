@@ -21,6 +21,9 @@ N_PROMPTS=${1:-6}
 N_SAMPLES=${2:-96}
 MAX_NEW=${3:-2048}
 TAG=${4:-base}
+# core = the sparsities the figure plots (50/60/70) across all four methods.
+# all  = adds the s30/s40 one-shot points, which exist only for ALPS/SparseGPT.
+MODELSET=${5:-all}
 
 PYTHON=/home1/doyoonkim/miniconda3/envs/rac/bin/python
 DENSE="/home1/doyoonkim/.cache/huggingface/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c"
@@ -66,23 +69,28 @@ export VLLM_HOST_IP=127.0.0.1
 # +0.86 / +2.99 / +4.72 at s50/s60/s70 -- a gap that widens with sparsity, which
 # is the ordering the picture should reproduce if it is measuring anything real.
 MODELS=(
-  alps:s30=cosmos1030/alps-s30pct_20260911_120849
-  alps:s40=cosmos1030/alps-s40pct_20260911_120837
-  alps:s50=cosmos1030/alps-qwen3-4b-s50pct
-  alps:s60=cosmos1030/alps-qwen3-4b-s60pct
-  alps:s70=cosmos1030/alps-qwen3-4b-s70pct
-  sparsegpt:s30=cosmos1030/sparsegpt-s30pct_20260911_103959
-  sparsegpt:s40=cosmos1030/sparsegpt-s40pct_20260911_103940
-  sparsegpt:s50=cosmos1030/sparsegpt-qwen3-4b-s50pct
-  sparsegpt:s60=cosmos1030/sparsegpt-qwen3-4b-s60pct
-  sparsegpt:s70=cosmos1030/sparsegpt-qwen3-4b-s70pct
   ours:s50=cosmos1030/gmp-kd3e-1-s50pct-lr5e-5_20260903_142204
   ours:s60=cosmos1030/gmp-kd3e-1-s60pct-lr5e-5_20260903_071754
   ours:s70=cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260901_080954
   alps_sft:s50=cosmos1030/gmp-kd3e-1-s50pct-lr5e-5_20260812_132642
   alps_sft:s60=cosmos1030/gmp-kd3e-1-s60pct-lr1e-4_20260814_193400
   alps_sft:s70=cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260814_035030
+  alps:s50=cosmos1030/alps-qwen3-4b-s50pct
+  alps:s60=cosmos1030/alps-qwen3-4b-s60pct
+  alps:s70=cosmos1030/alps-qwen3-4b-s70pct
+  sparsegpt:s50=cosmos1030/sparsegpt-qwen3-4b-s50pct
+  sparsegpt:s60=cosmos1030/sparsegpt-qwen3-4b-s60pct
+  sparsegpt:s70=cosmos1030/sparsegpt-qwen3-4b-s70pct
 )
+if [ "$MODELSET" = "all" ]; then
+  MODELS+=(
+    alps:s30=cosmos1030/alps-s30pct_20260911_120849
+    alps:s40=cosmos1030/alps-s40pct_20260911_120837
+    sparsegpt:s30=cosmos1030/sparsegpt-s30pct_20260911_103959
+    sparsegpt:s40=cosmos1030/sparsegpt-s40pct_20260911_103940
+  )
+fi
+
 # NOTE the ALPS->SFT checkpoints share the gmp-kd3e-1- prefix with ours and are
 # told apart only by date and wandb id: ours are 2026-09 (kp4bd255 / 4h0qqsze /
 # r5j1uw8d), ALPS->SFT are 2026-08 (miysnxlq / dqocd3f8 / 5x4prktp). Picked by

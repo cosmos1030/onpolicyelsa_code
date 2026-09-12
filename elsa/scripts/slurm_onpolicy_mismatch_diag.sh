@@ -43,14 +43,23 @@ exec 2>&1
 #                   solution (~530 chars, contains Asymptote figure source), so
 #                   only D_dense vs D_self are a like-for-like contrast there.
 
-SPARSITY_PCT=${1:?"Usage: <SPARSITY_PCT: 50|60|70> [N_PROMPTS] [MAX_NEW]"}
+SPARSITY_PCT=${1:?"Usage: <SPARSITY_PCT: 50|60|70> [N_PROMPTS] [MAX_NEW] [SOURCE] [MODEL] [LABEL]"}
 N_PROMPTS=${2:-20}
 MAX_NEW=${3:-8192}
 SOURCE=${4:-math500}
+# MODEL/LABEL let the same diagnostic run on methods other than ALPS, so
+# D_fixed and D_on can be compared ACROSS methods rather than only across
+# sparsities of one.
+MODEL_OVERRIDE=${5:-}
+LABEL=${6:-alps}
 
 PYTHON=/home1/doyoonkim/miniconda3/envs/rac/bin/python
 DENSE="/home1/doyoonkim/.cache/huggingface/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c"
-PRUNED="cosmos1030/alps-qwen3-4b-s${SPARSITY_PCT}pct"
+if [ -n "$MODEL_OVERRIDE" ]; then
+    PRUNED="$MODEL_OVERRIDE"
+else
+    PRUNED="cosmos1030/alps-qwen3-4b-s${SPARSITY_PCT}pct"
+fi
 
 ENV_FILE="/run/slurm/job_env_${SLURM_JOB_ID}"
 [ -f "$ENV_FILE" ] && source "$ENV_FILE"
@@ -61,7 +70,7 @@ mkdir -p "$LOCAL_JOB_BASE/slurm"
 OUTDIR=/home1/doyoonkim/projects/elsa/logs/onpol_mismatch
 mkdir -p "$OUTDIR"
 
-NFS_LOG="$OUTDIR/onpol_mismatch_s${SPARSITY_PCT}_${SLURM_JOB_ID}.out"
+NFS_LOG="$OUTDIR/onpol_mismatch_${LABEL}_s${SPARSITY_PCT}_${SLURM_JOB_ID}.out"
 trap 'cp "$LOCAL_JOB_BASE/slurm/onpol_mismatch_${SLURM_JOB_ID}.out" "$NFS_LOG" 2>/dev/null || true' EXIT
 
 export TMPDIR=/tmp
@@ -80,7 +89,8 @@ export VLLM_USE_V1=0
 export VLLM_NO_USAGE_STATS=1
 export VLLM_HOST_IP=127.0.0.1
 
-echo "=== on-policy mismatch diag: ALPS Qwen3-4B s${SPARSITY_PCT}%, source=${SOURCE}, n_prompts=${N_PROMPTS}, max_new=${MAX_NEW} ==="
+echo "=== on-policy mismatch diag: ${LABEL} Qwen3-4B s${SPARSITY_PCT}%, source=${SOURCE}, n_prompts=${N_PROMPTS}, max_new=${MAX_NEW} ==="
+echo "PRUNED=$PRUNED"
 echo "NODE=$(hostname)  JOB=$SLURM_JOB_ID"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 
@@ -89,11 +99,11 @@ cd /home1/doyoonkim/projects/elsa
 $PYTHON scripts/onpolicy_mismatch_diag.py \
     --dense_model "$DENSE" \
     --pruned_model "$PRUNED" \
-    --label "alps_s${SPARSITY_PCT}_${SOURCE}" \
+    --label "${LABEL}_s${SPARSITY_PCT}_${SOURCE}" \
     --n_prompts ${N_PROMPTS} \
     --prompt_source ${SOURCE} \
     --max_new_tokens ${MAX_NEW} \
-    --out "$OUTDIR/alps_s${SPARSITY_PCT}_${SOURCE}_n${N_PROMPTS}_${SLURM_JOB_ID}.json"
+    --out "$OUTDIR/${LABEL}_s${SPARSITY_PCT}_${SOURCE}_n${N_PROMPTS}_${SLURM_JOB_ID}.json"
 
 EXIT_CODE=$?
 echo "=== EXIT: $EXIT_CODE ==="
