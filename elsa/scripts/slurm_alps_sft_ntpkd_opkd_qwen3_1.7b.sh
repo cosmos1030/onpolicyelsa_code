@@ -152,5 +152,13 @@ $PYTHON main.py \
     --wandb_project=${WANDB_PROJECT} \
     --run_name_suffix="alpssft_${SPARSITY_TAG}_lr${LR}${TAG_SUFFIX}_$([ "${NTP_LAMBDA}" = "0" ] && echo kdopdonly_)$(basename "$DATA_PATH" .jsonl)" \
     --seed=42
+EXIT_CODE=$?
 
+# Propagate main.py's exit code. Without this the script always ended 0
+# and sacct reported COMPLETED even when main.py had core-dumped: job
+# 924437 died of the known _kl_loss SIGSEGV at step 1237/2048, wrote no
+# final checkpoint, and still showed COMPLETED -- the only way to notice
+# was to read the log and compare the last "Step N/2048" against 2048.
+echo "=== main.py EXIT: $EXIT_CODE ==="
 echo "##### END #####"
+exit $EXIT_CODE
