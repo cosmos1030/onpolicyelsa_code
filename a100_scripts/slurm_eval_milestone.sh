@@ -20,7 +20,12 @@ exec 2>&1
 # written for a bare-bash machine with manual CUDA_VISIBLE_DEVICES; here each
 # checkpoint gets its own job and SLURM hands it a GPU.
 #
-# Usage: sbatch --job-name=<short> slurm_eval_milestone.sh <HF_REPO>
+# Usage: sbatch --job-name=<short> slurm_eval_milestone.sh <HF_REPO|LOCAL_DIR>
+#
+# A LOCAL_DIR is scored in place. The 4B milestones came off the Hub because
+# they were trained on the NHN box; milestones trained here are already on
+# this filesystem, and copying 3.4GB into $WORK just to read it back is pure
+# waste -- and worse, it would be a second copy to keep in sync.
 #
 # tp=1: Qwen3-4B in bf16 plus the 8192-token KV budget fits one 80GB card with
 # room to spare, and tp=1 has no cross-GPU collective -- six single-GPU jobs
@@ -35,7 +40,7 @@ exec 2>&1
 # scored on B200 tp=4. Different hardware and TP path for three of four points
 # in each trajectory.
 
-REPO=${1:?"Usage: sbatch slurm_eval_milestone.sh <HF_REPO>"}
+REPO=${1:?"Usage: sbatch slurm_eval_milestone.sh <HF_REPO|LOCAL_DIR>"}
 TP=${2:-1}
 GPU_UTIL=${3:-0.90}
 NAME=$(basename "$REPO")
@@ -43,7 +48,11 @@ NAME=$(basename "$REPO")
 PYTHON=/home1/doyoonkim/miniconda3/envs/rac/bin/python
 ROOT=/home1/doyoonkim/projects
 WORK=${WORK:-$ROOT/elsa/logs/milestone_eval}
-MODEL_DIR="$WORK/$NAME"
+if [ -f "$REPO/config.json" ]; then
+    MODEL_DIR="$REPO"
+else
+    MODEL_DIR="$WORK/$NAME"
+fi
 mkdir -p "$WORK"
 
 export TMPDIR=/tmp

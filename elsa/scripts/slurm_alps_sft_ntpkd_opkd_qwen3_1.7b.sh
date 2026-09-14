@@ -1,15 +1,15 @@
 #!/bin/bash
-#SBATCH --job-name=alps_sft_ntpkd_opkd_1.7b
+#SBATCH --job-name=alps_sft_1.7b
 #SBATCH --partition=A100-80GB
 #SBATCH --qos=hpgpu
 #SBATCH --gres=gpu:1
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=16
+#SBATCH --cpus-per-task=8
 #SBATCH --mem=80G
-#SBATCH --time=3-00:00:00
+#SBATCH --time=1-00:00:00
 #SBATCH --exclude=n3,n42,n46,n51,n54,n60,n77,n80,n87,n91,n61,n64,n31,n19
-#SBATCH --output=/home1/doyoonkim/projects/elsa/logs/alps_sft_ntpkd_opkd_1.7b_%j.out
+#SBATCH --output=/local-data/user-data/%u/job_%j/slurm/%x_%j.out
 exec 2>&1
 
 # ALPS (one-shot pruned) -> fixed-mask NTP+KD+OPD recovery training, Qwen3-1.7B,
@@ -37,6 +37,17 @@ SPARSITY_TYPE=${3:-unstructured}
 OPD_GEN_LEN=${4:-512}
 LR_SCHEDULER=${5:-cosine}
 WANDB_PROJECT=${8:-reasoning_qwen3_1.7b_nostrip8192}
+LOSS_WEIGHTS=${9:-0.33,0.33,0.33}  # NTP,KD,OPKD -- e.g. 0,0.5,0.5 to drop NTP and split KD/OPKD evenly
+# Optimizer steps at which to drop an extra HF directory, e.g. "512,1024,1536".
+# Empty (default) = endpoint only, i.e. the pre-existing behaviour.
+MILESTONE_STEPS=${MILESTONE_STEPS:-}
+# _run_tag carries only sparsity, lr and the OPKD lambda, so two arms that
+# differ only in the NTP/KD split or in milestones collide in wandb. Set this.
+TAG_SUFFIX=${TAG_SUFFIX:-}
+NTP_LAMBDA=$(echo "$LOSS_WEIGHTS" | cut -d, -f1)
+KD_LAMBDA=$(echo "$LOSS_WEIGHTS" | cut -d, -f2)
+OPKD_LAMBDA=$(echo "$LOSS_WEIGHTS" | cut -d, -f3)
+KD_ONLY=$(python3 -c "print('true' if float('${NTP_LAMBDA}')==0.0 else 'false')")
 
 if [ "$SPARSITY_TYPE" = "2:4" ]; then
     ALPS_MODEL="/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_alps_s24"
@@ -58,9 +69,15 @@ DATA_PATH="${6:-/home1/doyoonkim/projects/elsa/data/ot3_fineweb_40k_qwen3_nostri
 SEQLEN="${7:-8192}"
 OPD_PROMPT_PATH="/home1/doyoonkim/projects/elsa/data/ot3_fineweb_200k_qwen3_opdprompts.jsonl"
 
-LOCAL_JOB_BASE="/local-data/user-data/${USER}/job_${SLURM_JOB_ID}"
-mkdir -p "$LOCAL_JOB_BASE/wandb"
+ENV_FILE="/run/slurm/job_env_${SLURM_JOB_ID}"
+[ -f "$ENV_FILE" ] && source "$ENV_FILE"
+if [ -z "${LOCAL_JOB_BASE:-}" ]; then
+    LOCAL_JOB_BASE="/local-data/user-data/${USER}/job_${SLURM_JOB_ID}"
+fi
+mkdir -p "$LOCAL_JOB_BASE/wandb" "$LOCAL_JOB_BASE/slurm"
 mkdir -p /home1/doyoonkim/projects/elsa/logs
+NFS_LOG="/home1/doyoonkim/projects/elsa/logs/${SLURM_JOB_NAME}_${SLURM_JOB_ID}.out"
+trap 'cp "$LOCAL_JOB_BASE/slurm/${SLURM_JOB_NAME}_${SLURM_JOB_ID}.out" "$NFS_LOG" 2>/dev/null || true' EXIT
 
 export WANDB_DIR="$LOCAL_JOB_BASE/wandb"
 export WANDB_RUN_ID_OUTPUT="$LOCAL_JOB_BASE/wandb_run_id"
@@ -69,7 +86,7 @@ export WANDB_INIT_TIMEOUT=120
 export TMPDIR=/tmp
 export HF_TOKEN=$(cat ~/.hf_token 2>/dev/null || echo "")
 export WANDB_API_KEY=$(grep WANDB_API_KEY ~/.bashrc | cut -d'=' -f2 | tail -1)
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:256
 export TOKENIZERS_PARALLELISM=false
 export VLLM_USE_V1=0
 export VLLM_HOST_IP=127.0.0.1
@@ -77,7 +94,7 @@ export TRITON_CACHE_DIR=/tmp/triton_cache_${USER}
 export HF_DATASETS_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 
-echo "=== ALPS -> Sparse SFT NTP+KD+OPKD(0.33/0.33/0.33) Qwen3-1.7B ${SPARSITY_TAG} (${SPARSITY_TYPE}) lr=${LR} opd_gen_len=${OPD_GEN_LEN} lr_scheduler=${LR_SCHEDULER} seqlen=${SEQLEN} (OT80/FW20 nostrip8192) ==="
+echo "=== ALPS -> Sparse SFT NTP+KD+OPKD(${NTP_LAMBDA}/${KD_LAMBDA}/${OPKD_LAMBDA}) milestones=[${MILESTONE_STEPS:-none}] Qwen3-1.7B ${SPARSITY_TAG} (${SPARSITY_TYPE}) lr=${LR} opd_gen_len=${OPD_GEN_LEN} lr_scheduler=${LR_SCHEDULER} seqlen=${SEQLEN} (OT80/FW20 nostrip8192) ==="
 echo "NODE=$(hostname)  JOB=$SLURM_JOB_ID  MODEL=$ALPS_MODEL"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 
@@ -107,10 +124,12 @@ $PYTHON main.py \
     --seqlen=${SEQLEN} \
     --gmp_gradient_checkpointing=true \
     --gmp_max_prompt_len=512 \
-    --gmp_kd_only=false \
-    --gmp_ntp_lambda=0.33 \
-    --gmp_kd_lambda=0.33 \
-    --gmp_onpolicy_kd_lambda=0.33 \
+    --gmp_kd_only=${KD_ONLY} \
+    --gmp_ntp_lambda=${NTP_LAMBDA} \
+    --gmp_kd_lambda=${KD_LAMBDA} \
+    --gmp_onpolicy_kd_lambda=${OPKD_LAMBDA} \
+    --gmp_onpolicy_kd_interval=${ROLLOUT_INTERVAL:-32} \
+    --gmp_milestone_steps="${MILESTONE_STEPS}" \
     --gmp_onpolicy_max_new_tokens=${OPD_GEN_LEN} \
     --gmp_opkd_prev_mask_teacher=false \
     --gmp_opkd_vllm_gpu_mem=0.15 \
@@ -123,7 +142,7 @@ $PYTHON main.py \
     --eval_zero_shot=true \
     --wandb=true \
     --wandb_project=${WANDB_PROJECT} \
-    --run_name_suffix="alpssft_${SPARSITY_TAG}_lr${LR}_$(basename "$DATA_PATH" .jsonl)" \
+    --run_name_suffix="alpssft_${SPARSITY_TAG}_lr${LR}${TAG_SUFFIX}_$([ "${NTP_LAMBDA}" = "0" ] && echo kdopdonly_)$(basename "$DATA_PATH" .jsonl)" \
     --seed=42
 
 echo "##### END #####"
