@@ -44,6 +44,16 @@ MILESTONE_STEPS=${MILESTONE_STEPS:-}
 # _run_tag carries only sparsity, lr and the OPKD lambda, so two arms that
 # differ only in the NTP/KD split or in milestones collide in wandb. Set this.
 TAG_SUFFIX=${TAG_SUFFIX:-}
+# _kl_loss allocates a contiguous (1, chunk, vocab) fp32 block per chunk:
+# 2048 x 151936 x 4B = 1.24GB, which PYTORCH_CUDA_ALLOC_CONF's
+# max_split_size_mb:256 forbids splitting a segment to satisfy. That is the
+# documented cause of the random SIGSEGV in kl_div that killed 924437
+# (step 1237), 926634 (629) and 927230 (317). 256 puts the block at 156MB,
+# under the limit. Chunking cuts the SEQUENCE axis while log_softmax runs
+# over vocab (dim=-1), so this changes peak memory only -- the loss is the
+# same number. The allocator itself is left alone because the OPD arms run
+# vLLM in-process and its CuMemAllocator hard-asserts on expandable_segments.
+KL_CHUNK_SIZE=${KL_CHUNK_SIZE:-256}
 NTP_LAMBDA=$(echo "$LOSS_WEIGHTS" | cut -d, -f1)
 KD_LAMBDA=$(echo "$LOSS_WEIGHTS" | cut -d, -f2)
 OPKD_LAMBDA=$(echo "$LOSS_WEIGHTS" | cut -d, -f3)
@@ -123,6 +133,7 @@ $PYTHON main.py \
     --gmp_warmup_ratio=0.05 \
     --seqlen=${SEQLEN} \
     --gmp_gradient_checkpointing=true \
+    --gmp_kl_chunk_size=${KL_CHUNK_SIZE} \
     --gmp_max_prompt_len=512 \
     --gmp_kd_only=${KD_ONLY} \
     --gmp_ntp_lambda=${NTP_LAMBDA} \
