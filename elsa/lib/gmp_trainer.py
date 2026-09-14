@@ -4706,6 +4706,12 @@ def globalprune_gmp(
     if _ms_str:
         _milestone_sparsities = sorted([float(x) for x in str(_ms_str).split(',') if x.strip()])
         logging.info(f"  Milestone sparsities: {_milestone_sparsities}")
+    _milestone_steps = []
+    _ms_steps_str = getattr(FLAGS, 'gmp_milestone_steps', '')
+    if _ms_steps_str:
+        _milestone_steps = sorted({int(x) for x in str(_ms_steps_str).split(',') if x.strip()})
+        logging.info(f"  Milestone steps: {_milestone_steps} (extra HF saves for trajectory eval)")
+    _saved_milestone_steps: set = set()
     _passed_milestones: dict = {}   # sp -> saved_path
     _milestone_reached_at: dict = {}  # sp -> step when first crossed
     accum_loss      = 0.0
@@ -7693,6 +7699,25 @@ def globalprune_gmp(
                          + (f" | dpo_loss={accum_dpo_loss:.4f} acc={accum_dpo_acc:.3f} "
                             f"margin={accum_dpo_margin:.4f}" if use_dpo else "")
                          + (f" | offline_ipo={accum_offline_ipo:.4f}" if use_offline_ipo else ""))
+        # Step-keyed milestone save. Deliberately at loop-body level: the
+        # sparsity-keyed milestone block lives inside `if step % mask_interval == 0`,
+        # and putting this there too made it silently depend on every requested
+        # step being a multiple of mask_interval (caught by a 24-step smoke with
+        # mask_interval=32, which saved nothing at all). A fixed-mask run never
+        # crosses a sparsity milestone, so this is the only way to evaluate such a
+        # run as a trajectory rather than at its endpoint. The output is a normal
+        # save_pretrained directory, scored by the same lighteval path as any
+        # final model (b200_scripts/resume_eval_lighteval.sh).
+        if _milestone_steps and is_main_process and do_save:
+            for _mstep in _milestone_steps:
+                if step >= _mstep and _mstep not in _saved_milestone_steps:
+                    _saved_milestone_steps.add(_mstep)
+                    _msp = f"{FLAGS.gmp_save_path}/{_run_tag(FLAGS)}_step{_mstep:06d}_{_save_stamp()}"
+                    model.save_pretrained(_msp)
+                    tokenizer.save_pretrained(_msp)
+                    logging.info(f"[MilestoneStep] step={step}: saved {_msp} "
+                                 f"(sparsity={maskmgr.current_sparsity():.4f})")
+
             if use_wandb and wandb.run is not None and is_main_process:
                 wandb.log(log_dict, step=step)
             accum_loss           = 0.0
