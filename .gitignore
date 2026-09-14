@@ -81,6 +81,7 @@ OPD/
 LMOps/
 # external baseline codebases (own git repos, not part of this project)
 macko_spmv/
+Adaptive-Sparse-Trainer/
 ALPS/.git.bak/
 ALPS/__pycache__/
 ALPS/logs/
@@ -89,3 +90,8 @@ SparseLLM/.git.bak/
 SparseLLM/__pycache__/
 SparseLLM/logs/
 SparseLLM/wandb/
+
+# ── Paper artifacts / result exports (regenerated; the tracked PDFs under
+#    related_papers/ and RAC/ are sources, hence the leading-slash anchors) ──
+/iclr2027_conference.pdf
+/scout_ablation_iclr2027.zip
