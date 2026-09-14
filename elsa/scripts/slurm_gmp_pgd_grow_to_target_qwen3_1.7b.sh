@@ -188,7 +188,14 @@ $PYTHON main.py \
     --push_to_hub=true \
     --eval_math500=false \
     --eval_full_bench=true \
-    --eval_zero_shot=true \
+    # false: eval_zero_shot runs BEFORE eval_full_bench in main.py (770 vs 863)
+    # and needs EleutherAI/race. The dataset IS cached locally, but `datasets`
+    # stopped falling back to a cached copy under HF_DATASETS_OFFLINE=1 between
+    # 2026-09-13 (job 916814: "using the latest cached version", passed) and
+    # 2026-09-14 (job 922811: ConnectionError, killed the process before
+    # lighteval ever ran and lost a 7-hour run's endpoint avg5). Zero-shot is
+    # not one of the five tasks avg5 averages.
+    --eval_zero_shot=false \
     --wandb=true \
     --wandb_project=${WANDB_PROJECT} \
     --run_name_suffix="${RUN_TAG:+${RUN_TAG}_}pgd_grow2target_klbudget${KL_BUDGET}_lr${LR}_pgdi${PGD_INTERVAL}_ri${ROLLOUT_INTERVAL}$([ "$JUMP_TO_TARGET" = "true" ] && echo "_jump")$([ "$SIDECAR" = "true" ] && echo "_sidecar")_${PRUNING_SCOPE}scope_$(basename "$DATA_PATH" .jsonl)" \
