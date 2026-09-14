@@ -7699,24 +7699,6 @@ def globalprune_gmp(
                          + (f" | dpo_loss={accum_dpo_loss:.4f} acc={accum_dpo_acc:.3f} "
                             f"margin={accum_dpo_margin:.4f}" if use_dpo else "")
                          + (f" | offline_ipo={accum_offline_ipo:.4f}" if use_offline_ipo else ""))
-        # Step-keyed milestone save. Deliberately at loop-body level: the
-        # sparsity-keyed milestone block lives inside `if step % mask_interval == 0`,
-        # and putting this there too made it silently depend on every requested
-        # step being a multiple of mask_interval (caught by a 24-step smoke with
-        # mask_interval=32, which saved nothing at all). A fixed-mask run never
-        # crosses a sparsity milestone, so this is the only way to evaluate such a
-        # run as a trajectory rather than at its endpoint. The output is a normal
-        # save_pretrained directory, scored by the same lighteval path as any
-        # final model (b200_scripts/resume_eval_lighteval.sh).
-        if _milestone_steps and is_main_process and do_save:
-            for _mstep in _milestone_steps:
-                if step >= _mstep and _mstep not in _saved_milestone_steps:
-                    _saved_milestone_steps.add(_mstep)
-                    _msp = f"{FLAGS.gmp_save_path}/{_run_tag(FLAGS)}_step{_mstep:06d}_{_save_stamp()}"
-                    model.save_pretrained(_msp)
-                    tokenizer.save_pretrained(_msp)
-                    logging.info(f"[MilestoneStep] step={step}: saved {_msp} "
-                                 f"(sparsity={maskmgr.current_sparsity():.4f})")
 
             if use_wandb and wandb.run is not None and is_main_process:
                 wandb.log(log_dict, step=step)
@@ -7738,6 +7720,25 @@ def globalprune_gmp(
             accum_diag_n         = 0
             accum_onpolicy_diag  = {}
             accum_ca_ipo_diag    = {}
+
+        # Step-keyed milestone save. Deliberately at loop-body level: the
+        # sparsity-keyed milestone block lives inside `if step % mask_interval == 0`,
+        # and putting this there too made it silently depend on every requested
+        # step being a multiple of mask_interval (caught by a 24-step smoke with
+        # mask_interval=32, which saved nothing at all). A fixed-mask run never
+        # crosses a sparsity milestone, so this is the only way to evaluate such a
+        # run as a trajectory rather than at its endpoint. The output is a normal
+        # save_pretrained directory, scored by the same lighteval path as any
+        # final model (b200_scripts/resume_eval_lighteval.sh).
+        if _milestone_steps and is_main_process and do_save:
+            for _mstep in _milestone_steps:
+                if step >= _mstep and _mstep not in _saved_milestone_steps:
+                    _saved_milestone_steps.add(_mstep)
+                    _msp = f"{FLAGS.gmp_save_path}/{_run_tag(FLAGS)}_step{_mstep:06d}_{_save_stamp()}"
+                    model.save_pretrained(_msp)
+                    tokenizer.save_pretrained(_msp)
+                    logging.info(f"[MilestoneStep] step={step}: saved {_msp} "
+                                 f"(sparsity={maskmgr.current_sparsity():.4f})")
 
     # final mask at full sparsity
     maskmgr.update(fisher, final_sparsity, fsdp_model,
