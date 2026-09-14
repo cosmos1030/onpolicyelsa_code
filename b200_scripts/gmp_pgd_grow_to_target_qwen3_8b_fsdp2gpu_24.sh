@@ -177,6 +177,7 @@ $TORCHRUN --nproc_per_node=2 --master_port=${MASTER_PORT} main.py \
     --gmp_pgd=true \
     --gmp_pgd_grow_to_target=true \
     --gmp_pgd_kl_budget=${KL_BUDGET} \
+    --gmp_pgd_jump_to_target=${JUMP:-false} \
     --gmp_pgd_nm_compensate=${NM_COMP:-false} \
     --gmp_pgd_nm_comp_ridge=${NM_COMP_RIDGE:-1e-6} \
     --gmp_pgd_kl_calib_size=${CALIB_SIZE} \

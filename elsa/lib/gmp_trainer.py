@@ -1205,6 +1205,136 @@ def _apply_mask(param, mask, ste=False):
         param.data.mul_(mask)
 
 
+def _save_stamp():
+    """Unique suffix for a run's save directory.
+
+    `{_run_tag(FLAGS)}_{ts}` is NOT unique: _run_tag carries only sparsity, lr
+    and the OPKD lambda, so every arm of a sweep that varies anything else
+    (--gmp_ste, --gmp_ste_decay, --gmp_ste_shrink, saliency, ...) produces the
+    SAME tag, and ts has one-second resolution. Arms launched 20s apart run in
+    lockstep on identical data, so they reach the save within the same second
+    and write to the same directory.
+
+    That is not a naming annoyance, it silently destroys results: on
+    2026-09-11 ast24_shrink1e-4 and ast24_shrink5e-4 both saved to
+    .../gmp_s50pct_lr0.0001_onpol_lmda0.33_20260911_192839, one overwrote the
+    other's weights, and BOTH then evaluated the survivor -- reporting
+    byte-identical scores on all five benchmarks (63.40/25.76/36.60/9.33/75.59)
+    despite different training losses. One arm's 8 GPU-hours produced nothing.
+
+    The pid makes it unique among concurrent runs on this host.
+    """
+    import os as _os
+    return f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_p{_os.getpid()}"
+
+
+def _ste_shrink_step(maskmgr, step: int, total_steps: int, ste_enabled: bool,
+                     rho_max: float, warmup: int):
+    """Fisher-clean shrink of dead weights:  w <- w * (1 - rho_t * (1 - mask)).
+
+    The Fisher-compatible alternative to _srste_decay_step. AST puts its decay
+    on the GRADIENT (adamw.py: grad.add(p.data*(1-mask), alpha=decay)), which is
+    coherent for AST because AST ranks by |w| / wanda. It is NOT coherent here:
+    our saliency is F*w^2 with F = Adam's exp_avg_sq (see FisherAccumulator), so
+    a decay routed through the gradient is itself accumulated into exp_avg_sq
+    and PUSHES UP the Fisher of the very coordinates it is trying to suppress.
+    Measured over the first 320 steps at d=0.01, coordinates re-decided per PGD
+    event went 2.32M (no decay) -> 2.93M at decay=1e-3 -> 4.30M at 3e-3: the
+    gradient-side decay made the churn worse, monotonically in its own strength.
+
+    Applying the shrink to the weight AFTER optimizer.step() instead:
+      * leaves the straight-through gradient untouched, so STE still trains;
+      * never enters exp_avg_sq, so F is uncontaminated;
+      * lowers w^2 for dead coordinates only, which moves saliency F*w^2 in the
+        intended direction directly;
+      * changes nothing about the Fisher ranking itself.
+
+    rho is a DIRECT per-step shrink rate and is deliberately NOT multiplied by
+    the learning rate -- at lr ~1e-4 an lr-scaled rho would shrink nothing at
+    all over 2048 steps. Annealed like AST's Eq. 2:
+    rho_t = rho_max * min(1, t / T_warm), default T_warm = 25% of training.
+    """
+    if not ste_enabled:
+        return
+    rho_max = float(rho_max or 0.0)
+    if rho_max <= 0.0:
+        return
+    warm = int(warmup) if warmup is not None else -1
+    if warm < 0:
+        warm = max(1, int(0.25 * max(1, total_steps)))
+    rho = rho_max * min(1.0, step / float(max(1, warm)))
+    if rho <= 0.0:
+        return
+    with torch.no_grad():
+        for name, param in maskmgr.named_params.items():
+            m = maskmgr.masks.get(name)
+            if m is None or m.shape != param.data.shape:
+                continue
+            dead = (~m.bool()).to(param.data.dtype)
+            param.data.add_(param.data * dead, alpha=-rho)
+
+
+def _srste_decay_step(maskmgr, step: int, total_steps: int, ste_enabled: bool,
+                      decay: float, warmup: int):
+    """SR-STE: pull the PRUNED weights toward zero, with an annealed strength.
+
+    This is the half of AST (thu-ml/Adaptive-Sparse-Trainer, AAAI 2025) that
+    --gmp_ste alone does not implement, and without it STE loses at 2:4.
+
+    AST applies it inside its own AdamW (Adaptive-Sparse-Trainer/adamw.py):
+
+        if getattr(p, 'mask', None) is not None:
+            grad = grad.add(p.data * (1 - p.mask), alpha=decay)
+
+    with `mask == 1` meaning KEEP (their calculate_mask() selects the M-N
+    smallest and inverts), i.e. the decay lands only on dead coordinates. Our
+    maskmgr.masks uses the same convention (_apply_mask multiplies by it), so
+    the complement is simply ~mask.
+
+    Why it is needed, measured on our own 4B 2:4 STE run at step 1792: a masked
+    weight's straight-through gradient is the gradient it WOULD have if it were
+    active, evaluated in a network where it contributes nothing to the forward.
+    Nothing ever validates that update, so it never self-corrects -- dead
+    coordinates drifted 2-3x FURTHER from init than live ones (0.068-0.092 vs
+    0.020-0.057 of the layer's mean |w|). Their saliency F*w^2 therefore keeps
+    climbing until it overtakes a survivor, and since the 2:4 group's 3rd/2nd
+    saliency margin is tight (median 0.41, 7.5% of groups above 0.9) the
+    projection flips them: ~1.9M coordinates re-decided per PGD event versus
+    ~45K for the no-STE control, and the mask never converges (last event still
+    flipped 1.38M, while the control's last event flipped 0).
+
+    The annealing schedule is AST's Eq. 2 / main.py get_decay():
+
+        lambda(t) = alpha * t / T0   for t < T0,   alpha thereafter
+
+    weak early so connectivity can still be explored, strong later so the mask
+    freezes before the weights are exported. AST ramps over the first 25% of
+    training (increase_step=10000 of max_iters=40000).
+
+    No-op unless --gmp_ste is on: without STE the dead weights are hard-zeroed
+    every step, so there is nothing to decay.
+    """
+    if not ste_enabled:
+        return
+    decay = float(decay or 0.0)
+    if decay <= 0.0:
+        return
+    warm = int(warmup) if warmup is not None else -1
+    if warm < 0:                       # default: AST's 25%-of-training ramp
+        warm = max(1, int(0.25 * max(1, total_steps)))
+    lam = decay * min(1.0, step / float(max(1, warm)))
+    if lam <= 0.0:
+        return
+    with torch.no_grad():
+        for name, param in maskmgr.named_params.items():
+            if param.grad is None:
+                continue
+            m = maskmgr.masks.get(name)
+            if m is None or m.shape != param.data.shape:
+                continue
+            param.grad.add_((~m.bool()).to(param.grad.dtype) * param.data, alpha=lam)
+
+
 class _STEMaskFn(torch.autograd.Function):
     """Straight-through estimator for masked weights: forward computes
     weight*mask (so sparsity is respected in the actual computation), but
@@ -3955,10 +4085,11 @@ def globalprune_gmp(
                              "at all.")
         # sparsity_type is parsed into prune_n/prune_m further down (after this
         # block), so check the flag string directly rather than those names.
-        if getattr(FLAGS, 'sparsity_type', 'unstructured') != 'unstructured':
-            raise ValueError("--gmp_pgd_jump_to_target=true is unstructured-only for now -- the N:M "
-                             "grow_to_target path needs the one-shot target to respect per-group "
-                             "structural caps, which is not implemented.")
+        # N:M: the one-shot jump is exactly the post-target projection
+        # (_pgd_nm_post_target keeps the top-prune_n of every group from
+        # scratch), run on the FIRST projection and applied ungated, so every
+        # group lands on its structural cap in a single step instead of
+        # creeping there under the KL budget. See the _pgd_is_nm branch below.
         logging.info("  PGD one-shot jump ENABLED (--gmp_pgd_jump_to_target): the FIRST PGD projection "
                      f"will accept every prune candidate, snapping sparsity to {final_sparsity} in one "
                      "step; the self-KL bisection resumes as pure maintenance from the next PGD step on.")
@@ -4575,6 +4706,12 @@ def globalprune_gmp(
     if _ms_str:
         _milestone_sparsities = sorted([float(x) for x in str(_ms_str).split(',') if x.strip()])
         logging.info(f"  Milestone sparsities: {_milestone_sparsities}")
+    _milestone_steps = []
+    _ms_steps_str = getattr(FLAGS, 'gmp_milestone_steps', '')
+    if _ms_steps_str:
+        _milestone_steps = sorted({int(x) for x in str(_ms_steps_str).split(',') if x.strip()})
+        logging.info(f"  Milestone steps: {_milestone_steps} (extra HF saves for trajectory eval)")
+    _saved_milestone_steps: set = set()
     _passed_milestones: dict = {}   # sp -> saved_path
     _milestone_reached_at: dict = {}  # sp -> step when first crossed
     accum_loss      = 0.0
@@ -6037,7 +6174,14 @@ def globalprune_gmp(
         else:
             fisher.update()
             accum_grad_norm += grad_norm
+            _srste_decay_step(maskmgr, step, total_steps, ste_enabled,
+                              getattr(FLAGS, 'gmp_ste_decay', 0.0),
+                              getattr(FLAGS, 'gmp_ste_decay_warmup', -1))
             optimizer.step()
+            # after the Adam update, so the shrink never reaches exp_avg_sq
+            _ste_shrink_step(maskmgr, step, total_steps, ste_enabled,
+                             getattr(FLAGS, 'gmp_ste_shrink', 0.0),
+                             getattr(FLAGS, 'gmp_ste_shrink_warmup', -1))
             scheduler.step()
         optimizer.zero_grad()
 
@@ -6524,7 +6668,23 @@ def globalprune_gmp(
                         _alpha_lo, _alpha_hi = 0.0, 1.0
                         _kl_at_lo = 0.0
                         _cand_final = None
-                        for _ in range(pgd_kl_bisect_iters):
+                        # ONE-SHOT ABLATION ARM (--gmp_pgd_jump_to_target) for N:M.
+                        # alpha=1.0 takes EVERY overshoot prune, EVERY undershoot
+                        # revive and EVERY finished-group swap, which lands every
+                        # group on exactly prune_n:prune_m in this single step --
+                        # the N:M equivalent of the unstructured arm accepting all
+                        # prune candidates. The bisection is skipped entirely (that
+                        # is the point: no trust region), and KL is measured once
+                        # afterwards purely to log what the transition cost.
+                        _pgd_nm_jump_now = pgd_jump_to_target and not _pgd_jump_done
+                        if _pgd_nm_jump_now:
+                            _cand_final, _k_a_final, _k_b_final, _k_c_final = _nm_combined_candidate(1.0)
+                            _alpha_lo = 1.0
+                            _pgd_jump_done = True
+                            logging.info(f"  [pgd_jump_to_target][nm] ONE-SHOT: alpha=1.0, taking all "
+                                         f"{_n_a} overshoot prunes / {_n_b} undershoot revives / {_n_c} "
+                                         f"finished swaps -- bisection skipped (step={step}).")
+                        for _ in range(0 if _pgd_nm_jump_now else pgd_kl_bisect_iters):
                             _alpha_mid = (_alpha_lo + _alpha_hi) / 2.0
                             _kl_mid, _ka_mid, _kb_mid, _kc_mid, _cand_mid = _nm_kl_at(_alpha_mid)
                             if _kl_mid <= pgd_kl_budget:
@@ -6561,11 +6721,18 @@ def globalprune_gmp(
                                 _dist.broadcast(_kl_t, src=0)
                                 _kl_final = _kl_t.item()
                             torch.cuda.empty_cache()
-                            if _kl_final > pgd_kl_budget + 1e-6:
+                            if _kl_final > pgd_kl_budget + 1e-6 and not _pgd_nm_jump_now:
+                                # The one-shot jump arm is BY CONSTRUCTION outside the
+                                # budget -- that is the ablation. The invariant still
+                                # guards every gated step.
                                 raise RuntimeError(
                                     f"[pgd_nm_invariant] step={step}: whole-step self-KL check failed at apply time -- "
                                     f"D_KL(before||after)={_kl_final:.6f} > budget={pgd_kl_budget} "
                                     f"(alpha={_alpha_lo:.4f}, k_a={_k_a_final} k_b={_k_b_final} k_c={_k_c_final}).")
+                            if _pgd_nm_jump_now:
+                                logging.info(f"  [pgd_jump_to_target][nm] one-shot transition cost "
+                                             f"D_KL(before||after)={_kl_final:.6f} vs budget={pgd_kl_budget} "
+                                             f"(unbudgeted by design; gated maintenance resumes next projection).")
                             # Survivor compensation (--gmp_pgd_nm_compensate): before the
                             # accepted transition zeroes each group's two doomed weights, push
                             # their contribution onto the two survivors. The covariance is
@@ -6632,11 +6799,14 @@ def globalprune_gmp(
                     del _fin_scores, _fin_pg, _fin_rg, _fin_meta
                     del _pv_a, _pv_b, _cand_final
                 elif _pgd_is_nm:
-                    _pgd_at_target = maskmgr.current_sparsity() >= final_sparsity
+                    # One-shot ablation arm: force the exact-N:M projection on the
+                    # first event, whatever the current sparsity is.
+                    _pgd_jump_now = pgd_jump_to_target and not _pgd_jump_done
+                    _pgd_at_target = _pgd_jump_now or maskmgr.current_sparsity() >= final_sparsity
                     if _pgd_at_target:
                         _new_masks = _pgd_nm_post_target(_pgd_imps, maskmgr.masks, maskmgr.prune_n, maskmgr.prune_m,
                                                           shapes=(maskmgr.named_shapes if _pgd_use_fsdp else None))
-                        if pgd_kl_budget > 0 and _pgd_kl_cal_batch is not None:
+                        if pgd_kl_budget > 0 and _pgd_kl_cal_batch is not None and not _pgd_jump_now:
                             # Self-KL-gated swap instead of applying _new_masks
                             # unconditionally. _new_masks and maskmgr.masks both
                             # have EXACTLY (prune_m-prune_n) dead per group by
@@ -6748,6 +6918,12 @@ def globalprune_gmp(
                                 _pgd_revivals += int((_new & ~_old).sum().item())
                                 _pgd_prunings += int((~_new & _old).sum().item())
                                 maskmgr.masks[_n] = _new
+                        if _pgd_jump_now:
+                            _pgd_jump_done = True
+                            logging.info(f"  [pgd_jump_to_target][nm] ONE-SHOT: snapped every group to "
+                                         f"{maskmgr.prune_n}:{maskmgr.prune_m} ungated "
+                                         f"(sparsity={maskmgr.current_sparsity():.4f}, step={step}) -- "
+                                         f"KL-gated maintenance resumes next projection.")
                     else:
                         _revive_cand = {_n: _pgd_desired[_n] & ~maskmgr.masks[_n] for _n in maskmgr.named_params}
                         _eligible_prune = _pgd_nm_pre_target(_pgd_imps, maskmgr.masks, _pgd_desired, maskmgr.prune_n,
@@ -7523,6 +7699,7 @@ def globalprune_gmp(
                          + (f" | dpo_loss={accum_dpo_loss:.4f} acc={accum_dpo_acc:.3f} "
                             f"margin={accum_dpo_margin:.4f}" if use_dpo else "")
                          + (f" | offline_ipo={accum_offline_ipo:.4f}" if use_offline_ipo else ""))
+
             if use_wandb and wandb.run is not None and is_main_process:
                 wandb.log(log_dict, step=step)
             accum_loss           = 0.0
@@ -7543,6 +7720,25 @@ def globalprune_gmp(
             accum_diag_n         = 0
             accum_onpolicy_diag  = {}
             accum_ca_ipo_diag    = {}
+
+        # Step-keyed milestone save. Deliberately at loop-body level: the
+        # sparsity-keyed milestone block lives inside `if step % mask_interval == 0`,
+        # and putting this there too made it silently depend on every requested
+        # step being a multiple of mask_interval (caught by a 24-step smoke with
+        # mask_interval=32, which saved nothing at all). A fixed-mask run never
+        # crosses a sparsity milestone, so this is the only way to evaluate such a
+        # run as a trajectory rather than at its endpoint. The output is a normal
+        # save_pretrained directory, scored by the same lighteval path as any
+        # final model (b200_scripts/resume_eval_lighteval.sh).
+        if _milestone_steps and is_main_process and do_save:
+            for _mstep in _milestone_steps:
+                if step >= _mstep and _mstep not in _saved_milestone_steps:
+                    _saved_milestone_steps.add(_mstep)
+                    _msp = f"{FLAGS.gmp_save_path}/{_run_tag(FLAGS)}_step{_mstep:06d}_{_save_stamp()}"
+                    model.save_pretrained(_msp)
+                    tokenizer.save_pretrained(_msp)
+                    logging.info(f"[MilestoneStep] step={step}: saved {_msp} "
+                                 f"(sparsity={maskmgr.current_sparsity():.4f})")
 
     # final mask at full sparsity
     maskmgr.update(fisher, final_sparsity, fsdp_model,
@@ -7579,8 +7775,7 @@ def globalprune_gmp(
     saved_path = None
     if is_fsdp and do_save:
         if is_main_process:
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            saved_path = f"{FLAGS.gmp_save_path}/{_run_tag(FLAGS)}_{ts}"
+            saved_path = f"{FLAGS.gmp_save_path}/{_run_tag(FLAGS)}_{_save_stamp()}"
         with FSDP.summon_full_params(fsdp_model, writeback=False, recurse=True):
             if is_main_process:
                 model.save_pretrained(saved_path)
@@ -7588,8 +7783,7 @@ def globalprune_gmp(
             tokenizer.save_pretrained(saved_path)
             logging.info(f"Saved pruned model to {saved_path}")
     elif not is_fsdp and is_main_process and do_save:
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        saved_path = f"{FLAGS.gmp_save_path}/{_run_tag(FLAGS)}_{ts}"
+        saved_path = f"{FLAGS.gmp_save_path}/{_run_tag(FLAGS)}_{_save_stamp()}"
         model.save_pretrained(saved_path)
         tokenizer.save_pretrained(saved_path)
         logging.info(f"Saved pruned model to {saved_path}")
