@@ -57,9 +57,9 @@ $PYTHON scripts/cot_through_models.py \
              ours_s50=cosmos1030/gmp-kd3e-1-s50pct-lr5e-5_20260903_142204 \
              ours_s60=cosmos1030/gmp-kd3e-1-s60pct-lr5e-5_20260903_071754 \
              ours_s70=cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260901_080954 \
-             noopd_s70=/home1/doyoonkim/projects/elsa/models/gmp_s70pct_lr0.0001_20260913_132405 \
-             noopd_s60=/home1/doyoonkim/projects/elsa/models/gmp_s60pct_lr0.0001_20260913_124306 \
-             noopd_s50=/home1/doyoonkim/projects/elsa/models/gmp_s50pct_lr0.0001_20260913_062719 \
+             noopd55_s70=/home1/doyoonkim/projects/elsa/models/gmp_s70pct_lr0.0001_20260915_173630_p908241 \
+             noopd55_s60=/home1/doyoonkim/projects/elsa/models/gmp_s60pct_lr5e-05_20260915_165740_p3530899 \
+             noopd55_s50=/home1/doyoonkim/projects/elsa/models/gmp_s50pct_lr5e-05_20260915_115020_p3476415 \
     --layers 18 36 \
     --seg_len 256 --n_seg 8 \
     --outdir "$OUTDIR"

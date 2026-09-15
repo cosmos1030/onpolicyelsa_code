@@ -22,7 +22,20 @@ import glob
 z = np.load(os.path.join(src, "pooled.npz"))
 # Models added later live in sidecar files (see add_model_to_pooled.py); without
 # these the w/o-OPD ablation silently drops out of the bundle.
-extras = [np.load(f) for f in sorted(glob.glob(os.path.join(src, "pooled_extra_*.npz")))]
+#
+# Not every sidecar belongs in the bundle. `noopd:*` was encoded from the
+# 0.33/0.33/0 w/o-OPD checkpoints, which were superseded: dropping OPD without
+# renormalising also shrinks the total loss to 2/3, so those runs confounded
+# "no OPD" with "lower effective lr". The 0.5/0.5/0 replacements scored ~4
+# points higher at s50 and are labelled `noopd55:*`. Including both would put
+# two different ablations under one name in the figure.
+EXTRA_ALLOW = ("noopd55",)
+_all = sorted(glob.glob(os.path.join(src, "pooled_extra_*.npz")))
+_use = [f for f in _all
+        if any(os.path.basename(f).startswith(f"pooled_extra_{a}") for a in EXTRA_ALLOW)]
+for f in _all:
+    print(("  + " if f in _use else "  - skipped ") + os.path.basename(f))
+extras = [np.load(f) for f in _use]
 def fetch(key):
     if key in z.files:
         return z[key]
