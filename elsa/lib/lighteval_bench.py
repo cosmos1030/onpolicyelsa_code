@@ -189,7 +189,24 @@ _OFFICIAL_BENCHMARKS = [
      ["prompt_level_strict_acc"]),
     ("lcb",     "lighteval|lcb:codegeneration|0", 32768, 32768,
      ["codegen_pass@1:16", "pass@1"]),
-    ("gsm8k",   "lighteval|gsm8k|0",              2048, 4096,
+    # 8192, not 2048. GSM8K was the one task official did not raise, and at
+    # 2048 it is not measuring reasoning: truncation runs 27.2% / 33.3% / 48.5%
+    # on Qwen3-4B at s50/s60/s70 and 99.0% / 99.9% on 1.7B at s70/s80, where the
+    # mean output is 2043-2047 of 2048 -- essentially every generation pinned to
+    # the ceiling. Qwen3 emits a <think> block before answering, so 2048 is not
+    # a budget this model family can finish a chain in (its dense 1.7B averages
+    # 15k-17k tokens on AIME).
+    #
+    # max_model_length 9216, not 8192: the real ceiling is
+    # min(max_new_tokens, max_model_length - len(prompt)), so equal values would
+    # silently shave the prompt off the generation budget the way the other
+    # official tasks do. GSM8K prompts average 66-73 tokens, so 1024 of headroom
+    # keeps the cap at exactly 8192 for every sample.
+    #
+    # This makes official GSM8K NOT comparable with any GSM8K number measured
+    # before (all of them were at 2048). Quick stays at 2048 on purpose, so the
+    # existing sweep stays internally comparable.
+    ("gsm8k",   "lighteval|gsm8k|0",              8192, 9216,
      ["extractive_match", "acc"]),
 ]
 
