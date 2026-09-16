@@ -40,6 +40,7 @@ conda activate rac
 PYTHON=/NHNHOME/log-postech/doyoonkim/miniconda3/envs/rac/bin/python
 
 SPARSITY_PCT=$($PYTHON -c "print(int(${SPARSITY}*100))")
+KD_ONLY=$($PYTHON -c "print('true' if float('${NTP_LAMBDA:-0.33}')==0.0 else 'false')")
 ALPS_MODEL="/NHNHOME/log-postech/doyoonkim/models/qwen3_8b_alps_s${SPARSITY_PCT}pct"
 SPARSITY_TAG="s${SPARSITY_PCT}pct"
 
@@ -56,7 +57,7 @@ fi
 
 OPD_PROMPT_PATH="/NHNHOME/log-postech/doyoonkim/data/ot3_fineweb_200k_qwen3_opdprompts.jsonl"
 
-JOB_TAG="alpssft_8b_b200_${SPARSITY_TAG}_lr${LR}"
+JOB_TAG="alpssft_8b_b200_${SPARSITY_TAG}_lr${LR}${TAG_SUFFIX:-}"
 LOCAL_JOB_BASE="/NHNHOME/log-postech/doyoonkim/logs/${JOB_TAG}"
 mkdir -p "$LOCAL_JOB_BASE/wandb"
 
@@ -81,7 +82,7 @@ export TMPDIR=/tmp
 export VLLM_USE_V1=0
 export VLLM_HOST_IP=127.0.0.1
 
-echo "=== ALPS -> Sparse SFT NTP+KD+OPKD(0.33/0.33/0.33) Qwen3-8B ${SPARSITY_TAG} lr=${LR} opd_gen_len=${OPD_GEN_LEN} seqlen=${SEQLEN} -- 1xB200 single-GPU, vLLM in-process ==="
+echo "=== ALPS -> Sparse SFT NTP+KD+OPKD(${NTP_LAMBDA:-0.33}/${KD_LAMBDA:-0.33}/${OPKD_LAMBDA:-0.33}) Qwen3-8B ${SPARSITY_TAG} lr=${LR} opd_gen_len=${OPD_GEN_LEN} seqlen=${SEQLEN} -- 2xB200 FSDP, vLLM sidecar ==="
 echo "NODE=$(hostname)  MODEL=$ALPS_MODEL"
 nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader
 
@@ -111,26 +112,29 @@ $PYTHON main.py \
     --seqlen=${SEQLEN} \
     --gmp_gradient_checkpointing=true \
     --gmp_max_prompt_len=512 \
-    --gmp_ntp_lambda=0.33 \
-    --gmp_kd_lambda=0.33 \
-    --gmp_onpolicy_kd_lambda=0.33 \
-    --gmp_kd_only=false \
+    --gmp_ntp_lambda=${NTP_LAMBDA:-0.33} \
+    --gmp_kd_lambda=${KD_LAMBDA:-0.33} \
+    --gmp_onpolicy_kd_lambda=${OPKD_LAMBDA:-0.33} \
+    --gmp_onpolicy_kd_interval=${ROLLOUT_INTERVAL:-${MASK_INTERVAL}} \
+    --gmp_milestone_steps="${MILESTONE_STEPS:-}" \
+    --gmp_kd_only=${KD_ONLY} \
     --gmp_onpolicy_max_new_tokens=${OPD_GEN_LEN} \
     --gmp_opkd_prev_mask_teacher=false \
     --gmp_opkd_vllm_gpu_mem=0.15 \
     --gmp_mask_interval=${MASK_INTERVAL} \
     --gmp_prompt_path="$OPD_PROMPT_PATH" \
     --gmp_save_path=/NHNHOME/log-postech/doyoonkim/models \
+    --gmp_ckpt_every_steps=${CKPT_EVERY:-0} --gmp_ckpt_dir="${CKPT_DIR:-}" --gmp_resume_from="${RESUME_FROM:-}" \
     --save_model=true \
     --push_to_hub=true \
     --eval_math500=false \
     --eval_full_bench=true \
     --eval_profile=${EVAL_PROFILE:-long} \
-    --eval_zero_shot=true \
+    --eval_zero_shot=${EVAL_ZERO_SHOT:-false} \
     --wandb=true \
     --wandb_project=${WANDB_PROJECT} \
     --seed=42 \
-    --run_name_suffix="alpssft_${SPARSITY_TAG}_lr${LR}_$(basename "$DATA_PATH" .jsonl)_b200"
+    --run_name_suffix="alpssft8b_${SPARSITY_TAG}_lr${LR}${TAG_SUFFIX:-}_$(basename "$DATA_PATH" .jsonl)_b200"
 
 EXIT_CODE=$?
 echo "=== main.py EXIT: $EXIT_CODE ==="
