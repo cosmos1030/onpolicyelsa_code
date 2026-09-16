@@ -52,9 +52,12 @@ mkdir -p /home1/doyoonkim/projects/elsa/logs
 # sidecar writes its OWN log to $TMPDIR (see vllm_proc.launch_vllm_server);
 # grab it too, since a sidecar-side crash leaves nothing in the trainer log
 # beyond "server process died".
-NFS_LOG="/home1/doyoonkim/projects/elsa/logs/debug_opkd_sidecar_${SLURM_JOB_ID}_last.out"
-trap 'cp "$LOCAL_JOB_BASE/slurm/debug_opkd_sidecar_${SLURM_JOB_ID}.out" "$NFS_LOG" 2>/dev/null || true;
-      for L in /tmp/vllm_server_*.log; do [ -f "$L" ] && cp "$L" "/home1/doyoonkim/projects/elsa/logs/debug_opkd_sidecar_${SLURM_JOB_ID}_$(basename $L)" 2>/dev/null; done; true' EXIT
+NFS_LOG="/home1/doyoonkim/projects/elsa/logs/${SLURM_JOB_NAME}_${SLURM_JOB_ID}_last.out"
+# --output uses %x, so a literal name here breaks whenever the caller
+# passes --job-name. Follow SLURM_JOB_NAME instead (job 939992 lost
+# 3+ hours of log to exactly this).
+trap 'cp "$LOCAL_JOB_BASE/slurm/${SLURM_JOB_NAME}_${SLURM_JOB_ID}.out" "$NFS_LOG" 2>/dev/null || true;
+      for L in /tmp/vllm_server_*.log; do [ -f "$L" ] && cp "$L" "/home1/doyoonkim/projects/elsa/logs/${SLURM_JOB_NAME}_${SLURM_JOB_ID}_$(basename $L)" 2>/dev/null; done; true' EXIT
 
 export WANDB_DIR="$LOCAL_JOB_BASE/wandb"
 export WANDB_SERVICE_WAIT=300

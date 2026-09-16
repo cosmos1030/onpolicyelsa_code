@@ -53,8 +53,11 @@ mkdir -p /home1/doyoonkim/projects/elsa/logs
 
 # Copy the log to NFS once on exit (success or crash) -- /local-data is gone
 # the moment the job ends, taking any crash trace with it.
-NFS_LOG="/home1/doyoonkim/projects/elsa/logs/debug_pgd_jump_${SLURM_JOB_ID}_last.out"
-trap 'cp "$LOCAL_JOB_BASE/slurm/debug_pgd_jump_${SLURM_JOB_ID}.out" "$NFS_LOG" 2>/dev/null || true' EXIT
+NFS_LOG="/home1/doyoonkim/projects/elsa/logs/${SLURM_JOB_NAME}_${SLURM_JOB_ID}_last.out"
+# --output uses %x, so a literal name here breaks whenever the caller
+# passes --job-name. Follow SLURM_JOB_NAME instead (job 939992 lost
+# 3+ hours of log to exactly this).
+trap 'cp "$LOCAL_JOB_BASE/slurm/${SLURM_JOB_NAME}_${SLURM_JOB_ID}.out" "$NFS_LOG" 2>/dev/null || true' EXIT
 
 export WANDB_DIR="$LOCAL_JOB_BASE/wandb"
 export WANDB_SERVICE_WAIT=300

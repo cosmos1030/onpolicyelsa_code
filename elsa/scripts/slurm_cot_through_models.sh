@@ -29,8 +29,11 @@ mkdir -p "$LOCAL_JOB_BASE/slurm"
 
 OUTDIR=/home1/doyoonkim/projects/elsa/logs/policy_divergence/cot_through_models
 mkdir -p "$OUTDIR"
-NFS_LOG="$OUTDIR/cot_models_${SLURM_JOB_ID}.out"
-LOCAL_LOG="$LOCAL_JOB_BASE/slurm/cot_models_${SLURM_JOB_ID}.out"
+# --output uses %x, so a literal name here breaks whenever the caller
+# passes --job-name. Follow SLURM_JOB_NAME instead (job 939992 lost
+# 3+ hours of log to exactly this).
+NFS_LOG="$OUTDIR/${SLURM_JOB_NAME}_${SLURM_JOB_ID}.out"
+LOCAL_LOG="$LOCAL_JOB_BASE/slurm/${SLURM_JOB_NAME}_${SLURM_JOB_ID}.out"
 ( while true; do cp "$LOCAL_LOG" "$NFS_LOG" 2>/dev/null || true; sleep 30; done ) &
 MIRROR=$!
 trap 'kill $MIRROR 2>/dev/null; cp "$LOCAL_LOG" "$NFS_LOG" 2>/dev/null || true' EXIT

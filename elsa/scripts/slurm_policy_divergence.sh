@@ -44,13 +44,29 @@ OUTROOT=/home1/doyoonkim/projects/elsa/logs/policy_divergence
 OUTDIR="$OUTROOT/n${N_PROMPTS}_k${N_SAMPLES}_${TAG}"
 mkdir -p "$OUTDIR"
 
-NFS_LOG="$OUTROOT/pol_diverge_${SLURM_JOB_ID}.out"
-LOCAL_LOG="$LOCAL_JOB_BASE/slurm/pol_diverge_${SLURM_JOB_ID}.out"
+# Follow the job NAME, not the literal "pol_diverge": --output above uses %x,
+# so an `sbatch --job-name=` override writes the real log somewhere this mirror
+# was not looking. Job 939992 ran 3+ hours with NOTHING reaching NFS because it
+# was launched as --job-name=pol_clean_n30 -- the same bug already fixed once in
+# slurm_add_model_to_pooled.sh. Fail loudly instead of silently if it drifts
+# again.
+NFS_LOG="$OUTROOT/${SLURM_JOB_NAME}_${SLURM_JOB_ID}.out"
+LOCAL_LOG="$LOCAL_JOB_BASE/slurm/${SLURM_JOB_NAME}_${SLURM_JOB_ID}.out"
 trap 'cp "$LOCAL_LOG" "$NFS_LOG" 2>/dev/null || true' EXIT
 # Copy on exit is not enough: this job runs for hours and its log lives on
 # node-local storage the login node cannot read, so a run that is merely slow
 # looks identical to one that is stuck. Mirror it every 30s as well.
-( while true; do cp "$LOCAL_LOG" "$NFS_LOG" 2>/dev/null || true; sleep 30; done ) &
+( n=0
+  while true; do
+      if cp "$LOCAL_LOG" "$NFS_LOG" 2>/dev/null; then n=0
+      else
+          n=$((n+1))
+          # Two minutes of failed copies means the path is wrong, not that the
+          # file is late. Say so in the job's own stdout, which IS being written.
+          [ "$n" = 4 ] && echo "WARNING: log mirror cannot read $LOCAL_LOG -- NFS log will stay empty" >&2
+      fi
+      sleep 30
+  done ) &
 LOG_MIRROR_PID=$!
 trap 'kill $LOG_MIRROR_PID 2>/dev/null; cp "$LOCAL_LOG" "$NFS_LOG" 2>/dev/null || true' EXIT
 
