@@ -25,7 +25,11 @@ RE_TRUNC = re.compile(r'\[lighteval_bench\] ([a-z0-9]+)_truncation_rate: ([0-9.]
 RE_COMP  = re.compile(r'\[pgd_nm_compensate\] step=(\d+) adjusted ([\d,]+) survivor '
                       r'weights, max \|delta\|=([0-9.e+-]+)')
 RE_NOOP  = re.compile(r'\[pgd_nm_compensate\] step=\d+ adjusted NOTHING')
-RE_SAVE  = re.compile(r'(gmp_s\d+pct_lr[0-9.e-]+_onpol_lmda[0-9.]+_\d{8}_\d{6})')
+# The size/structure groups are optional: saves made before 2026-09-16 carry
+# neither, saves after carry both (gmp_4b_n24_s50pct_... ). Both must parse or
+# the ckpt column empties out for half the table.
+RE_SAVE  = re.compile(r'(gmp_(?:[0-9.]+b_)?(?:n\d+_)?s\d+pct_lr[0-9.e-]+'
+                      r'_onpol_lmda[0-9.]+_\d{8}_\d{6})')
 
 # Config is NOT read off the command line -- an expanded command line only
 # appears in a log when the process crashed and bash dumped it, so parsing it

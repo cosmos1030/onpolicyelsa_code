@@ -3,7 +3,7 @@
 Avg is the mean of ALL FIVE quick-profile benchmarks (MATH, GPQA, IFEval, LCB, GSM8K). Blank Avg = eval incomplete.
 `+comp*` marks a run launched with compensation that adjusted NOTHING (FSDP flat-shard no-op) -- it is the plain baseline.
 
-## Completed (94)
+## Completed (126)
 
 | Run | Avg | MATH | GPQA | IFEval | LCB | GSM8K | log |
 |---|---|---|---|---|---|---||---|
@@ -45,14 +45,19 @@ Avg is the mean of ALL FIVE quick-profile benchmarks (MATH, GPQA, IFEval, LCB, G
 | 4B S60 rule=schedule | **54.60** | 81.20 | 37.37 | 57.49 | 16.42 | 80.52 | `ablation_A2_schedule_4b/s60_A2sched_matched.log` |
 | 8B S60 d=999 lr=1e-4 | **53.80** | 80.00 | 35.86 | 54.71 | 19.03 | 79.38 | `queue_gmp_pgd_klgate_8b/s60_u_duringgrowth.log` |
 | 4B S60 d=0.02 lr=5e-5 B1frozen(ro=4096) | **53.70** | 79.60 | 36.36 | 56.56 | 15.67 | 80.29 | `ablation_B1_frozen_pool_4b/s60_ro4096.log` |
+| 8B S60 d=0.01 lr=5e-5 jump | **53.30** | 80.00 | 33.33 | 64.14 | 13.43 | 75.59 | `ablation_24/s60_8b_A3jump_d0.01_r1.log` |
+| 8B S60 d=0.01 lr=5e-5 jump B1frozen(ro=4096) | **52.88** | 76.60 | 34.85 | 61.37 | 15.67 | 75.89 | `ablation_24/s60_8b_A3B1jump_d0.01_r1.log` |
 | 8B 2:4 d=0.01 lr=1e-4 | **52.64** | 74.20 | 34.85 | 60.44 | 17.16 | 76.57 | `resweep2_opkdfix/n24_klb0.01_resume.log` |
 | 4B S60 d=99999 lr=5e-5 B1frozen(ro=4096) | **52.46** | 76.00 | 33.33 | 55.64 | 16.42 | 80.89 | `ablation_A3B1_nogate_frozen_4b/s60_nogate_frozen.log` |
+| 8B 2:4 d=0.005 lr=1e-4 | **52.39** | 73.60 | 35.35 | 57.67 | 17.54 | 77.79 | `resweep2_opkdfix/n24_klb0.005_resume.log` |
 | 8B 2:4 d=0.02 lr=1e-4 | **52.20** | 74.60 | 33.84 | 59.70 | 15.67 | 77.18 | `resweep2_opkdfix/n24_klb0.02.log` |
 | 4B S60 d=999 lr=1e-4 | **52.13** | 79.20 | 34.34 | 51.39 | 16.79 | 78.92 | `queue_gmp_pgd_klgate_4b/s60_u_duringgrowth.log` |
 | 4B S60 d=999 lr=1e-4 | **51.84** | 79.20 | 33.84 | 49.91 | 15.67 | 80.59 | `queue_gmp_pgd_klgate_4b/s60_u_posttargetonly.log` |
 | 8B 2:4 d=0.02 lr=1e-4 | **51.31** | 74.20 | 38.38 | 54.90 | 13.43 | 75.66 | `queue_gmp_pgd_grow_to_target_8b_24/klb0.02.log` |
 | 8B 2:4 d=999 lr=1e-4 | **51.20** | 71.80 | 38.38 | 55.45 | 14.18 | 76.19 | `queue_gmp_pgd_klgate_8b/s50_24_duringgrowth.log` |
+| 8B 2:4 d=0.01 lr=1e-4 B1frozen(ro=4096) | **50.79** | 72.60 | 30.30 | 57.67 | 16.04 | 77.33 | `ablation_24/n24_8b_ro4096_klb0.01_r1.log` |
 | 8B 2:4 lr=1e-4 | **50.47** | 73.80 | 32.83 | 53.97 | 16.79 | 74.98 | `gmp_pgd_klgate_8b_24_lr1e-4_fsdp2gpu_v2.launch.log` |
+| 8B S70 d=0.03 lr=1e-4 | **50.25** | 75.40 | 38.89 | 49.35 | 10.82 | 76.80 | `resweep2_opkdfix/s70_delta0.03_opkdfix_r1.log` |
 | 4B S50 | **50.15** | 78.40 | 35.86 | 47.87 | 13.43 | 75.21 | `alps_4b_24/alps_retrain_4b_n24_tok512_lr5e-05.log` |
 | 8B 2:4 d=0.01 lr=1e-4 | **50.15** | 72.60 | 35.35 | 53.79 | 13.43 | 75.59 | `queue_gmp_pgd_grow_to_target_8b_24/klb0.01_v13.log` |
 | 8B S70 d=0.02 lr=1e-4 | **50.12** | 77.40 | 38.38 | 46.58 | 8.58 | 79.68 | `delta_resweep_opkdfix/s70_delta0.02.log` |
@@ -63,6 +68,8 @@ Avg is the mean of ALL FIVE quick-profile benchmarks (MATH, GPQA, IFEval, LCB, G
 | 8B S70 d=0.05 lr=1e-4 | **49.11** | 77.40 | 35.86 | 45.47 | 7.84 | 79.00 | `delta_resweep_opkdfix/s70_delta0.05.log` |
 | 8B ? | **48.95** | 76.20 | 36.87 | 43.99 | 10.45 | 77.26 | `opkdfix_8b_s70_delta0.03/eval_resume.log` |
 | 8B S70 d=0.02 lr=1e-4 B1frozen(ro=4096) | **48.92** | 76.00 | 39.39 | 42.51 | 10.07 | 76.65 | `resweep2_opkdfix/s70_B1frozen_retry_resume.log` |
+| 8B 2:4 d=0.01 lr=1e-4 jump | **48.40** | 70.40 | 31.82 | 53.79 | 11.94 | 74.07 | `ablation_24/n24_8b_jump_klb0.01_r1.log` |
+| 8B 2:4 d=0.01 lr=1e-4 jump B1frozen(ro=4096) | **48.18** | 68.00 | 30.81 | 55.08 | 11.94 | 75.06 | `ablation_24/n24_8b_jump_ro4096_klb0.01_r1.log` |
 | 8B S70 lr=1e-4 | **48.06** | 73.60 | 34.85 | 45.47 | 11.19 | 75.21 | `gmp_pgd_klgate_8b_s70_lr1e-4_fsdp2gpu_v2.launch.log` |
 | 8B S70 d=0.05 lr=1e-4 | **47.49** | 77.00 | 32.32 | 43.07 | 6.34 | 78.70 | `delta_sweep_8b_s70/s70_delta0.05.log` |
 | 4B 2:4 d=0.01 lr=1e-4 | **47.23** | 69.40 | 36.87 | 43.62 | 10.07 | 76.19 | `queue_gmp_pgd_grow_to_target_4b_24/klb0.01.log` |
@@ -72,10 +79,14 @@ Avg is the mean of ALL FIVE quick-profile benchmarks (MATH, GPQA, IFEval, LCB, G
 | 8B S70 | **46.67** | 73.60 | 29.29 | 42.14 | 14.55 | 73.77 | `alpssft512_8b/alpssft512_s70.log` |
 | 8B S70 d=999 lr=1e-4 | **46.49** | 72.20 | 34.85 | 40.85 | 7.09 | 77.48 | `queue_gmp_pgd_klgate_8b/s70_u_duringgrowth.log` |
 | 8B S70 ro=1 | **46.40** | 73.60 | 29.29 | 43.81 | 13.06 | 72.25 | `alpssft_8b_b200_s70pct_lr1e-4/run.log` |
+| 4B 2:4 d=0.01 lr=1e-4 | **45.68** | 69.60 | 33.84 | 42.33 | 9.70 | 72.93 | `ast24_4b/ast24_dec2e-3_r1.log` |
 | 4B S70 d=0.02 lr=1e-4 | **45.58** | 72.40 | 35.86 | 39.93 | 8.21 | 71.49 | `queue_gmp_pgd_grow_to_target_4b/s70_klb0.02.log` |
 | 4B S70 d=0.02 lr=1e-4 | **45.27** | 72.40 | 31.82 | 41.96 | 5.97 | 74.22 | `ablation_warmup_sweep_4b_s70/s70_warm512.log` |
 | 8B S70 d=99999 lr=1e-4 | **45.25** | 70.00 | 28.79 | 45.84 | 7.84 | 73.77 | `ablation_8b_s70_components/s70_A3_nogate.log` |
 | 4B 2:4 d=0.02 lr=1e-4 | **45.17** | 71.20 | 30.30 | 41.04 | 10.82 | 72.48 | `queue_gmp_pgd_grow_to_target_4b_24/klb0.02.log` |
+| 4B 2:4 d=0.01 lr=1e-4 | **44.86** | 68.20 | 31.31 | 40.11 | 10.07 | 74.60 | `ast24_4b/ast24_dec1e-3_klb0.01_r4.log` |
+| 4B 2:4 d=0.01 lr=1e-4 B1frozen(ro=4096) | **44.58** | 67.20 | 29.80 | 40.85 | 11.19 | 73.84 | `ablation_24/n24_4b_ro4096_klb0.01_r1.log` |
+| 4B 2:4 d=0.01 lr=1e-4 | **44.54** | 67.20 | 31.31 | 42.33 | 10.07 | 71.80 | `ast24_4b/ast24_dec1e-3_s2_r2.log` |
 | 4B 2:4 d=999 lr=1e-4 | **44.51** | 68.80 | 28.79 | 43.81 | 7.46 | 73.69 | `queue_gmp_pgd_klgate_4b/s50_24_duringgrowth.log` |
 | 4B 2:4 d=0.02 lr=1e-4 +comp | **44.37** | 65.60 | 30.81 | 40.67 | 9.70 | 75.06 | `nm_compensate/4b_24_klb0.02_comp_v2.log` |
 | 4B 2:4 d=0.01 lr=1e-4 +comp | **44.16** | 67.20 | 33.84 | 39.74 | 7.46 | 72.55 | `nm_compensate/4b_24_klb0.01_comp_v2.log` |
@@ -84,40 +95,71 @@ Avg is the mean of ALL FIVE quick-profile benchmarks (MATH, GPQA, IFEval, LCB, G
 | 4B S70 d=0.02 lr=1e-4 | **43.89** | 71.80 | 30.30 | 36.23 | 4.85 | 76.27 | `ablation_warmup_sweep_4b_s70/s70_warm1024.log` |
 | 8B S70 d=0.02 lr=1e-4 | **43.83** | 71.40 | 32.32 | 37.71 | 4.48 | 73.24 | `queue_gmp_pgd_klgate_8b_cubic/s70_cubic.log` |
 | 4B 2:4 lr=1e-4 | **43.81** | 64.00 | 30.30 | 41.96 | 10.07 | 72.71 | `gmp_pgd_klgate_4b_24_lr1e-4_pgdint8_mi32_nolasso.launch.log` |
+| 4B 2:4 d=0.01 lr=1e-4 | **43.52** | 65.60 | 28.79 | 41.77 | 8.96 | 72.48 | `ast24_4b/ast24_dec5e-3_r1.log` |
+| 4B 2:4 d=0.01 lr=1e-4 | **43.46** | 64.80 | 34.85 | 37.71 | 7.46 | 72.48 | `ast24_4b/ast24_dec3e-3_r1.log` |
+| 4B 2:4 d=0.01 lr=1e-4 jump | **43.16** | 65.00 | 32.32 | 39.00 | 7.46 | 72.02 | `ablation_24/n24_4b_jump_klb0.01_s2_r2.log` |
 | 8B S70 d=0.02 lr=1e-4 jump | **42.86** | 66.80 | 30.81 | 41.22 | 5.97 | 69.52 | `resweep2_opkdfix/s70_A3jump_delta0.02.log` |
+| 4B 2:4 d=0.02 lr=1e-4 | **42.86** | 68.20 | 25.25 | 36.41 | 11.57 | 72.86 | `ast24_4b/ast24_4b_klb0.02_r1.log` |
 | 4B S70 rule=schedule | **42.75** | 70.60 | 29.29 | 34.20 | 7.09 | 72.55 | `ablation_A2_schedule_4b/s70_A2sched_matched.log` |
 | 4B S70 d=999 lr=1e-4 | **42.70** | 70.20 | 28.28 | 38.08 | 5.60 | 71.34 | `queue_gmp_pgd_klgate_4b/s70_u_posttargetonly.log` |
+| 4B 2:4 d=0.02 lr=1e-4 | **42.69** | 65.40 | 30.30 | 36.78 | 10.45 | 70.51 | `ast24_4b/ast24_4b_klb0.02_r2.log` |
 | 4B 2:4 lr=1e-4 | **42.47** | 64.60 | 28.79 | 37.89 | 8.58 | 72.48 | `gmp_pgd_klgate_4b_24_lr1e-4_bs1_mi32_opd512_nolasso.launch.log` |
 | 4B S70 lr=1e-4 | **42.31** | 68.00 | 31.31 | 38.08 | 4.85 | 69.29 | `gmp_pgd_klgate_4b_s70_lr1e-4_pgdint8_mi32.launch.log` |
+| 4B 2:4 d=0.01 lr=1e-4 | **42.14** | 63.40 | 25.76 | 36.60 | 9.33 | 75.59 | `ast24_4b/ast24_shrink1e-4_klb0.01_r1.log` |
+| 4B 2:4 d=0.01 lr=1e-4 | **42.14** | 63.40 | 25.76 | 36.60 | 9.33 | 75.59 | `ast24_4b/ast24_shrink5e-4_klb0.01_r1.log` |
+| 4B 2:4 d=0.01 lr=5e-5 | **42.12** | 61.40 | 29.80 | 37.71 | 8.21 | 73.46 | `ast24_4b/ast24_4b_klb0.01_lr5e-5_r1.log` |
+| 4B 2:4 d=0.01 lr=1e-4 jump | **42.06** | 64.20 | 31.31 | 36.23 | 7.09 | 71.49 | `ablation_24/n24_4b_jump_klb0.01_r1.log` |
 | 4B S70 d=999 lr=1e-4 | **41.93** | 71.00 | 28.79 | 32.90 | 5.22 | 71.72 | `queue_gmp_pgd_klgate_4b/s70_u_duringgrowth.log` |
+| 4B 2:4 d=0.01 lr=1e-4 jump B1frozen(ro=4096) | **41.91** | 63.00 | 29.80 | 36.60 | 9.70 | 70.43 | `ablation_24/n24_4b_jump_ro4096_klb0.01_r1.log` |
 | 4B S70 d=99999 lr=1e-4 | **41.87** | 64.40 | 28.28 | 40.85 | 4.85 | 70.96 | `ablation_A3_nogate_4b/s70_nogate.log` |
 | 4B S70 d=0.02 lr=1e-4 | **41.84** | 68.00 | 28.79 | 33.09 | 9.70 | 69.60 | `ablation_warm0_4b_s70/s70_warm0.log` |
+| 4B 2:4 d=0.01 lr=1e-4 | **41.67** | 64.40 | 30.81 | 32.35 | 10.07 | 70.74 | `ast24_4b/ast24_4b_klb0.01_r2.log` |
 | 4B S70 d=0.01 lr=1e-4 | **41.20** | 68.40 | 28.28 | 33.83 | 5.60 | 69.90 | `queue_gmp_pgd_grow_to_target_4b/s70_klb0.01.log` |
+| 4B 2:4 d=0.01 lr=1e-4 jump B1frozen(ro=4096) | **41.00** | 62.20 | 29.80 | 36.41 | 7.09 | 69.52 | `ablation_24/n24_4b_jump_ro4096_klb0.01_s2_r1.log` |
+| 4B S70 d=0.02 lr=1e-4 | **40.96** | 70.00 | 29.80 | 34.01 | 2.24 | 68.76 | `launch_logs/4b_s70_wontp_20260916.log` |
 | 4B S70 d=99999 lr=1e-4 B1frozen(ro=4096) | **40.94** | 62.20 | 27.78 | 37.52 | 4.85 | 72.33 | `ablation_A3B1_nogate_frozen_4b/s70_nogate_frozen.log` |
+| 4B S70 | **40.93** | 66.40 | 32.32 | 26.80 | 6.34 | 72.78 | `alps_sft_4b_s70/alps4b_s70_3term_r1.log` |
 | 4B S70 d=0.02 lr=1e-4 | **40.79** | 68.00 | 30.30 | 30.13 | 4.48 | 71.04 | `gmp_pgd_klgate_4b_s70_lr1e-4_mi32_opd512.launch.log` |
+| 4B 2:4 d=0.01 lr=1e-4 | **40.55** | 65.80 | 23.74 | 35.12 | 8.96 | 69.14 | `ast24_4b/ast24_4b_klb0.01_r1.log` |
 | 4B S70 rule=schedule | **40.45** | 68.40 | 28.28 | 31.42 | 5.97 | 68.16 | `ablation_A2_schedule_4b/s70_A2sched_er0.5.log` |
+| 4B S70 | **39.12** | 67.00 | 26.77 | 26.43 | 6.34 | 69.07 | `alps_sft_4b_s70/alps4b_s70_2term_r1.log` |
+| 8B S70 d=0.02 lr=1e-4 jump B1frozen(ro=4096) | **38.75** | 62.80 | 22.73 | 34.75 | 5.97 | 67.48 | `ablation_24/s70_8b_A3B1jump_d0.02_r1.log` |
 | 4B S70 d=0.02 lr=1e-4 | **38.05** | 59.00 | 27.78 | 29.76 | 4.48 | 69.22 | `queue_gmp_pgd_klgate_4b_reversekl/s70_capped_reversekl.log` |
+| 4B 2:4 d=0.01 lr=1e-4 | **37.48** | 57.00 | 25.76 | 31.42 | 5.60 | 67.63 | `ast24_4b/ast24_4b_mag_klb0.01_r1.log` |
 | 4B 2:4 d=999 lr=1e-4 | **36.65** | 55.20 | 27.78 | 31.42 | 4.10 | 64.75 | `queue_gmp_pgd_klgate_4b/s50_24_posttargetonly.log` |
 | 4B S70 d=0.02 lr=1e-4 jump | **36.55** | 59.40 | 29.29 | 30.50 | 2.24 | 61.33 | `ablation4b_jump/s70_A3jump_4b_resume.log` |
 | 4B S70 d=999 lr=1e-4 | **35.84** | 58.80 | 24.75 | 26.06 | 1.87 | 67.70 | `queue_gmp_pgd_klgate_4b_reversekl/s70_uncapped_reversekl.log` |
+| 8B S80 d=0.02 lr=1e-4 | **35.80** | 62.60 | 24.75 | 22.74 | 0.75 | 68.16 | `launch_logs/8b_s80_scout_20260916.log` |
 | 4B S70 d=0.02 lr=1e-4 jump B1frozen(ro=4096) | **33.14** | 46.60 | 32.32 | 26.80 | 0.75 | 59.21 | `ablation4b_jump/s70_A3B1jump_4b_resume.log` |
+| 4B S80 d=0.02 lr=1e-4 | **28.92** | 43.00 | 27.78 | 19.59 | 0.00 | 54.21 | `launch_logs/4b_s80_scout_20260916.log` |
+| 4B 2:4 d=0.01 lr=1e-4 | **8.66** | 5.00 | 22.73 | 9.80 | 0.00 | 5.76 | `ast24_4b/ast24_dec1e-4_klb0.01_r1.log` |
 
-## In flight / incomplete (68)
+## In flight / incomplete (95)
 
 | Run | state | progress | benches | comp events | max delta | log |
 |---|---|---|---|---|---|---|
-| 8B 2:4 d=0.005 lr=1e-4 | LIVE | 1662/2048 | 0/5 | 0 | - | `resweep2_opkdfix/n24_klb0.005.log` |
-| 8B S70 d=0.03 lr=1e-4 | LIVE | 289/2048 | 0/5 | 0 | - | `resweep2_opkdfix/s70_delta0.03_opkdfix.log` |
 | 8B S60 ro=1 | DEAD | 2048/2048 | 0/5 | 0 | - | `alpssft_8b_b200_s60pct_lr5e-5/run.log` |
-| 8B S70 d=0.03 lr=1e-4 | DEAD | 2048/2048 | 0/5 | 0 | - | `opkdfix_8b_s70_delta0.03/s70_delta0.03_opkdfix.log` |
+| 4B 2:4 d=0.01 lr=5e-5 | DEAD | 2048/2048 | 0/5 | 0 | - | `ast24_4b/ast24_4b_klb0.01_lr5e-5_r2.log` |
+| 4B 2:4 d=0.01 lr=1e-4 | DEAD | 2048/2048 | 0/5 | 0 | - | `ast24_4b/ast24_4b_klb0.01_r3.log` |
+| 4B 2:4 d=0.02 lr=1e-4 | DEAD | 2048/2048 | 0/5 | 0 | - | `ast24_4b/ast24_4b_klb0.02_r3.log` |
+| 4B 2:4 d=0.01 lr=1e-4 | DEAD | 2048/2048 | 0/5 | 0 | - | `ast24_4b/ast24_4b_mag_klb0.01_r2.log` |
 | 4B S50 d=0.02 lr=5e-5 | DEAD | 2048/2048 | 0/5 | 0 | - | `queue_gmp_pgd_klgate_4b_reversekl/s50_capped_reversekl.log` |
 | 4B S50 d=999 lr=5e-5 | DEAD | 2048/2048 | 0/5 | 0 | - | `queue_gmp_pgd_klgate_4b_reversekl/s50_uncapped_reversekl.log` |
 | 8B S60 d=0.02 lr=5e-5 | DEAD | 2048/2048 | 4/5 | 0 | - | `queue_gmp_pgd_klgate_8b_cubic/s60_cubic.log` |
 | 8B 2:4 d=0.02 lr=1e-4 | DEAD | 1543/2048 | 0/5 | 0 | - | `queue_gmp_pgd_klgate_8b_cubic/s50_24_cubic.log` |
+| 8B S70 d=0.03 lr=1e-4 | DEAD | 1469/2048 | 0/5 | 0 | - | `resweep2_opkdfix/s70_delta0.03_opkdfix_resume.log` |
+| 4B 2:4 d=0.01 lr=1e-4 | DEAD | 1279/2048 | 0/5 | 0 | - | `ast24_4b/ast24_dec1e-2_r1.log` |
+| 4B 2:4 d=0.01 lr=1e-4 | DEAD | 1252/2048 | 0/5 | 0 | - | `ast24_4b/ast24_dec2e-2_r1.log` |
+| 4B 2:4 d=0.01 lr=1e-4 | DEAD | 1250/2048 | 0/5 | 0 | - | `ast24_4b/ast24_dec3e-3_warm256_r1.log` |
+| 8B 2:4 d=0.02 lr=1e-4 B1frozen(ro=4096) | DEAD | 1215/2048 | 0/5 | 0 | - | `ablation_24/n24_8b_ro4096_klb0.02_r1.log` |
+| 4B 2:4 d=0.01 lr=1e-4 | DEAD | 1200/2048 | 0/5 | 0 | - | `ast24_4b/ast24_dec5e-3_warm256_r1.log` |
 | 8B S70 d=0.02 lr=1e-4 B1frozen(ro=4096) | DEAD | 911/2048 | 0/5 | 0 | - | `resweep2_opkdfix/s70_B1frozen_retry.log` |
 | 8B S60 d=0.01 lr=5e-5 | DEAD | 823/2048 | 0/5 | 0 | - | `queue_gmp_pgd_grow_to_target_8b/s60_klb0.01.log` |
+| 4B 2:4 d=0.01 lr=1e-4 | DEAD | 415/2048 | 0/5 | 0 | - | `ast24_4b/ast24_dec3e-3_klb0.01_r1.log` |
+| 4B 2:4 d=0.02 lr=1e-4 | DEAD | 414/2048 | 0/5 | 0 | - | `ast24_4b/ast24_dec1e-3_klb0.02_r1.log` |
 | 8B S50 ro=1 | DEAD | 375/2048 | 0/5 | 0 | - | `trgmp_8b_b200_n24_lr1e-4_kl0.02/run.log` |
 | 8B S50 ro=1 | DEAD | 322/2048 | 0/5 | 0 | - | `trgmp_8b_b200_n24_lr1e-4_kl0.02_v2/run.log` |
+| 4B 2:4 d=0.01 lr=1e-4 jump | DEAD | 262/2048 | 0/5 | 0 | - | `ablation_24/n24_4b_jump_klb0.01_s2_r1.log` |
 | 4B S60 lr=1e-4 | DEAD | 210/2048 | 0/5 | 0 | - | `gmp_pgd_klgate_4b_s60_lr1e-4_bs2_sdpa_klchunk_mi32_opd512.launch.log` |
 | 8B 2:4 d=0.01 lr=1e-4 | DEAD | 199/2048 | 0/5 | 0 | - | `queue_gmp_pgd_grow_to_target_8b_24/klb0.01_v12.log` |
 | 4B S60 d=0.02 lr=1e-4 ro=16 | DEAD | 140/2048 | 0/5 | 0 | - | `gmp_pgd_klgate_4b_s60_lr1e-4_bs2_retry.launch.log` |
@@ -126,9 +168,13 @@ Avg is the mean of ALL FIVE quick-profile benchmarks (MATH, GPQA, IFEval, LCB, G
 | 4B S70 d=0.02 lr=1e-4 ro=16 | DEAD | 129/2048 | 0/5 | 0 | - | `gmp_pgd_klgate_4b_s70_lr1e-4.launch.log` |
 | 4B S60 lr=1e-4 | DEAD | 88/2048 | 0/5 | 0 | - | `gmp_pgd_klgate_4b_s60_lr1e-4_bs2_mi32_opd512.launch.log` |
 | 8B S50 ro=1 | DEAD | 79/2048 | 0/5 | 0 | - | `trgmp_8b_b200_n24_lr1e-4_kl0.02_v3/run.log` |
+| 8B S70 d=0.02 lr=1e-4 jump | DEAD | 66/2048 | 0/5 | 0 | - | `ablation_24/s70_8b_A3jump_d0.02_s2_r1.log` |
+| 4B 2:4 d=0.01 lr=2e-4 | DEAD | 51/2048 | 0/5 | 0 | - | `ast24_4b/ast24_4b_klb0.01_lr2e-4_r1.log` |
+| 4B 2:4 d=0.01 lr=1e-4 | DEAD | 51/2048 | 0/5 | 0 | - | `ast24_4b/ast24_4b_klb0.01_pgdi4_r1.log` |
 | 8B S50 lr=5e-5 | DEAD | 47/2048 | 0/5 | 0 | - | `gmp_pgd_klgate_8b_s50_lr5e-5_fsdp2gpu_pgdint8.launch.log` |
 | 4B S60 d=0.02 lr=1e-4 ro=16 | DEAD | 43/2048 | 0/5 | 0 | - | `gmp_pgd_klgate_4b_s60_lr1e-4.launch.log` |
 | 8B S70 d=0.02 lr=1e-4 jump B1frozen(ro=4096) | DEAD | 43/2048 | 0/5 | 0 | - | `resweep2_opkdfix/s70_A3B1jump_delta0.02.log` |
+| 4B 2:4 d=0.005 lr=1e-4 | DEAD | 40/2048 | 0/5 | 0 | - | `ast24_4b/ast24_4b_klb0.005_r1.log` |
 | 8B S50 d=0.02 lr=5e-5 | DEAD | 40/40 | 0/5 | 0 | - | `debug_grow_to_target_8b/verify_fix_s50.log` |
 | 8B S50 lr=5e-5 | DEAD | 39/2048 | 0/5 | 0 | - | `gmp_pgd_klgate_8b_s50_lr5e-5_fsdp2gpu_vllm010.launch.log` |
 | 8B S60 lr=5e-5 | DEAD | 39/2048 | 0/5 | 0 | - | `gmp_pgd_klgate_8b_s60_lr5e-5_fsdp2gpu_pgdint8_v2.launch.log` |
@@ -136,9 +182,17 @@ Avg is the mean of ALL FIVE quick-profile benchmarks (MATH, GPQA, IFEval, LCB, G
 | 8B S70 d=0.02 lr=1e-4 B1frozen(ro=4096) | DEAD | 39/2048 | 0/5 | 0 | - | `resweep2_opkdfix/s70_B1frozen_delta0.02.log` |
 | 8B S70 d=0.03 lr=1e-4 | DEAD | 36/48 | 0/5 | 0 | - | `smoke_opkd_slice_ckpt/resume.log` |
 | 8B S70 d=0.03 lr=1e-4 | DEAD | 36/48 | 0/5 | 0 | - | `smoke_opkd_slice_ckpt/smoke.log` |
+| 4B 2:4 d=0.03 lr=1e-4 | DEAD | 31/2048 | 0/5 | 0 | - | `ast24_4b/ast24_4b_klb0.03_r1.log` |
 | 8B S70 | DEAD | 29/2048 | 0/5 | 0 | - | `alpssft512_8b/alpssft512_s70.aborted_gpu_defrag.log` |
+| 4B 2:4 d=0.01 lr=1e-4 | DEAD | 28/2048 | 0/5 | 0 | - | `ast24_4b/ast24_shrink2e-3_r2.log` |
 | 4B S70 rule=schedule | DEAD | 27/64 | 0/5 | 0 | - | `ablation_A2_schedule_4b/smoke.log` |
+| 4B 2:4 d=0.01 lr=1e-4 | DEAD | 26/2048 | 0/5 | 0 | - | `ast24_4b/ast24_dec1e-4_s2_r2.log` |
+| 4B 2:4 d=0.01 lr=1e-4 | DEAD | 24/2048 | 0/5 | 0 | - | `ast24_4b/ast24_shrink5e-3_r2.log` |
+| ? S70 | DEAD | 24/24 | 0/5 | 0 | - | `smoke_milestone/smoke.log` |
+| ? S70 | DEAD | 24/24 | 0/5 | 0 | - | `smoke_milestone/smoke2.log` |
+| 4B 2:4 d=0.01 lr=1e-4 jump B1frozen(ro=32) | DEAD | 24/24 | 0/5 | 0 | - | `smoke_nm_jump/smoke.log` |
 | 8B 2:4 d=0.01 lr=1e-4 | DEAD | 23/2048 | 0/5 | 0 | - | `queue_gmp_pgd_grow_to_target_8b_24/klb0.01_v10.log` |
+| 4B 2:4 d=0.01 lr=1e-4 jump B1frozen(ro=32) | DEAD | 23/24 | 0/5 | 0 | - | `smoke_nm_jump/smoke3.log` |
 | 8B 2:4 d=0.02 lr=1e-4 +comp | DEAD | 15/2048 | 0/5 | 2 | - | `nm_compensate/8b_24_klb0.02_comp.log` |
 | 8B 2:4 d=0.01 lr=1e-4 | DEAD | 15/2048 | 0/5 | 0 | - | `queue_gmp_pgd_grow_to_target_8b_24/klb0.01_v11.log` |
 | 8B 2:4 d=0.01 lr=1e-4 | DEAD | 15/2048 | 0/5 | 0 | - | `queue_gmp_pgd_grow_to_target_8b_24/klb0.01_v7.log` |
@@ -147,6 +201,9 @@ Avg is the mean of ALL FIVE quick-profile benchmarks (MATH, GPQA, IFEval, LCB, G
 | ? S60 ro=1 | DEAD | 13/2048 | 0/5 | 0 | - | `debug_bs2_ntponly.launch.log` |
 | ? S60 | DEAD | 13/2048 | 0/5 | 0 | - | `debug_bs2_patchtest.launch.log` |
 | 4B S70 d=0.02 lr=1e-4 ro=2048 | DEAD | 12/2048 | 0/5 | 0 | - | `ablation_B1_frozen_pool_4b/s70_ro2048.log` |
+| 4B 2:4 d=0.01 lr=1e-4 | DEAD | 12/2048 | 0/5 | 0 | - | `ast24_4b/ast24_dec1e-3_s2_r1.log` |
+| 4B 2:4 d=0.01 lr=1e-4 | DEAD | 11/2048 | 0/5 | 0 | - | `ast24_4b/ast24_shrink2e-3_r1.log` |
+| 4B 2:4 d=0.01 lr=1e-4 | DEAD | 9/2048 | 0/5 | 0 | - | `ast24_4b/ast24_dec1e-4_s2_r1.log` |
 | ? S60 | DEAD | 9/2048 | 0/5 | 0 | - | `debug_bs2_collatefix_s60_lr1e-4.launch.log` |
 | 8B S50 d=0.02 lr=5e-5 | DEAD | 8/20 | 0/5 | 0 | - | `debug_grow_to_target_8b/smoke_s50.log` |
 | 8B S50 d=0.02 lr=5e-5 | DEAD | 8/20 | 0/5 | 0 | - | `debug_grow_to_target_8b/smoke_s50_v2.log` |
@@ -166,17 +223,22 @@ Avg is the mean of ALL FIVE quick-profile benchmarks (MATH, GPQA, IFEval, LCB, G
 | 8B 2:4 d=0.01 lr=1e-4 | DEAD | 8/2048 | 0/5 | 0 | - | `queue_gmp_pgd_grow_to_target_8b_24/klb0.01_v6.log` |
 | 4B S50 ro=4 | DEAD | 8/8 | 0/5 | 0 | - | `smoke_gmp_pgd_klgate_4b/smoke.log` |
 | 4B S50 ro=4 | DEAD | 8/8 | 0/5 | 0 | - | `smoke_gmp_pgd_klgate_4b/smoke2.log` |
+| 4B 2:4 d=0.01 lr=1e-4 | DEAD | 7/2048 | 0/5 | 0 | - | `ast24_4b/ast24_shrink5e-3_r1.log` |
 | 4B S60 d=0.02 lr=5e-5 | DEAD | 7/2048 | 0/5 | 0 | - | `gmp_pgd_klgate_4b_s60_lr5e-5_mi32_opd512.launch.log` |
 | 4B 2:4 d=0.01 lr=1e-4 | DEAD | 7/2048 | 0/5 | 0 | - | `probe_blockfisher/make_ckpt.log` |
 | 8B S50 d=0.02 lr=5e-5 | DEAD | 7/2048 | 0/5 | 0 | - | `queue_gmp_pgd_grow_to_target_8b/s50.log` |
+| 4B 2:4 d=0.01 lr=1e-4 jump B1frozen(ro=32) | DEAD | 7/24 | 0/5 | 0 | - | `smoke_nm_jump/smoke2.log` |
 | 4B S70 rule=schedule | DEAD | 3/64 | 0/5 | 0 | - | `ablation_A2_schedule_4b/smoke_er0.113_endsteps7_nofire.log` |
 | 8B S50 ro=1 | DEAD | 3/2048 | 0/5 | 0 | - | `trgmp_8b_b200_n24_lr1e-4_kl0.02_mi32.launch.log` |
 | 4B S60 lr=1e-4 | DEAD | 2/2048 | 0/5 | 0 | - | `gmp_pgd_klgate_4b_s60_lr1e-4_bs2_sdpa_mi32_opd512.launch.log` |
 | ? S60 ro=1 | DEAD | 1/2048 | 0/5 | 0 | - | `debug_bs2_ntponly_nogradckpt.launch.log` |
 | 8B S50 ro=1 | DEAD | 1/2048 | 0/5 | 0 | - | `trgmp_8b_b200_n24_lr1e-4_kl0.02_mi32_pgd_klshare.launch.log` |
 
-## Superseded by a resume (3) -- result lives in the *_resume row
+## Superseded by a resume (6) -- result lives in the *_resume row
 
+- `resweep2_opkdfix/n24_klb0.005.log` (died at 1865/2048)
 - `resweep2_opkdfix/n24_klb0.01.log` (died at 559/2048)
 - `ablation4b_jump/s70_A3B1jump_4b.log` (died at 461/2048)
 - `ablation4b_jump/s70_A3jump_4b.log` (died at 750/2048)
+- `opkdfix_8b_s70_delta0.03/s70_delta0.03_opkdfix.log` (died at 2048/2048)
+- `resweep2_opkdfix/s70_delta0.03_opkdfix.log` (died at 521/2048)

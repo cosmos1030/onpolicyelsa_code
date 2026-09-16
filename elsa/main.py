@@ -27,7 +27,7 @@ from lib.lighteval_bench import run_lighteval_bench
 from lib.utils import check_sparsity, get_llm
 from lib.on_policy_distill import run_on_policy_distillation
 from lib.gkd_admm import globalprune_admm_kd
-from lib.gmp_trainer import globalprune_gmp
+from lib.gmp_trainer import globalprune_gmp, _model_tag
 from lib.grpo_opkd import run_grpo_opkd
 from absl import logging, app, flags
 from importlib.metadata import version
@@ -948,7 +948,12 @@ def main(argv):
                         _kd_tag = f"-kd{_fmt_float(getattr(FLAGS, 'gmp_kd_lambda', 0))}" if getattr(FLAGS, 'gmp_kd_lambda', 0) > 0 else ""
                         _method_tag = f"gmp{_kd_tag}"
                         _lr_tag = f"lr{_fmt_float(FLAGS.lr)}"
-                        _hub_repo = f"cosmos1030/{_method_tag}-{_sparsity_tag}-{_lr_tag}_{_now}"
+                        # Model size and mask structure, or a 4B and an 8B run at
+                        # the same sparsity differ only by timestamp -- see
+                        # _model_tag in lib/gmp_trainer.py.
+                        _mt = _model_tag(FLAGS).replace("_", "-")
+                        _hub_repo = (f"cosmos1030/{_method_tag}-{_mt + '-' if _mt else ''}"
+                                     f"{_sparsity_tag}-{_lr_tag}_{_now}")
                     else:
                         _method_tag = "elsa-hybrid-kd" if getattr(FLAGS, 'do_kd_admm', False) and getattr(FLAGS, 'kd_use_cot_dataset', False) \
                             else "elsa-kd" if getattr(FLAGS, 'do_kd_admm', False) \

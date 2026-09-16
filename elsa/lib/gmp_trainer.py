@@ -7856,10 +7856,35 @@ def _infinite(loader, sampler=None):
         epoch += 1
 
 
+def _model_tag(FLAGS):
+    """Model size and mask structure, for the save name.
+
+    _run_tag carried only sparsity, lr and the OPKD lambda, so a 4B run and an
+    8B run at the same sparsity produce the SAME stem: on 2026-09-16 the 4B and
+    8B s80 runs landed in gmp-kd3e-1-s80pct-lr1e-4_<ts> repos differing only by
+    timestamp, and 124 Hub repos already share the s70 stem. Worse, a 2:4 run
+    has sparsity_ratio 0.5, so it is indistinguishable from an unstructured S50
+    one. The timestamp and pid keep names UNIQUE -- an audit of 899 Hub repos
+    and every local save found no actual collision -- but unique is not the same
+    as identifiable, and picking the wrong 6-hour run off a name is expensive.
+
+    Returns e.g. '4b', '1.7b', '8b_n24'; empty if the model name carries no size.
+    """
+    import re as _re
+    _name = str(getattr(FLAGS, 'model', '')).rstrip('/').rsplit('/', 1)[-1]
+    _m = _re.search(r'(\d+(?:\.\d+)?)b', _name, _re.I)
+    _parts = [f"{_m.group(1)}b".lower()] if _m else []
+    _st = str(getattr(FLAGS, 'sparsity_type', 'unstructured') or 'unstructured')
+    if _st.lower() not in ('unstructured', ''):
+        _parts.append('n' + (_re.sub(r'\D', '', _st) or 'm'))   # '2:4' -> 'n24'
+    return '_'.join(_parts)
+
+
 def _run_tag(FLAGS):
     lr  = getattr(FLAGS, 'lr', 0)
     sp  = getattr(FLAGS, 'sparsity_ratio', 0)
-    tag = f"gmp_s{int(sp*100)}pct_lr{lr}"
+    mt  = _model_tag(FLAGS)
+    tag = f"gmp_{mt + '_' if mt else ''}s{int(sp*100)}pct_lr{lr}"
     if getattr(FLAGS, 'gmp_anchor_kd_lambda', 0.0) > 0:
         tag += f"_anchor_lmda{FLAGS.gmp_anchor_kd_lambda}_pfx{FLAGS.gmp_anchor_prefix_len}"
     elif getattr(FLAGS, 'gmp_onpolicy_kd_lambda', 0.0) > 0:
