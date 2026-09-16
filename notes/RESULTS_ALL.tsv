@@ -108,7 +108,7 @@ label	arm	state	model	avg5	MATH	GPQA	IFEval	LCB	GSM8K	n_bench	step	total	comp_ev
 4B 2:4 d=0.01 lr=1e-4	ast24_4b_klb0.01_r2	DONE	4B	41.67	64.40	30.81	32.35	10.07	70.74	5	2048	2048	0		gmp_s50pct_lr0.0001_onpol_lmda0.33_20260911_074004	ast24_4b/ast24_4b_klb0.01_r2.log
 4B S70 d=0.01 lr=1e-4	s70_klb0.01	DONE	4B	41.20	68.40	28.28	33.83	5.60	69.90	5	2048	2048	0		gmp_s70pct_lr0.0001_onpol_lmda0.33_20260903_055641	queue_gmp_pgd_grow_to_target_4b/s70_klb0.01.log
 4B 2:4 d=0.01 lr=1e-4 jump B1frozen(ro=4096)	n24_4b_jump_ro4096_klb0.01_s2_r1	DONE	4B	41.00	62.20	29.80	36.41	7.09	69.52	5	2048	2048	0		gmp_s50pct_lr0.0001_onpol_lmda0.33_20260914_023050	ablation_24/n24_4b_jump_ro4096_klb0.01_s2_r1.log
-4B S70 d=0.02 lr=1e-4	4b_s70_wontp_20260916	DONE	4B	40.96	70.00	29.80	34.01	2.24	68.76	5	2048	2048	0		gmp_s70pct_lr0.0001_onpol_lmda0.5_20260916_204154	launch_logs/4b_s70_wontp_20260916.log
+4B S70 d=0.02 lr=1e-4 lmda=0.5	4b_s70_wontp_20260916	DONE	4B	40.96	70.00	29.80	34.01	2.24	68.76	5	2048	2048	0		gmp_s70pct_lr0.0001_onpol_lmda0.5_20260916_204154	launch_logs/4b_s70_wontp_20260916.log
 4B S70 d=99999 lr=1e-4 B1frozen(ro=4096)	s70_nogate_frozen	DONE	4B	40.94	62.20	27.78	37.52	4.85	72.33	5	2048	2048	0		gmp_s70pct_lr0.0001_onpol_lmda0.33_20260904_191450	ablation_A3B1_nogate_frozen_4b/s70_nogate_frozen.log
 4B S70	alps4b_s70_3term_r1	DONE	4B	40.93	66.40	32.32	26.80	6.34	72.78	5	2048	2048	0		gmp_s70pct_lr0.0001_onpol_lmda0.33_20260913_190814	alps_sft_4b_s70/alps4b_s70_3term_r1.log
 4B S70 d=0.02 lr=1e-4	gmp_pgd_klgate_4b_s70_lr1e-4_mi32_opd512.launch	DONE	4B	40.79	68.00	30.30	30.13	4.48	71.04	5	2048	2048	0		gmp_s70pct_lr0.0001_onpol_lmda0.33_20260824_075727	gmp_pgd_klgate_4b_s70_lr1e-4_mi32_opd512.launch.log
@@ -157,8 +157,8 @@ label	arm	state	model	avg5	MATH	GPQA	IFEval	LCB	GSM8K	n_bench	step	total	comp_ev
 4B 2:4 d=0.01 lr=1e-4	ast24_shrink5e-3_r1	DEAD	4B							0	7	2048	0			ast24_4b/ast24_shrink5e-3_r1.log
 4B 2:4 d=0.01 lr=1e-4	ast24_shrink5e-3_r2	DEAD	4B							0	24	2048	0			ast24_4b/ast24_shrink5e-3_r2.log
 ? S60	debug_bs2_collatefix_s60_lr1e-4.launch	DEAD	?							0	9	2048	0			debug_bs2_collatefix_s60_lr1e-4.launch.log
-? S60 ro=1	debug_bs2_ntponly.launch	DEAD	?							0	13	2048	0			debug_bs2_ntponly.launch.log
-? S60 ro=1	debug_bs2_ntponly_nogradckpt.launch	DEAD	?							0	1	2048	0			debug_bs2_ntponly_nogradckpt.launch.log
+? S60 lmda=0.0 ro=1	debug_bs2_ntponly.launch	DEAD	?							0	13	2048	0			debug_bs2_ntponly.launch.log
+? S60 lmda=0.0 ro=1	debug_bs2_ntponly_nogradckpt.launch	DEAD	?							0	1	2048	0			debug_bs2_ntponly_nogradckpt.launch.log
 ? S60	debug_bs2_patchtest.launch	DEAD	?							0	13	2048	0			debug_bs2_patchtest.launch.log
 8B S50 d=0.02 lr=5e-5	smoke_s50	DEAD	8B							0	8	20	0			debug_grow_to_target_8b/smoke_s50.log
 8B S50 d=0.02 lr=5e-5	smoke_s50	DEAD	8B							0	8	20	0			debug_grow_to_target_8b/smoke_s50_v2.log

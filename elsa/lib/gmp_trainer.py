@@ -4759,6 +4759,55 @@ def globalprune_gmp(
         return (_os_ck.path.join(_ckpt_dir, f"step{_st:06d}.pt"),
                 _os_ck.path.join(_ckpt_dir, f"step{_st:06d}_masks_rank{local_rank}.pt"))
 
+    # A checkpoint dir cannot carry a timestamp the way a save dir does -- a
+    # resume has to find it by name -- so uniqueness has to come from a guard.
+    # Two runs pointed at one dir do not merely interleave: the retention sweep
+    # in _save_train_ckpt keeps only the newest gmp_ckpt_keep steps and deletes
+    # the rest, so each run deletes the other's checkpoints. The default name is
+    # derived from _run_tag, which does not separate two arms of a sweep, and an
+    # explicit CKPT_DIR gets copy-pasted.
+    _owner_p = _os_ck.path.join(_ckpt_dir, '.owner.json')
+
+    def _owner_alive(_rec):
+        """True only if the recorded pid is still a running main.py."""
+        _pid = int(_rec.get('pid', -1))
+        if _pid < 0 or _pid == _os_ck.getpid():
+            return False
+        try:
+            with open(f'/proc/{_pid}/cmdline', 'rb') as _f:
+                return b'main.py' in _f.read()
+        except OSError:
+            return False        # process gone (a crashed run being resumed) -- free
+
+    def _claim_ckpt_dir():
+        import json as _json_ck
+        _os_ck.makedirs(_ckpt_dir, exist_ok=True)
+        if _os_ck.path.exists(_owner_p):
+            try:
+                with open(_owner_p) as _f:
+                    _rec = _json_ck.load(_f)
+            except (OSError, ValueError):
+                _rec = {}
+            if _owner_alive(_rec):
+                raise RuntimeError(
+                    f"[ckpt] {_ckpt_dir} is already owned by live pid {_rec.get('pid')} "
+                    f"(run_tag={_rec.get('run_tag')}, started {_rec.get('started')}). "
+                    f"Two runs sharing one checkpoint dir delete each other's steps. "
+                    f"Pass a distinct --gmp_ckpt_dir / CKPT_DIR. If that pid is stale, "
+                    f"remove {_owner_p}.")
+        with open(_owner_p, 'w') as _f:
+            _json_ck.dump({'pid': _os_ck.getpid(), 'run_tag': _run_tag(FLAGS),
+                           'started': time.strftime('%Y-%m-%d %H:%M:%S')}, _f)
+        logging.info(f"[ckpt] claimed {_ckpt_dir} (pid {_os_ck.getpid()})")
+
+    if _ckpt_every > 0:
+        # rank 0 decides; a raise here fails the job before any GPU work, and
+        # torchrun tears down the other ranks waiting on the barrier.
+        if is_main_process:
+            _claim_ckpt_dir()
+        if is_distributed:
+            _dist.barrier()
+
     def _fsdp_sd_ctx():
         from torch.distributed.fsdp import StateDictType, FullStateDictConfig, FullOptimStateDictConfig
         return FSDP.state_dict_type(fsdp_model, StateDictType.FULL_STATE_DICT,

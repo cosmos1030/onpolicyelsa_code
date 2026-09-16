@@ -116,7 +116,7 @@ Avg is the mean of ALL FIVE quick-profile benchmarks (MATH, GPQA, IFEval, LCB, G
 | 4B 2:4 d=0.01 lr=1e-4 | **41.67** | 64.40 | 30.81 | 32.35 | 10.07 | 70.74 | `ast24_4b/ast24_4b_klb0.01_r2.log` |
 | 4B S70 d=0.01 lr=1e-4 | **41.20** | 68.40 | 28.28 | 33.83 | 5.60 | 69.90 | `queue_gmp_pgd_grow_to_target_4b/s70_klb0.01.log` |
 | 4B 2:4 d=0.01 lr=1e-4 jump B1frozen(ro=4096) | **41.00** | 62.20 | 29.80 | 36.41 | 7.09 | 69.52 | `ablation_24/n24_4b_jump_ro4096_klb0.01_s2_r1.log` |
-| 4B S70 d=0.02 lr=1e-4 | **40.96** | 70.00 | 29.80 | 34.01 | 2.24 | 68.76 | `launch_logs/4b_s70_wontp_20260916.log` |
+| 4B S70 d=0.02 lr=1e-4 lmda=0.5 | **40.96** | 70.00 | 29.80 | 34.01 | 2.24 | 68.76 | `launch_logs/4b_s70_wontp_20260916.log` |
 | 4B S70 d=99999 lr=1e-4 B1frozen(ro=4096) | **40.94** | 62.20 | 27.78 | 37.52 | 4.85 | 72.33 | `ablation_A3B1_nogate_frozen_4b/s70_nogate_frozen.log` |
 | 4B S70 | **40.93** | 66.40 | 32.32 | 26.80 | 6.34 | 72.78 | `alps_sft_4b_s70/alps4b_s70_3term_r1.log` |
 | 4B S70 d=0.02 lr=1e-4 | **40.79** | 68.00 | 30.30 | 30.13 | 4.48 | 71.04 | `gmp_pgd_klgate_4b_s70_lr1e-4_mi32_opd512.launch.log` |
@@ -198,7 +198,7 @@ Avg is the mean of ALL FIVE quick-profile benchmarks (MATH, GPQA, IFEval, LCB, G
 | 8B 2:4 d=0.01 lr=1e-4 | DEAD | 15/2048 | 0/5 | 0 | - | `queue_gmp_pgd_grow_to_target_8b_24/klb0.01_v7.log` |
 | 8B 2:4 d=0.01 lr=1e-4 | DEAD | 15/2048 | 0/5 | 0 | - | `queue_gmp_pgd_grow_to_target_8b_24/klb0.01_v8.log` |
 | 8B 2:4 d=0.01 lr=1e-4 | DEAD | 15/2048 | 0/5 | 0 | - | `queue_gmp_pgd_grow_to_target_8b_24/klb0.01_v9.log` |
-| ? S60 ro=1 | DEAD | 13/2048 | 0/5 | 0 | - | `debug_bs2_ntponly.launch.log` |
+| ? S60 lmda=0.0 ro=1 | DEAD | 13/2048 | 0/5 | 0 | - | `debug_bs2_ntponly.launch.log` |
 | ? S60 | DEAD | 13/2048 | 0/5 | 0 | - | `debug_bs2_patchtest.launch.log` |
 | 4B S70 d=0.02 lr=1e-4 ro=2048 | DEAD | 12/2048 | 0/5 | 0 | - | `ablation_B1_frozen_pool_4b/s70_ro2048.log` |
 | 4B 2:4 d=0.01 lr=1e-4 | DEAD | 12/2048 | 0/5 | 0 | - | `ast24_4b/ast24_dec1e-3_s2_r1.log` |
@@ -231,7 +231,7 @@ Avg is the mean of ALL FIVE quick-profile benchmarks (MATH, GPQA, IFEval, LCB, G
 | 4B S70 rule=schedule | DEAD | 3/64 | 0/5 | 0 | - | `ablation_A2_schedule_4b/smoke_er0.113_endsteps7_nofire.log` |
 | 8B S50 ro=1 | DEAD | 3/2048 | 0/5 | 0 | - | `trgmp_8b_b200_n24_lr1e-4_kl0.02_mi32.launch.log` |
 | 4B S60 lr=1e-4 | DEAD | 2/2048 | 0/5 | 0 | - | `gmp_pgd_klgate_4b_s60_lr1e-4_bs2_sdpa_mi32_opd512.launch.log` |
-| ? S60 ro=1 | DEAD | 1/2048 | 0/5 | 0 | - | `debug_bs2_ntponly_nogradckpt.launch.log` |
+| ? S60 lmda=0.0 ro=1 | DEAD | 1/2048 | 0/5 | 0 | - | `debug_bs2_ntponly_nogradckpt.launch.log` |
 | 8B S50 ro=1 | DEAD | 1/2048 | 0/5 | 0 | - | `trgmp_8b_b200_n24_lr1e-4_kl0.02_mi32_pgd_klshare.launch.log` |
 
 ## Superseded by a resume (6) -- result lives in the *_resume row

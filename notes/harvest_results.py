@@ -44,6 +44,11 @@ RE_JUMP   = re.compile(r'PGD one-shot jump ENABLED')
 RE_COMPON = re.compile(r'\[pgd_nm_compensate\] ENABLED')
 RE_RULE   = re.compile(r'grow_rule=(\w+)|gmp_pgd_grow_rule=(\w+)')
 RE_RO     = re.compile(r'On-policy KD: lambda=[0-9.]+, interval=(\d+)')
+# The loss weights are NOT in the wandb run dir, so the w/o-NTP arm run on
+# 2026-09-16 (0,0.5,0.5) got the same label as the SCOUT arm (0.33 each) it
+# is the control for -- two rows, same name, different experiment. This line
+# is printed by every run, so it discriminates whatever the launcher is.
+RE_OPKDL  = re.compile(r'On-policy KD: lambda=([0-9.]+)')
 RE_FROZENM= re.compile(r'frozen-pool mode \(onpolicy_interval=(\d+) >= steps')
 
 RUNDIR_BITS = {
@@ -103,6 +108,9 @@ def scan(path):
     m = RE_RO.findall(txt)
     if m:
         r['cfg']['ro'] = m[-1]
+    m = RE_OPKDL.findall(txt)
+    if m:
+        r['cfg']['opkd_lmda'] = m[-1]
     if RE_FROZENM.search(txt):
         r['cfg']['frozen'] = 'true'
     # The wandb run dir is NOT unique per arm -- the jump and jump+frozen 4B
@@ -140,6 +148,8 @@ def label(r):
         bits.append('d=%s' % c['kl'])
     if c.get('lr'):
         bits.append('lr=%s' % c['lr'])
+    if c.get('opkd_lmda') and c['opkd_lmda'] != '0.33':
+        bits.append('lmda=%s' % c['opkd_lmda'])
     if c.get('grow_rule') and c['grow_rule'] != 'kl':
         bits.append('rule=%s' % c['grow_rule'])
     if c.get('jump') == 'true':
