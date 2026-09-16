@@ -226,6 +226,56 @@ _QUICK_BENCHMARKS = [
 ]
 
 
+# A third profile, because "official" and "quick" are both wrong for the main
+# results table.
+#
+# quick (8192, equal max_model_length) truncates so heavily that it stops
+# measuring reasoning: on Qwen3-4B s70, 33.6% of math500, 79.3% of gpqa and
+# 84.3% of lcb generations hit their ceiling, and on 1.7B at s70/s80 it is
+# 95-100% of everything. Worse, truncation scales with how verbose a model is,
+# so it silently favours whichever method rambles less -- ours generates 4,686
+# tokens on math500 where ALPS+retrain generates 5,159.
+#
+# official (32768, +AIME at 38912) fixes that but the cost is multiplicative,
+# not additive. Qwen3-4B keeps 2*36 layers*8 kv heads*128 dim*2B = 144 KB of KV
+# per token, so a sequence reserves 1.21 GB at 8192 and 4.83 GB at 32768. On a
+# 48GB card with ~35GB left after weights that is ~28 concurrent sequences
+# versus ~7: four times the tokens at a quarter of the concurrency, i.e. up to
+# 16x wall clock, and the models that are most truncated at 8192 are exactly
+# the ones that will run the full budget.
+#
+# "long" keeps what matters and drops what does not:
+#   * no AIME. It is the single biggest cost (38912 x 60 problems) and it is
+#     not in the paper's five-benchmark average.
+#   * per-task budgets sized from measured lengths rather than one flat number.
+#     Correct answers are far shorter than wrong ones -- on Qwen3-4B s70,
+#     math500 correct answers average 3,363 tokens against 7,583 for wrong ones,
+#     and lcb correct answers truncate 0.0% of the time against 88.3% for wrong
+#     ones. Budget beyond the correct-answer distribution only buys longer wrong
+#     answers, so the tasks whose CORRECT answers are already censored (gpqa:
+#     69.6% of correct generations truncated) get the big budget and the rest
+#     do not.
+#   * max_model_length is max_new_tokens + 1024, not equal to it, so the real
+#     per-sample ceiling stays at max_new_tokens instead of losing the prompt
+#     (that is why gpqa's cap reads 7925 rather than 8192 under quick).
+#
+# PROVISIONAL: these numbers come from length distributions censored at 8192.
+# The dense calibration run (official budgets, AIME excluded) measures the
+# uncensored distribution; re-set them from it before the numbers go in a table.
+_LONG_BENCHMARKS = [
+    ("math500", "lighteval|math_500|0",           16384, 17408,
+     ["pass@k:k=1&n=1"]),
+    ("gpqa",    "lighteval|gpqa:diamond|0",       32768, 33792,
+     ["gpqa_pass@k:k=1", "pass@k:k=1&n=1", "acc_norm", "acc"]),
+    ("ifeval",  "lighteval|ifeval|0",             16384, 17408,
+     ["prompt_level_strict_acc"]),
+    ("lcb",     "lighteval|lcb:codegeneration|0", 32768, 33792,
+     ["codegen_pass@1:16", "pass@1"]),
+    ("gsm8k",   "lighteval|gsm8k|0",              8192, 9216,
+     ["extractive_match", "acc"]),
+]
+
+
 def run_lighteval_bench(
     model_path: str,
     out_base: str,
@@ -255,9 +305,12 @@ def run_lighteval_bench(
         dict with keys like "lighteval/math500", "lighteval/gpqa_diamond", etc.
     """
     profile = {"full": "official"}.get(profile, profile)  # old name
-    if profile not in ("official", "quick"):
-        raise ValueError(f"profile must be 'official' or 'quick', got {profile!r}")
-    base = _OFFICIAL_BENCHMARKS if profile == "official" else _QUICK_BENCHMARKS
+    if profile not in ("official", "quick", "long"):
+        raise ValueError(
+            f"profile must be 'official', 'long' or 'quick', got {profile!r}")
+    base = {"official": _OFFICIAL_BENCHMARKS,
+            "long": _LONG_BENCHMARKS,
+            "quick": _QUICK_BENCHMARKS}[profile]
     benchmarks = [(name, task_str, max_tok, ctx_len, max_samples, keys)
                   for name, task_str, max_tok, ctx_len, keys in base]
     if only_tasks is not None:
