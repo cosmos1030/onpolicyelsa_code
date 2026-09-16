@@ -14,9 +14,16 @@
 #         --sparsity 0.7 --lr 1e-4
 set -e
 
-MODEL_DIR=${1:?"Usage: <MODEL_DIR> <WANDB_RUN_ID> [extra args]"}
-WANDB_RUN_ID=${2:?"Usage: <MODEL_DIR> <WANDB_RUN_ID> [extra args]"}
+MODEL_DIR=${1:?"Usage: <MODEL_DIR> <WANDB_RUN_ID|-> [extra args]"}
+# "-" means do not touch wandb. Milestones of one training run must NOT resume
+# into its parent run: three of them write run.summary in turn and each
+# overwrites the last, so the trajectory cannot be read back out afterwards.
+WANDB_RUN_ID=${2:?"Usage: <MODEL_DIR> <WANDB_RUN_ID|-> [extra args]"}
 shift 2
+WB=(--wandb_run_id "$WANDB_RUN_ID")
+if [ "$WANDB_RUN_ID" = "-" ] || [ "$WANDB_RUN_ID" = "none" ]; then
+    WB=()          # NOT `[ a ] || [ b ] && WB=()`: under set -e that form exits
+fi                 # the script when both tests fail, i.e. for every real run id.
 
 source /NHNHOME/log-postech/doyoonkim/miniconda3/etc/profile.d/conda.sh
 conda activate rac
@@ -49,4 +56,4 @@ fi
 
 cd /NHNHOME/log-postech/doyoonkim/onpolicyelsa_code/elsa
 exec $PY /NHNHOME/log-postech/doyoonkim/onpolicyelsa_code/b200_scripts/resume_eval_lighteval.py \
-    --model_dir "$MODEL_DIR" --wandb_run_id "$WANDB_RUN_ID" "$@"
+    --model_dir "$MODEL_DIR" "${WB[@]}" "$@"

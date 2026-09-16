@@ -54,7 +54,13 @@ def parse_args():
     p.add_argument("--wandb_project", default="reasoning_qwen3_8b_nostrip8192")
     p.add_argument("--tasks", default=None,
                    help="comma-separated subset of math500,gpqa,ifeval,lcb,gsm8k (default: all in profile)")
-    p.add_argument("--tp_size", type=int, default=4)
+    p.add_argument("--tp_size", type=int, default=1,
+                   help="1, not 4. tp=4 hangs in vLLM's model.cleanup() after generation "
+                        "on this box, and a tp larger than the GPUs actually handed to the "
+                        "process waits on a ray placement group that can never be formed: "
+                        "that combination -- this default against the supervisor's one-GPU "
+                        "eval slot -- timed out all five benchmarks on all six milestone "
+                        "jobs on 2026-09-14. Raise it only with the GPUs to back it.")
     p.add_argument("--gpu_util", type=float, default=0.9368,
                    help="must match the crashed run's value to reuse its generation cache")
     p.add_argument("--seed", type=int, default=42)
