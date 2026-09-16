@@ -79,7 +79,7 @@ PYTHON=/NHNHOME/log-postech/doyoonkim/miniconda3/envs/rac/bin/python
 MODEL="Qwen/Qwen3-4B"
 OPD_PROMPT_PATH="/NHNHOME/log-postech/doyoonkim/data/ot3_fineweb_200k_qwen3_opdprompts.jsonl"
 
-JOB_TAG="gmp_pgd_grow_4b_b200_s${SPARSITY_PCT}_lr${LR}_klb${KL_BUDGET}_pgdi${PGD_INTERVAL}"
+JOB_TAG="gmp_pgd_grow_4b_b200_s${SPARSITY_PCT}_lr${LR}_klb${KL_BUDGET}_pgdi${PGD_INTERVAL}${TAG_SUFFIX:-}"
 LOCAL_JOB_BASE="/NHNHOME/log-postech/doyoonkim/logs/${JOB_TAG}"
 mkdir -p "$LOCAL_JOB_BASE/wandb"
 
@@ -178,7 +178,7 @@ $PYTHON main.py \
     --wandb=true \
     --wandb_project=${WANDB_PROJECT} \
     --seed=42 \
-    --run_name_suffix="pgd_grow2target_klbudget${KL_BUDGET}_lr${LR}_pgdi${PGD_INTERVAL}_${PRUNING_SCOPE}scope_b200"
+    --run_name_suffix="pgd_grow2target_klbudget${KL_BUDGET}_lr${LR}_pgdi${PGD_INTERVAL}_${PRUNING_SCOPE}scope${TAG_SUFFIX:-}_b200"
 
 EXIT_CODE=$?
 echo "=== main.py EXIT: $EXIT_CODE ==="
