@@ -46,8 +46,8 @@
 #SBATCH --gres=gpu:5
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=20
-#SBATCH --mem=150G
+#SBATCH --cpus-per-task=32
+#SBATCH --mem=200G
 # 16h, not 3 days. The 4B w/o-OPD runs of this script took 5:15 and 5:49;
 # adding OPD's rollouts should not double that. A 3-day request cannot be
 # backfilled into anything smaller than a 3-day gap, which on a partition
@@ -126,7 +126,15 @@ PGD_INTERVAL=${18:-8}
 # has actually run this sidecar path uses 0.3; 0.85 was never exercised
 # because every prior run of THIS script had OPD off and never launched
 # vLLM at all (jobs 930597 and 934382 were the first, and both died).
-VLLM_GPU_MEM=${19:-0.3}
+# 0.15, the value the two runs that actually finished this shape used. Jobs
+# 733812 and 736212 are 4B + OPKD + PGD on 4x A100-80GB FSDP with a fifth card
+# for vLLM ('Launching standalone vLLM server on GPU(s) 4 ... gpu_mem=0.15'),
+# and both reached Step 2048/2048 in about 10 hours. 0.3 was chosen for the
+# shared-card layout and has never been exercised on a dedicated card, where
+# main.py warns that vLLM's address space can be P2P-mapped into the training
+# ranks. The card is no longer shared; that is the one variable being changed,
+# so everything else matches the run that worked.
+VLLM_GPU_MEM=${19:-0.15}
 # 0 = share training rank 0's GPU (no extra card). -1 would ask for a
 # dedicated GPU at index world_size, which requires --gres=gpu:5.
 VLLM_GPU_INDEX=${22:--1}
