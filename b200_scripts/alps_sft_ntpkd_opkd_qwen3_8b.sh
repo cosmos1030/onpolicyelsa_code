@@ -82,7 +82,7 @@ export TMPDIR=/tmp
 export VLLM_USE_V1=0
 export VLLM_HOST_IP=127.0.0.1
 
-echo "=== ALPS -> Sparse SFT NTP+KD+OPKD(${NTP_LAMBDA:-0.33}/${KD_LAMBDA:-0.33}/${OPKD_LAMBDA:-0.33}) Qwen3-8B ${SPARSITY_TAG} lr=${LR} opd_gen_len=${OPD_GEN_LEN} seqlen=${SEQLEN} -- 2xB200 FSDP, vLLM sidecar ==="
+echo "=== ALPS -> Sparse SFT NTP+KD+OPKD(${NTP_LAMBDA:-0.33}/${KD_LAMBDA:-0.33}/${OPKD_LAMBDA:-0.33}) Qwen3-8B ${SPARSITY_TAG} lr=${LR} opd_gen_len=${OPD_GEN_LEN} seqlen=${SEQLEN} -- 1xB200 single-GPU, vLLM in-process ==="
 echo "NODE=$(hostname)  MODEL=$ALPS_MODEL"
 nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader
 
