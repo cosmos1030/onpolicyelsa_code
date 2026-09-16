@@ -58,7 +58,12 @@ def parse_args():
     p.add_argument("--gpu_util", type=float, default=0.9368,
                    help="must match the crashed run's value to reuse its generation cache")
     p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--profile", default="quick", choices=["quick", "official", "full"])
+    p.add_argument("--profile", default="quick", choices=["quick", "long", "official", "full"],
+                   help="'long' is the one the results table uses: per-task budgets sized from "
+                        "measured lengths (16384, lcb 32768) instead of quick's flat 8192, which "
+                        "truncates 90%+ of generations at s70/s80 -- including correct ones -- and "
+                        "so favours whichever method rambles less. See _LONG_BENCHMARKS in "
+                        "lib/lighteval_bench.py.")
     p.add_argument("--hub_repo", default=None, help="HF repo id; auto-generated if omitted")
     p.add_argument("--no_hub", action="store_true", help="skip the HF upload")
     p.add_argument("--sparsity", type=float, default=0.7, help="only used for the auto repo name / commit msg")

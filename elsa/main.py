@@ -1387,7 +1387,7 @@ if __name__ == '__main__':
     flags.DEFINE_bool('eval_zero_shot', True, 'Whether to evaluate zero-shot performance.')
     flags.DEFINE_bool('eval_math500', False, 'Whether to run MATH-500 pass@1 eval after pruning (via lighteval+vLLM).')
     flags.DEFINE_bool('eval_full_bench', True, 'Whether to run the lighteval benchmark suite after training.')
-    flags.DEFINE_enum('eval_profile', 'quick', ['quick', 'official'],
+    flags.DEFINE_enum('eval_profile', 'quick', ['quick', 'long', 'official'],
                        "'quick' (default, 8192 budget, 5 tasks, no AIME24/25 -- fast enough for every sweep job) "
                        "or 'official' (official Qwen3 budgets incl. AIME24/25, ~2-4x slower per benchmark -- only "
                        "use for a specific run you already know is going in a results table, not a routine sweep).")

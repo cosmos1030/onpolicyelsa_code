@@ -7779,12 +7779,30 @@ def globalprune_gmp(
         # run as a trajectory rather than at its endpoint. The output is a normal
         # save_pretrained directory, scored by the same lighteval path as any
         # final model (b200_scripts/resume_eval_lighteval.sh).
-        if _milestone_steps and is_main_process and do_save:
-            for _mstep in _milestone_steps:
-                if step >= _mstep and _mstep not in _saved_milestone_steps:
-                    _saved_milestone_steps.add(_mstep)
-                    _msp = f"{FLAGS.gmp_save_path}/{_run_tag(FLAGS)}_step{_mstep:06d}_{_save_stamp()}"
+        # Under FSDP the parameters are sharded, so writing them needs
+        # summon_full_params exactly as the final save below does -- and that is
+        # a COLLECTIVE, so the gate cannot be `is_main_process`. This block used
+        # to be gated that way and call save_pretrained directly: rank 0 would
+        # have written its shard as if it were the whole model while rank 1 ran
+        # ahead, i.e. silently corrupt milestone weights. It never showed up
+        # because every milestone run so far (the 4B ALPS S70 pair) was
+        # single-GPU, where the elif branch is correct. The membership test also
+        # has to run on every rank, or they disagree about whether to enter the
+        # collective and the job hangs.
+        if _milestone_steps and do_save:
+            _due = [_m for _m in _milestone_steps
+                    if step >= _m and _m not in _saved_milestone_steps]
+            for _mstep in _due:
+                _saved_milestone_steps.add(_mstep)
+                _msp = (f"{FLAGS.gmp_save_path}/{_run_tag(FLAGS)}_step{_mstep:06d}_{_save_stamp()}"
+                        if is_main_process else None)
+                if is_fsdp:
+                    with FSDP.summon_full_params(fsdp_model, writeback=False, recurse=True):
+                        if is_main_process:
+                            model.save_pretrained(_msp)
+                elif is_main_process:
                     model.save_pretrained(_msp)
+                if is_main_process:
                     tokenizer.save_pretrained(_msp)
                     logging.info(f"[MilestoneStep] step={step}: saved {_msp} "
                                  f"(sparsity={maskmgr.current_sparsity():.4f})")
