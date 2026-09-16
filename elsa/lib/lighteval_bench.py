@@ -265,10 +265,20 @@ _QUICK_BENCHMARKS = [
 _LONG_BENCHMARKS = [
     ("math500", "lighteval|math_500|0",           16384, 17408,
      ["pass@k:k=1&n=1"]),
-    ("gpqa",    "lighteval|gpqa:diamond|0",       32768, 33792,
+    # 16384, down from 32768. Measured on dense at 32768: 1.7B averages 7,116
+    # tokens (wrong answers 7,552) and 4B averages 6,644 (wrong 7,774), with
+    # correct-answer truncation of 1.3% and 0.0%. Nothing came close to the
+    # ceiling, and halving it halves the KV a sequence reserves, which is what
+    # sets concurrency and therefore wall clock.
+    ("gpqa",    "lighteval|gpqa:diamond|0",       16384, 17408,
      ["gpqa_pass@k:k=1", "pass@k:k=1&n=1", "acc_norm", "acc"]),
     ("ifeval",  "lighteval|ifeval|0",             16384, 17408,
      ["prompt_level_strict_acc"]),
+    # 32768 stays. This is the one task that needs it: on dense, lcb wrong
+    # answers average 20,372 (1.7B) and 20,100 (4B) tokens and the mean over all
+    # samples is 16,266 / 13,934. Even correct answers average 8,665 / 8,624,
+    # i.e. past the whole quick budget -- which is why quick reported lcb at
+    # 27.6 for 4B dense where this profile reports 53.7.
     ("lcb",     "lighteval|lcb:codegeneration|0", 32768, 33792,
      ["codegen_pass@1:16", "pass@1"]),
     ("gsm8k",   "lighteval|gsm8k|0",              8192, 9216,
