@@ -45,7 +45,12 @@ def fetch(key):
     return None
 meta = json.load(open(os.path.join(src, "pooled_meta.json")))
 P = meta["prompts"]
-WANT = ["dense"] + [f"{f}:{s}" for f in ("alps", "sparsegpt", "alps_sft", "noopd", "ours")
+# "noopd55", not "noopd" -- EXTRA_ALLOW above deliberately keeps only the
+# 0.5/0.5/0 sidecars, which are labelled noopd55:*. Asking for "noopd" here
+# loaded those files and then never fetched a single key from them, which is
+# why the 2026-09-16 06:16 bundle carried noopd55 in cot_displacement.json but
+# not in the pooled npz.
+WANT = ["dense"] + [f"{f}:{s}" for f in ("alps", "sparsegpt", "alps_sft", "noopd55", "ours")
                     for s in ("s50", "s60", "s70")] + ["teacher"]
 # PCA to 256 dims, fit per prompt on all models together so every cloud shares
 # one basis. This is what makes the bundle transferable: 10x smaller, and MMD

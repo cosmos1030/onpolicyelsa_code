@@ -1,13 +1,17 @@
 #!/bin/bash
 #SBATCH --job-name=pol_diverge
-#SBATCH --partition=A100-80GB,4A100
-#SBATCH --qos=hpgpu
+# 48GB cards: one 4B model is resident at a time (vLLM for sampling, then the
+# dense encoder), so an 80GB A100 is wasted here and its queue is 310 deep.
+#SBATCH --partition=RTX6000ADA,A6000
+#SBATCH --qos=normal
 #SBATCH --gres=gpu:1
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=100G
-#SBATCH --time=04:00:00
+# 12h: the 30x64 core run (job 914983) took 5:41 with 12 models, and adding
+# the three noopd55 checkpoints puts it near 7h before any queue jitter.
+#SBATCH --time=12:00:00
 #SBATCH --exclude=n3,n42,n46,n51,n54,n60,n77,n80,n87,n91,n61,n64,n31,n19
 #SBATCH --output=/local-data/user-data/%u/job_%j/slurm/%x_%j.out
 exec 2>&1
@@ -81,6 +85,12 @@ MODELS=(
   sparsegpt:s50=cosmos1030/sparsegpt-qwen3-4b-s50pct
   sparsegpt:s60=cosmos1030/sparsegpt-qwen3-4b-s60pct
   sparsegpt:s70=cosmos1030/sparsegpt-qwen3-4b-s70pct
+  # The w/o-OPD arm, 0.5/0.5/0. Generated here rather than bolted on with
+  # add_model_to_pooled.py afterwards, so it shares the pool's prompts and
+  # sample count by construction.
+  noopd55:s50=/home1/doyoonkim/projects/elsa/models/gmp_s50pct_lr5e-05_20260915_115020_p3476415
+  noopd55:s60=/home1/doyoonkim/projects/elsa/models/gmp_s60pct_lr5e-05_20260915_165740_p3530899
+  noopd55:s70=/home1/doyoonkim/projects/elsa/models/gmp_s70pct_lr0.0001_20260915_173630_p908241
 )
 if [ "$MODELSET" = "all" ]; then
   MODELS+=(

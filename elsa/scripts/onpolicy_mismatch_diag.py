@@ -68,7 +68,8 @@ def _chat(tokenizer, user_text, enable_thinking):
             msgs, tokenize=False, add_generation_prompt=True)
 
 
-def build_prompts(tokenizer, n_prompts, seed, enable_thinking, source="math500"):
+def build_prompts(tokenizer, n_prompts, seed, enable_thinking, source="math500",
+                  train_file=None):
     """Returns (prompts, reference_continuations, ids).
 
     reference_continuations is the third, most off-policy context: text that
@@ -100,11 +101,25 @@ def build_prompts(tokenizer, n_prompts, seed, enable_thinking, source="math500")
         ds = ds.shuffle(seed=42)          # same seed the calibration build used
         lo = OT3_HELDOUT_START
         assert lo >= OT3_CALIB_POOL_END, "held-out window overlaps the calibration pool"
+        # That assert only makes the INDEX ranges disjoint. OpenThoughts3
+        # aggregates many sources, so one problem can sit at several indices and
+        # a prompt drawn from 200,000 can be a verbatim copy of one in the
+        # calibration pool. Check the text against the training file itself and
+        # skip anything that is already in it.
+        train_index = None
+        if train_file:
+            from heldout_filter import TrainingIndex
+            train_index = TrainingIndex(train_file)
+        rejected = []
         # Materialize only the held-out window. Random access into a shuffled
         # arrow dataset walks the indices map per row and is far slower than
-        # slicing the window once; 4x n_prompts leaves room for rows dropped
-        # by the shape checks below.
-        hi = min(lo + max(n_prompts * 4, 64), len(ds))
+        # slicing the window once. 4x n_prompts covered the shape checks alone;
+        # the training-file filter rejects roughly a third of OpenThoughts3
+        # candidates as duplicates of calibration rows (10 of the first 30 in
+        # the 2026-09-16 audit), so the window has to be far wider than the
+        # count actually wanted.
+        span = n_prompts * (16 if train_file else 4)
+        hi = min(lo + max(span, 64), len(ds))
         ds = ds.select(range(lo, hi))
         prompts, refs, ids = [], [], []
         i = 0
@@ -119,9 +134,23 @@ def build_prompts(tokenizer, n_prompts, seed, enable_thinking, source="math500")
             asst = next((t["value"] for t in conv if t.get("from") in ("gpt", "assistant")), None)
             if not user or not asst:
                 continue
+            if train_index is not None:
+                bad, why = train_index.verdict(user)
+                if bad:
+                    rejected.append((f"ot3_shuf42_{lo + i - 1}", why))
+                    continue
             prompts.append(_chat(tokenizer, user, enable_thinking))
             refs.append(asst)
             ids.append(f"ot3_shuf42_{lo + i - 1}")
+        if train_index is not None:
+            print(f"[heldout] kept {len(prompts)}, rejected {len(rejected)} "
+                  f"as present in the training file", flush=True)
+            for pid, why in rejected:
+                print(f"[heldout]   - {pid}: {why}", flush=True)
+            if len(prompts) < n_prompts:
+                raise RuntimeError(
+                    f"only {len(prompts)}/{n_prompts} clean prompts in "
+                    f"[{lo}, {hi}); widen the window")
         return prompts, refs, ids
 
     raise ValueError(f"unknown prompt source {source!r}")

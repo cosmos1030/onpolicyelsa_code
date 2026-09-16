@@ -148,6 +148,14 @@ def main():
     ap.add_argument("--gpu_mem", type=float, default=0.85)
     ap.add_argument("--layers", type=int, nargs="+", default=[18, 36])
     ap.add_argument("--prompt_source", default="ot3", choices=["ot3", "math500"])
+    # Held-out by index is not held-out by content: OpenThoughts3 repeats
+    # problems across indices, so a prompt from the evaluation window can be a
+    # duplicate of one in the calibration pool. Point this at the training
+    # JSONL and such prompts are rejected at selection time.
+    ap.add_argument("--dedup_against",
+                    default="/home1/doyoonkim/projects/elsa/data/"
+                            "ot3_fineweb_40k_qwen3_nostrip_8192.jsonl",
+                    help="training JSONL to exclude prompts against ('' disables)")
     ap.add_argument("--with_teacher", action="store_true",
                     help="also embed the dataset's own CoT as a landmark point")
     ap.add_argument("--outdir", required=True)
@@ -169,8 +177,12 @@ def main():
     # build_prompts pulls all of OpenThoughts3-1.2M (120 files, ~25 min) and
     # parses 1.2M rows to hand back six prompts. Cache the six.
     pcache = os.path.join(args.outdir, "prompts.json")
+    # dedup_against is part of the cache key: a set built without the training
+    # filter is a DIFFERENT set of prompts, and silently reusing it would put
+    # contaminated prompts back into a run that asked for clean ones.
     _want = {"source": args.prompt_source, "seed": args.seed,
-             "n_prompts": args.n_prompts}
+             "n_prompts": args.n_prompts,
+             "dedup_against": args.dedup_against or None}
     _c = json.load(open(pcache)) if os.path.exists(pcache) else None
     # A cache keyed only on the path would silently serve the wrong prompts
     # after a change of seed or count, and the rollouts cached beside it are
@@ -185,12 +197,14 @@ def main():
                 f"{ {k: _c.get(k) for k in _want} } but this run wants {_want}. "
                 "The cached rollouts belong to those prompts too -- use a "
                 "different --outdir rather than mixing them.")
-        prompts, solutions, pids = build_prompts(tok, args.n_prompts, args.seed,
-                                                 True, args.prompt_source)
+        prompts, solutions, pids = build_prompts(
+            tok, args.n_prompts, args.seed, True, args.prompt_source,
+            train_file=args.dedup_against or None)
         tmp = pcache + ".tmp"
         json.dump({"prompts": prompts, "solutions": solutions, "ids": pids,
                    "source": args.prompt_source, "seed": args.seed,
-                   "n_prompts": args.n_prompts}, open(tmp, "w"))
+                   "n_prompts": args.n_prompts,
+                   "dedup_against": args.dedup_against or None}, open(tmp, "w"))
         os.replace(tmp, pcache)
     plens = [len(tok(p, add_special_tokens=False).input_ids) for p in prompts]
     mml = max(plens) + args.max_new_tokens + 64

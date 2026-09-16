@@ -113,6 +113,19 @@ fi
 
 cd /NHNHOME/log-postech/doyoonkim/onpolicyelsa_code/elsa
 
+# KL_CHUNK_SIZE defaults to 256, not the 2048 this script used to hardcode.
+# _kl_loss allocates a contiguous (1, chunk, vocab) fp32 block per chunk, which
+# is 1.24GB at 2048, and the in-process vLLM path here builds vLLM's
+# CuMemAllocator into the training process. That combination killed log_cluster
+# jobs 935947 and 935950 with a SIGSEGV inside loss.backward() at steps 1263
+# and 1854 of 2048. Chunking cuts the sequence axis while log_softmax reduces
+# over vocab, so the loss is the same number at any chunk size -- only the peak
+# and the launch count move. 183GB of HBM makes 2048 survivable here, but there
+# is nothing to gain from it.
+#
+# Every flag below is one logical line: a `#` comment placed between two
+# backslash-continued arguments ends the command there and silently drops
+# everything after it. That bug cost four runs on 2026-09-16. Comments go here.
 $PYTHON main.py \
     --model="$MODEL" \
     --dataset=mixed_cot \
@@ -134,7 +147,7 @@ $PYTHON main.py \
     --gmp_pruning_scope=${PRUNING_SCOPE} \
     --seqlen=${SEQLEN} \
     --gmp_gradient_checkpointing=${GRAD_CKPT} \
-    --gmp_kl_chunk_size=2048 \
+    --gmp_kl_chunk_size=${KL_CHUNK_SIZE:-256} \
     --gmp_max_prompt_len=512 \
     --gmp_kd_only=${KD_ONLY} \
     --kd_nsamples=${KD_NSAMPLES} \
@@ -161,7 +174,7 @@ $PYTHON main.py \
     --eval_math500=false \
     --eval_full_bench=true \
     --eval_profile=quick \
-    --eval_zero_shot=true \
+    --eval_zero_shot=${EVAL_ZERO_SHOT:-false} \
     --wandb=true \
     --wandb_project=${WANDB_PROJECT} \
     --seed=42 \
