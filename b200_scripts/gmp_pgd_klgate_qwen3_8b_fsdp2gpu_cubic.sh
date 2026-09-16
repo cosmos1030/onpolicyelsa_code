@@ -180,7 +180,7 @@ $TORCHRUN --nproc_per_node=2 --master_port=${MASTER_PORT} main.py \
     --push_to_hub=true \
     --eval_math500=false \
     --eval_full_bench=true \
-    --eval_profile=quick \
+    --eval_profile=${EVAL_PROFILE:-long} \
     --eval_zero_shot=true \
     --wandb=true \
     --wandb_project=${WANDB_PROJECT} \

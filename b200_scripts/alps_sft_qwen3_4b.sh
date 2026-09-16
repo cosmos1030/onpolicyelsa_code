@@ -81,7 +81,7 @@ export TMPDIR=/tmp
 export VLLM_USE_V1=0
 export VLLM_HOST_IP=127.0.0.1
 
-echo "=== ALPS -> Sparse SFT NTP+KD+OPKD(0.33/0.33/0.33) Qwen3-8B ${SPARSITY_TAG} lr=${LR} opd_gen_len=${OPD_GEN_LEN} seqlen=${SEQLEN} -- 1xB200 single-GPU, vLLM in-process ==="
+echo "=== ALPS -> Sparse SFT NTP+KD+OPKD(${NTP_LAMBDA:-0.33}/${KD_LAMBDA:-0.33}/${OPKD_LAMBDA:-0.33}) Qwen3-4B ${SPARSITY_TAG} lr=${LR} opd_gen_len=${OPD_GEN_LEN} seqlen=${SEQLEN} -- 1xB200 single-GPU, vLLM in-process ==="
 echo "NODE=$(hostname)  MODEL=$ALPS_MODEL"
 nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader
 
@@ -123,12 +123,13 @@ $PYTHON main.py \
     --gmp_mask_interval=${MASK_INTERVAL} \
     --gmp_prompt_path="$OPD_PROMPT_PATH" \
     --gmp_save_path=/NHNHOME/log-postech/doyoonkim/models \
+    --gmp_ckpt_every_steps=${CKPT_EVERY:-0} --gmp_ckpt_dir="${CKPT_DIR:-}" --gmp_resume_from="${RESUME_FROM:-}" \
     --save_model=true \
     --push_to_hub=true \
     --eval_math500=false \
     --eval_full_bench=true \
-    --eval_profile=quick \
-    --eval_zero_shot=true \
+    --eval_profile=${EVAL_PROFILE:-long} \
+    --eval_zero_shot=${EVAL_ZERO_SHOT:-false} \
     --wandb=true \
     --wandb_project=${WANDB_PROJECT} \
     --seed=42 \
