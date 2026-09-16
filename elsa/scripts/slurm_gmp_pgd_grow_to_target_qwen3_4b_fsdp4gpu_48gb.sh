@@ -8,8 +8,8 @@
 # is ample. It matters because every A100-80GB node is currently 8/8 GPUs
 # allocated -- a 4-GPU job sits at Resources no matter its priority -- while
 # 4A100 has room and 7 jobs queued against A100-80GB's 572.
-#SBATCH --partition=A100-80GB,4A100
-#SBATCH --qos=hpgpu
+#SBATCH --partition=RTX6000ADA,A6000
+#SBATCH --qos=normal
 # 4 GPUs, with vLLM SHARING training rank 0's card rather than taking a fifth.
 # main.py's default (gmp_opkd_vllm_gpu_index=-1) puts vLLM alone on index
 # world_size, which needs a 5th GPU this script never requested -- that is why
@@ -28,7 +28,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
-#SBATCH --mem=120G
+#SBATCH --mem=100G
 # 16h, not 3 days. The 4B w/o-OPD runs of this script took 5:15 and 5:49;
 # adding OPD's rollouts should not double that. A 3-day request cannot be
 # backfilled into anything smaller than a 3-day gap, which on a partition

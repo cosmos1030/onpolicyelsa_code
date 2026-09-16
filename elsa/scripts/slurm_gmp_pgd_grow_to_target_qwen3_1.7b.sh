@@ -142,6 +142,13 @@ fi
 
 cd /home1/doyoonkim/projects/elsa
 
+# 256, not 2048. _kl_loss allocates a contiguous (1, chunk, vocab) fp32
+# block per chunk -- 2048 x 151936 x 4B = 1.24GB -- and this launcher runs
+# vLLM in-process, so it is pinned to max_split_size_mb:256, which forbids
+# splitting a segment to serve anything over 256MB. Job 935947 died of the
+# resulting SIGSEGV in loss.backward() at step 1263/2048. Chunking cuts the
+# sequence axis while log_softmax reduces over vocab, so the loss is the
+# same number at any chunk size; only the peak and the launch count change.
 $PYTHON main.py \
     --model="$MODEL" \
     --dataset=mixed_cot \
@@ -164,7 +171,7 @@ $PYTHON main.py \
     --gmp_gradient_checkpointing=${GRAD_CKPT} \
     --gmp_max_prompt_len=512 \
     --gmp_kd_only=${KD_ONLY} \
-    --gmp_kl_chunk_size=2048 \
+    --gmp_kl_chunk_size=${KL_CHUNK_SIZE:-256} \
     --kd_nsamples=${KD_NSAMPLES} \
     --gmp_ntp_lambda=${NTP_LAMBDA} \
     --gmp_kd_lambda=${KD_LAMBDA} \

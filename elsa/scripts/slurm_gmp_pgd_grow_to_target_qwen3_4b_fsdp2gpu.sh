@@ -79,7 +79,14 @@ CALIB_SIZE=${17:-4}
 PGD_INTERVAL=${18:-8}
 # vLLM has its own GPU here, so this fraction is of THAT card, not shared
 # with training -- it can be far more generous than the single-GPU 0.15.
-VLLM_GPU_MEM=${19:-0.85}
+# 0.15, matching slurm_alps_sft_ntpkd_opkd_qwen3_8b_fsdp2gpu.sh -- the only
+# multi-GPU + OPD configuration in this repo that has ever finished 2048
+# steps (jobs 728889, 730460, 730461, 65 pool refills each). Every FSDP4 run
+# with OPD on has failed, at 4B and at 8B alike.
+VLLM_GPU_MEM=${19:-0.15}
+# 0 = share rank 0's GPU. The default -1 asks for a dedicated card at index
+# world_size, which --gres=gpu:2 does not provide.
+VLLM_GPU_INDEX=${22:-0}
 JUMP_TO_TARGET=${20:-false}
 # world_size=2, so grad_accum is halved to keep global batch at 8.
 GRAD_ACCUM=${21:-4}
@@ -144,6 +151,9 @@ fi
 
 cd /home1/doyoonkim/projects/elsa
 
+# 256: the (1, chunk, vocab) fp32 block is 1.24GB at 2048 and the in-process
+# allocator caps splits at 256MB. That block killed jobs 935947, 935950 and
+# the 4B smoke 935938.
 $TORCHRUN --nproc_per_node=2 --master_port=${MASTER_PORT} main.py \
     --model="$MODEL" \
     --dataset=mixed_cot \
@@ -167,7 +177,7 @@ $TORCHRUN --nproc_per_node=2 --master_port=${MASTER_PORT} main.py \
     --gmp_gradient_checkpointing=${GRAD_CKPT} \
     --gmp_max_prompt_len=512 \
     --gmp_kd_only=${KD_ONLY} \
-    --gmp_kl_chunk_size=2048 \
+    --gmp_kl_chunk_size=${KL_CHUNK_SIZE:-256} \
     --kd_nsamples=${KD_NSAMPLES} \
     --gmp_ntp_lambda=${NTP_LAMBDA} \
     --gmp_kd_lambda=${KD_LAMBDA} \
@@ -176,6 +186,7 @@ $TORCHRUN --nproc_per_node=2 --master_port=${MASTER_PORT} main.py \
     --gmp_onpolicy_max_new_tokens=${OPD_GEN_LEN} \
     --gmp_opkd_prev_mask_teacher=false \
     --gmp_opkd_vllm_gpu_mem=${VLLM_GPU_MEM} \
+    --gmp_opkd_vllm_gpu_index=${VLLM_GPU_INDEX} \
     --gmp_prompt_path="$OPD_PROMPT_PATH" \
     --gmp_tr_enabled=false \
     --gmp_pruning_end_ratio=0.0 \
