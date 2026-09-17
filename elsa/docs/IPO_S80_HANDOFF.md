@@ -7,10 +7,10 @@
 
 ## 0. 요청 요약
 
-80% 희소도 체크포인트 두 개에 **IPO(UltraFeedback)를 걸고, 5종 벤치를 long
-프로파일로** 재주시면 됩니다. 70%로는 가속 효과가 작아서 80%로 다시 만들었습니다.
+80% 희소도 체크포인트에 **IPO(UltraFeedback)를 걸고, MATH-500을 long 프로파일로**
+재주시면 됩니다. 70%로는 가속 효과가 작아서 80%로 다시 만들었습니다.
 
-- 대상: **ours(SCOUT) s80**, **ALPS+recovery s80**
+- 대상: **① ours(SCOUT) s80 을 먼저**, **② ALPS+recovery s80 은 시간이 되시면**
 - 학습: 기존 S70 IPO 레시피 그대로, `model_name_or_path`만 교체
 - 평가: **MATH-500만**, `--profile long`, seed 42, **두 모델 동일 예산**
 - 지표: 정확도에 더해 **평균 토큰수와 절단율을 각각 전체 / 정답 / 오답으로** (§6)
@@ -191,12 +191,19 @@ gradient_accumulation_steps: 8
 바꿀 곳:
 
 ```yaml
-# ours
+# ① ours  ← 이것부터
 model_name_or_path: cosmos1030/gmp-kd3e-1-s80pct-lr1e-4_20260916_220740
-# baseline
-model_name_or_path: cosmos1030/gmp-kd3e-1-4b-s80pct-lr1e-4_20260917_112952
 output_dir: <새 경로>
+
+# ② baseline (ALPS+recovery) ← 시간이 되시면
+model_name_or_path: cosmos1030/gmp-kd3e-1-4b-s80pct-lr1e-4_20260917_112952
+output_dir: <다른 경로>
 ```
+
+**순서**: ours 한 arm만으로도 "s80에서 IPO가 길이를 줄이는가"는 답이 나옵니다.
+baseline은 그 효과가 방법에 특유한 것인지 프루닝 모델 일반의 성질인지를 가르는
+용도라, 시간이 없으면 뒤로 미루셔도 됩니다. ours 쪽이 길이 측정도 훨씬 잘 되고요
+(정답의 83%가 예산 안에서 끝남 — §6).
 
 **`sparse_optimizer: MaskedAdam`이 빠지면 실험이 무의미해집니다.** 프루닝으로 0이 된
 가중치를 매 스텝 0으로 고정하는 역할인데, 일반 Adam이면 IPO가 그 자리를 다시 채워
