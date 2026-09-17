@@ -40,6 +40,14 @@ pending() {
     [ "$((10#$st))" -ge "$MIN_STEP" ] || continue
     n=$(find "$d/lighteval_bench" -name 'results_*.json' 2>/dev/null | wc -l)
     [ "$n" -ge 5 ] && continue
+    # ...and not already being scored. "Unscored" alone is not enough: an eval
+    # in flight has written at most a couple of its five result files, so the
+    # directory still looks pending and a GPU freeing up gets handed the SAME
+    # checkpoint a second time. That happened at 11:00 -- GPU 2 was given the
+    # checkpoint GPU 0 had been working on for 33 minutes, two engines writing
+    # into one results tree. In-flight is read from the live processes rather
+    # than a state file, so it stays right across a restart of this queue.
+    inflight "$(basename "$d")" && continue
     echo "$((10#$st)) $d"
   done | sort -n | cut -d' ' -f2-
 }
@@ -54,6 +62,20 @@ claimed() {
     tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null \
       | sed -nE 's/^CUDA_VISIBLE_DEVICES=(.*)$/\1/p' | tr ',' '\n'
   done | sort -u
+}
+
+inflight() {                     # is some live eval already on this checkpoint?
+  # Find processes whose command line names this checkpoint, then keep only the
+  # ones that are actually evaluators. Written this way round, and skipping our
+  # own pid, so that a shell that merely mentions the name -- this queue, or
+  # anything inspecting it -- cannot match itself.
+  local pid
+  for pid in $(pgrep -f -- "$1" 2>/dev/null); do
+    [ "$pid" = "$$" ] && continue
+    ps -p "$pid" -o args= 2>/dev/null \
+      | grep -qE 'resume_eval_lighteval|lighteval_patched_runner' && return 0
+  done
+  return 1
 }
 
 free_gpu() {                     # first GPU under FREE_MB and claimed by nobody
