@@ -70,32 +70,9 @@ pre-IPO 기준선:
 | (참고) ALPS 원샷 s80, 회복 없음 | `cosmos1030/alps-qwen3-4b-s80pct` |
 | (참고) dense | `Qwen/Qwen3-4B` |
 
-**ours repo 이름에 `4b`가 없습니다.** 같은 날 올린 8B 판이
-`gmp-kd3e-1-s80pct-lr1e-4_20260916_214905`로 **타임스탬프만 다릅니다.**
-`_220740`이 4B입니다. (이후 업로드부터는 이름에 `4b`/`8b`가 들어갑니다.)
-
-세 s80 체크포인트 모두 실측 zero fraction **0.800000**(레이어 균일)로 확인했습니다.
-
 ---
 
-## 3. pre-IPO 기준값 — 이미 측정돼 있습니다
-
-**다시 재실 필요 없습니다.** 전부 `--profile long`, seed 42입니다.
-
-| 4B s80 | Math500 | GPQA | IFEval | LCB | GSM8K | avg5 |
-|---|---|---|---|---|---|---|
-| **ours** | **48.0** | **30.3** | **20.52** | 측정 중 | 측정 중 | — |
-| ALPS+recovery (NTP+KD+OPD) | 17.8 | 27.78 | 15.90 | 0.00 | 38.89 | **20.07** |
-| ALPS+recovery (NTP+KD) | 17.0 | 26.77 | 15.53 | 0.00 | 33.13 | **18.49** |
-
-ours의 LCB/GSM8K는 오늘 밤 나옵니다. 나오는 대로 이 표를 갱신해 전달드리겠습니다.
-
-s80에서 격차가 벤치마다 크게 다릅니다 — MATH-500 **+30.2p**, IFEval +4.6p,
-GPQA +2.5p. 수학 추론에 몰려 있습니다.
-
----
-
-## 3.5. 환경 / 데이터 / 스크립트
+## 3. 환경 / 데이터 / 스크립트
 
 ### 환경 — conda env 두 개가 필요합니다
 
@@ -113,15 +90,8 @@ bash elsa/scripts/setup_ipo_grpo_env.sh
 경로(lighteval)는 0.10.0이 필요합니다. 런처 스크립트가 학습엔 `rac_vllm084`,
 평가엔 `rac`로 알아서 전환하므로 두 이름을 그대로 쓰시면 수동 전환은 없습니다.
 
-`open_r1` 패키지는 pip 설치가 아니라 PYTHONPATH로 잡습니다 (런처가 처리):
-
-```bash
-export PYTHONPATH=<repo>/RAC/open-r1-main/src:<repo>/RAC/open-r1-main/src/open_r1
-export HF_TOKEN=...        # ~/.hf_token 에서 읽습니다
-export WANDB_API_KEY=...   # README의 "Environment variables / secrets" 참고
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-export TOKENIZERS_PARALLELISM=false
-```
+PYTHONPATH 등 나머지는 런처가 잡습니다. 미리 준비하실 건 시크릿 두 개뿐입니다 —
+`~/.hf_token` 파일과 `WANDB_API_KEY` (README의 "Environment variables / secrets").
 
 ### 데이터
 
@@ -151,15 +121,9 @@ GPU 1장(A100-80GB), `--time=24:00:00` 기준으로 잡혀 있습니다.
 
 ### ⚠ 반드시 이 `_fullft` 런처를 쓰세요
 
-이전 버전(`slurm_ipo_ultrafeedback_s70.sh`)은 LoRA + `merge_and_unload()`로
-평가했는데, **merge가 프루닝 마스크를 모르기 때문에 0이던 가중치가 채워졌습니다.**
-실측으로 `ipo_alpssft_s70_lr1e4_uf_lr1e-6_merged`에서 zero_frac이
-**0.70 → ~0.0001**로 무너졌습니다. 즉 희소 모델을 IPO한 게 아니라 dense로 되돌린
-것이었습니다.
-
-`_fullft` 버전은 LoRA 없이 전체 파라미터를 DPOTrainer의 MaskedAdam 기반
-`create_optimizer` 오버라이드로 학습합니다 — merge 단계가 없어서 **저장된
-체크포인트가 곧 평가 체크포인트**입니다.
+이전 LoRA 버전(`slurm_ipo_ultrafeedback_s70.sh`)은 `merge_and_unload()`가 프루닝
+마스크를 몰라서 희소도가 풀립니다(zero_frac 0.70 → ~0.0001). `_fullft`는 merge 단계가
+없어 **저장된 체크포인트가 곧 평가 체크포인트**입니다.
 
 ---
 
@@ -262,7 +226,9 @@ LCB 180분, GSM8K 55분 → 5종 전부면 약 6시간.)
 wandb 없이 돌리셨다면 details parquet에서 직접 계산됩니다 —
 `model_response.output_tokens` 길이와 `metric`의 정오답으로 위 6칸이 나옵니다.
 
-### IPO 전 실측 (MATH-500, long 16,384, 동일 예산)
+### IPO 전 실측 (MATH-500, long 16,384)
+
+아래는 이미 측정된 pre-IPO 값입니다. **다시 재지 않으셔도 됩니다.**
 
 **ours s80** — 정확도 48.0% (정답 240 / 오답 260)
 
