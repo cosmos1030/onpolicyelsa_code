@@ -99,7 +99,7 @@ TORCHRUN=/NHNHOME/log-postech/doyoonkim/miniconda3/envs/rac/bin/torchrun
 
 OPD_PROMPT_PATH="/NHNHOME/log-postech/doyoonkim/data/ot3_fineweb_200k_qwen3_opdprompts.jsonl"
 
-JOB_TAG="gmp_pgd_grow_8b_fsdp2_b200_s${SPARSITY_PCT}_lr${LR}_klb${KL_BUDGET}_pgdi${PGD_INTERVAL}"
+JOB_TAG="gmp_pgd_grow_8b_fsdp2_b200_s${SPARSITY_PCT}_lr${LR}_klb${KL_BUDGET}_pgdi${PGD_INTERVAL}${TAG_SUFFIX:-}"
 LOCAL_JOB_BASE="/NHNHOME/log-postech/doyoonkim/logs/${JOB_TAG}"
 mkdir -p "$LOCAL_JOB_BASE/wandb"
 
@@ -200,7 +200,7 @@ $TORCHRUN --nproc_per_node=2 --master_port=${MASTER_PORT} main.py \
     --wandb=true \
     --wandb_project=${WANDB_PROJECT} \
     --seed=42 \
-    --run_name_suffix="pgd_grow2target_klbudget${KL_BUDGET}_lr${LR}_pgdi${PGD_INTERVAL}_${PRUNING_SCOPE}scope_b200fsdp2"
+    --run_name_suffix="pgd_grow2target_klbudget${KL_BUDGET}_lr${LR}_pgdi${PGD_INTERVAL}_${PRUNING_SCOPE}scope${TAG_SUFFIX:-}_b200fsdp2"
 
 EXIT_CODE=$?
 echo "=== main.py EXIT: $EXIT_CODE ==="
