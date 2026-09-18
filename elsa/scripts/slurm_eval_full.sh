@@ -71,6 +71,11 @@ TP_SIZE=${8:-1}
 SKIP_PPL=${9:-false}
 SKIP_ZEROSHOT=${10:-false}
 PROFILE=${11:-official}
+# vLLM's share of each card. 0.85 leaves ~12GB idle on an 80GB A100, and the
+# evals are sequence-starved rather than memory-bound (GPU util sits at 52-72%
+# with the full 0.85 reserved), so a higher value buys concurrency directly.
+# Raise it only with enforce_eager on -- graph capture needs the headroom.
+GPU_UTIL=${GPU_UTIL:-0.85}
 
 PYTHON=/home1/doyoonkim/miniconda3/envs/rac/bin/python
 
@@ -119,7 +124,7 @@ $PYTHON scripts/eval_full.py \
     --run_name "$RUN_NAME" \
     --method "$METHOD" \
     --sparsity "$SPARSITY" \
-    --gpu_util 0.85 \
+    --gpu_util "$GPU_UTIL" \
     --tp_size "$TP_SIZE" \
     --out_base "$LOCAL_JOB_BASE/eval_${RUN_NAME}" \
     "${EXTRA_ARGS[@]}"
