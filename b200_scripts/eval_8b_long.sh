@@ -1,0 +1,113 @@
+#!/bin/bash
+# One 8B checkpoint, long profile, 3 seeds, five reasoning benchmarks.
+#
+# The 8B row of the main table is empty -- wandb has s3_8b_dense and nothing
+# else -- while 4B and 1.7B are filled in on the cluster. Running it there
+# would need 12 jobs x 2 A100s and would evict both of those, so it lands here.
+#
+# Usage: bash eval_8b_long.sh <arm>
+#   arm = {sparsegpt,alps,alpsretrain,ours}_s{50,60,70}
+# Env: SEEDS (default 0,1,42), GPU_UTIL (0.90), PROFILE (long), FORCE=1 to
+#      redo an arm whose done-marker already exists.
+set -u
+
+ROOT=${ELSA_ROOT:-/NHNHOME/log-postech/doyoonkim}
+REPO=${ELSA_REPO:-$ROOT/onpolicyelsa_code}
+PYTHON=${PYTHON:-$ROOT/miniconda3/envs/rac/bin/python}
+OUT_ROOT=${OUT_ROOT:-$ROOT/logs/eval_8b_long}
+SEEDS=${SEEDS:-0,1,42}
+PROFILE=${PROFILE:-long}
+# B200 is 180GB and the evals are sequence-starved, not memory-bound: on an
+# 80GB A100 the same jobs sat at 52-72% GPU with 0.85 reserved. 8B bf16 is
+# ~16GB and a 32k-token KV sequence is ~4.8GB, so 0.90 leaves room for ~30
+# concurrent sequences. Drop it if vLLM reports a cache-block failure.
+GPU_UTIL=${GPU_UTIL:-0.90}
+TP_SIZE=${TP_SIZE:-1}
+WANDB_PROJECT=${WANDB_PROJECT:-reasoning_qwen3_8b_nostrip8192}
+
+die () { echo "!! $*" >&2; exit 1; }
+ARM=${1:?"usage: eval_8b_long.sh <{sparsegpt,alps,alpsretrain,ours}_s{50,60,70}>"}
+
+case "$ARM" in
+  sparsegpt_s50)  M=cosmos1030/qwen3-8b-sgpt-s50pct-ot80fw20;             ME=sparsegpt; SP=0.5 ;;
+  sparsegpt_s60)  M=cosmos1030/qwen3-8b-sgpt-s60pct-ot80fw20;             ME=sparsegpt; SP=0.6 ;;
+  sparsegpt_s70)  M=cosmos1030/qwen3-8b-sgpt-s70pct-ot80fw20;             ME=sparsegpt; SP=0.7 ;;
+  alps_s50)       M=cosmos1030/qwen3-8b-alps-s50pct;                      ME=alps;      SP=0.5 ;;
+  alps_s60)       M=cosmos1030/qwen3-8b-alps-s60pct;                      ME=alps;      SP=0.6 ;;
+  alps_s70)       M=cosmos1030/qwen3-8b-alps-s70pct;                      ME=alps;      SP=0.7 ;;
+  # ALPS mask + NTP/KD/OPD retrain. The tok512 runs, not the August tok256
+  # ones -- 4B and 1.7B both used opd_gen_len=512, and mixing the two inside
+  # one row would compare training recipes, not sparsity.
+  alpsretrain_s50) M=cosmos1030/gmp-kd3e-1-s50pct-lr5e-5_20260908_053513; ME=gmp; SP=0.5 ;;
+  alpsretrain_s60) M=cosmos1030/gmp-kd3e-1-s60pct-lr5e-5_20260908_054305; ME=gmp; SP=0.6 ;;
+  alpsretrain_s70) M=cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260908_132323; ME=gmp; SP=0.7 ;;
+  # SCOUT. Picked from the 8B sweep the same way 4B and 1.7B were: best
+  # in-training (quick-profile) average at that sparsity's standard lr --
+  # 5e-5 for s50/s60, 1e-4 for s70. wandb runs roq1vwuw / mgf2ka9s / ajm5l60w.
+  ours_s50)       M=cosmos1030/gmp-kd3e-1-s50pct-lr5e-5_20260907_210125;  ME=gmp; SP=0.5 ;;
+  ours_s60)       M=cosmos1030/gmp-kd3e-1-s60pct-lr5e-5_20260907_142152;  ME=gmp; SP=0.6 ;;
+  ours_s70)       M=cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260911_015957;  ME=gmp; SP=0.7 ;;
+  *) die "unknown arm '$ARM'" ;;
+esac
+
+RUN="s3_8b_${ARM}"
+MARK="$OUT_ROOT/.done_${RUN}"
+if [ -f "$MARK" ] && [ "${FORCE:-0}" != "1" ]; then
+  echo "== $ARM already done ($MARK) -- skipping. FORCE=1 to redo."
+  exit 0
+fi
+
+source "$ROOT/miniconda3/etc/profile.d/conda.sh"
+conda activate rac
+
+[ -x "$PYTHON" ] || die "no python at $PYTHON"
+[ -d "$REPO/elsa" ] || die "no elsa/ under $REPO"
+# --profile long is accepted by argparse even on a checkout whose library has
+# no long table, and then dies inside lighteval_bench. Check for the table.
+grep -q "_LONG_BENCHMARKS" "$REPO/elsa/lib/lighteval_bench.py" \
+  || die "this checkout predates the long profile -- git pull in $REPO"
+
+export HF_TOKEN=${HF_TOKEN:-$(cat "$ROOT/secrets/hf_token" 2>/dev/null)}
+export WANDB_API_KEY=${WANDB_API_KEY:-$(cat "$ROOT/secrets/wandb_api_key" 2>/dev/null)}
+[ -n "${WANDB_API_KEY:-}" ] || die "no WANDB_API_KEY -- eval_full.py treats a failed wandb.init as fatal"
+export HF_HOME=$ROOT/.cache/huggingface
+export VLLM_CACHE_ROOT=$ROOT/.cache/vllm
+export TRITON_CACHE_DIR=$ROOT/.cache/triton
+export TORCHINDUCTOR_CACHE_DIR=$ROOT/.cache/torchinductor
+export TMPDIR=/tmp
+export TOKENIZERS_PARALLELISM=false
+export VLLM_USE_V1=0
+export VLLM_HOST_IP=127.0.0.1
+# Deliberately NOT setting TRANSFORMERS_OFFLINE/HF_DATASETS_OFFLINE: this
+# container has internet and lighteval fetches datasets that are not cached.
+
+mkdir -p "$OUT_ROOT"
+LOG="$OUT_ROOT/${RUN}_$(date +%Y%m%d_%H%M%S).log"
+echo "=== 8B long eval ==="
+echo "  arm $ARM   model $M"
+echo "  run $RUN -> $WANDB_PROJECT   seeds $SEEDS   profile $PROFILE"
+echo "  tp $TP_SIZE   gpu_util $GPU_UTIL   log $LOG"
+nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader 2>/dev/null || true
+
+cd "$REPO/elsa"
+# PPL and zero-shot skipped: this table is reasoning-only, and the zero-shot
+# suite needs datasets this container has not cached (see README).
+"$PYTHON" scripts/eval_full.py \
+    --model_path "$M" \
+    --wandb_project "$WANDB_PROJECT" \
+    --run_name "$RUN" \
+    --method "$ME" --sparsity "$SP" \
+    --profile "$PROFILE" \
+    --seeds "$SEEDS" \
+    --tp_size "$TP_SIZE" --gpu_util "$GPU_UTIL" \
+    --skip_ppl --skip_zeroshot \
+    --out_base "$OUT_ROOT/eval_${RUN}" 2>&1 | tee "$LOG"
+
+CODE=${PIPESTATUS[0]}
+# 134/139 on teardown is a known benign GC abort: the results are already in
+# wandb by then. Treat the run as done if the log says the benchmarks finished.
+if [ "$CODE" -eq 0 ] || grep -q "lighteval bench done\|_mean" "$LOG"; then
+  touch "$MARK"
+fi
+echo "=== EXIT: $CODE ===  log: $LOG"
+exit $CODE
