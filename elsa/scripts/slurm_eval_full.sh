@@ -80,6 +80,27 @@ GPU_UTIL=${GPU_UTIL:-0.85}
 PYTHON=/home1/doyoonkim/miniconda3/envs/rac/bin/python
 
 LOCAL_JOB_BASE="/local-data/user-data/${USER}/job_${SLURM_JOB_ID}"
+
+# lighteval writes its per-sample details (the prompt, the full generation, the
+# parsed answer, whether it scored) as parquet under out_base. out_base is
+# node-local on purpose -- thousands of small writes to NFS during a run are
+# slow -- but nothing ever copied them back, so the generations of every
+# finished eval became unreachable as soon as the node moved on to someone
+# else's job. Copy just the parquet out at exit; a trap rather than a line at
+# the bottom, so a job killed at its time limit still leaves what it had.
+DETAILS_NFS="/home1/doyoonkim/projects/elsa/logs/eval_details/${RUN_NAME}_${SLURM_JOB_ID}"
+save_details () {
+    local src="$LOCAL_JOB_BASE/eval_${RUN_NAME}"
+    [ -d "$src" ] || return 0
+    mkdir -p "$DETAILS_NFS"
+    (cd "$src" && find . -name "*.parquet" -print0 2>/dev/null |
+        while IFS= read -r -d "" f; do
+            mkdir -p "$DETAILS_NFS/$(dirname "$f")"
+            cp -n "$f" "$DETAILS_NFS/$f" 2>/dev/null || true
+        done)
+    echo "[details] $(find "$DETAILS_NFS" -name "*.parquet" 2>/dev/null | wc -l) parquet -> $DETAILS_NFS ($(du -sh "$DETAILS_NFS" 2>/dev/null | cut -f1))"
+}
+trap save_details EXIT
 mkdir -p "$LOCAL_JOB_BASE/wandb"
 
 export WANDB_DIR="/home1/doyoonkim/projects/elsa/logs/wandb_${SLURM_JOB_ID}"
