@@ -69,6 +69,9 @@ METHOD = {'dense': 'dense', 'sparsegpt': 'SparseGPT', 'sgpt_selfgen': 'SparseGPT
           # 0/1 afterwards (s3_4b_s80_dpo_lr1e5_s01). Same checkpoint, so they
           # have to land on the same label or the TSV shows one arm twice with
           # one seed each. The label text must match LABELS exactly.
+          # SparseLLM s80 baseline; without this the block is titled with the
+          # raw run name.
+          'sparsellm': 'SparseLLM',
           'dpo_lr1e5': 'Ours + DPO (lr1e-5, ep0.4)',
           'dpo_lr5e6': 'Ours + DPO (lr5e-6, ep1.0)',
           'noopd': 'Ours w/o OPD (0.5/0.5/0)',
@@ -76,7 +79,7 @@ METHOD = {'dense': 'dense', 'sparsegpt': 'SparseGPT', 'sgpt_selfgen': 'SparseGPT
           # KL-gate jump rule, no frozen pool. There is no s50 arm -- only s60,
           # s70 and 2:4 were ever trained.
           'a3jump': 'Ours (A3 jump)'}
-ORDER = ['dense', 'SparseGPT', 'SparseGPT selfgen', 'ALPS', 'ALPS selfgen',
+ORDER = ['dense', 'SparseGPT', 'SparseGPT selfgen', 'SparseLLM', 'ALPS', 'ALPS selfgen',
          'ALPS+retrain', 'Ours', 'Ours (A3 jump)']
 
 
