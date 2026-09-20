@@ -207,13 +207,14 @@ Qwen 3 4B s80 ALPS+retrain w/o OPD  [1/3 seeds complete]																					wan
 seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens
 42	18.49	17.0	91.0	71.76	15522	26.77	87.37	81.13	14955	15.53	90.02	92.86	14909	0	99.63	-	32666	33.13	77.03	66.59	7160
 																					
-Qwen 3 4B s80 Ours  [2/3 seeds complete]  [finished/running]																					wandb 0qeykb19 ush52nf1
+Qwen 3 4B s80 Ours																					wandb 0qeykb19 ush52nf1
 	avg5	math500				GPQA				IFEval				LCB				GSM8K			
 seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens
 0	31.6	48.0	50.4	19.58	11207	26.77	86.36	88.68	15089	18.85	93.72	94.12	15565	0	95.52	-	31622	64.37	39.2	22.5	5367
+1	30.94	45.4	52.2	20.7	11341	22.22	90.91	90.91	15445	21.81	93.72	87.29	15541	0	95.15	-	31653	65.28	40.86	23.81	5380
 42	31.52	44.8	52.8	18.75	11429	25.76	91.41	88.24	15712	21.07	93.53	85.96	15540	0	94.78	-	31969	65.96	38.82	22.87	5298
-mean	31.56	46.4	51.6	19.17	11318	26.26	88.89	88.46	15400	19.96	93.62	90.04	15552	0.0	95.15	-	31795	65.16	39.01	22.69	5332
-std	0.06	2.26	1.7	0.59	157	0.71	3.57	0.31	441	1.57	0.13	5.76	18	0.0	0.53	-	245	1.13	0.27	0.27	49
+mean	31.35	46.07	51.8	19.68	11326	24.92	89.56	89.27	15415	20.58	93.65	89.12	15549	0.0	95.15	-	31748	65.2	39.63	23.06	5348
+std	0.36	1.7	1.25	0.98	112	2.39	2.78	1.43	313	1.54	0.11	4.38	14	0.0	0.37	-	192	0.8	1.09	0.68	44
 																					
 Qwen 3 4B s80 Ours + DPO (lr1e-5, ep0.4)																					wandb 9s01x120 p6492hqj
 	avg5	math500				GPQA				IFEval				LCB				GSM8K			
