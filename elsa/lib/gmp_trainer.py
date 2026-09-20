@@ -7938,8 +7938,22 @@ def _model_tag(FLAGS):
     Returns e.g. '4b', '1.7b', '8b_n24'; empty if the model name carries no size.
     """
     import re as _re
-    _name = str(getattr(FLAGS, 'model', '')).rstrip('/').rsplit('/', 1)[-1]
-    _m = _re.search(r'(\d+(?:\.\d+)?)b', _name, _re.I)
+    _path = str(getattr(FLAGS, 'model', '')).rstrip('/')
+    # Search the WHOLE path for a Qwen3-<size>B, not the last component for any
+    # digits-then-b. An HF cache path ends in the snapshot hash, and a hex hash
+    # hits that looser pattern: Qwen3-4B's snapshot
+    # 1cfa9a7208912126459214e8b04321603b3df60c contains "8b", so job 961503
+    # uploaded a 4B model as gmp-8b-s70pct-... (renamed by hand afterwards).
+    _m = _re.search(r'qwen[\d.]*[-_]?(\d+(?:\.\d+)?)b(?![0-9a-f])', _path, _re.I)
+    if _m is None:
+        # Not a Qwen path: fall back to the old rule, but only on a component
+        # that is not a bare hex hash, and require the size to end the token.
+        for _c in reversed(_path.split('/')):
+            if _re.fullmatch(r'[0-9a-f]{16,}', _c):
+                continue
+            _m = _re.search(r'(?<![0-9a-f])(\d+(?:\.\d+)?)b(?![0-9a-f])', _c, _re.I)
+            if _m:
+                break
     _parts = [f"{_m.group(1)}b".lower()] if _m else []
     _st = str(getattr(FLAGS, 'sparsity_type', 'unstructured') or 'unstructured')
     if _st.lower() not in ('unstructured', ''):
