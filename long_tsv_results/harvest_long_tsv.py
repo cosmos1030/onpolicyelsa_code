@@ -64,6 +64,15 @@ METHOD = {'dense': 'dense', 'sparsegpt': 'SparseGPT', 'sgpt_selfgen': 'SparseGPT
           # is stripped before this lookup so they land on the same label as the
           # seed-42 run and merge into one block.
           'ours_noopd': 'Ours w/o OPD (0.5/0.5/0)',
+          # The s80 DPO arms were measured in two batches: seed 42 first
+          # (s3_4b_s80_dpo_lr1e5_ep04_s42, labelled by run id above) and seeds
+          # 0/1 afterwards (s3_4b_s80_dpo_lr1e5_s01). Same checkpoint, so they
+          # have to land on the same label or the TSV shows one arm twice with
+          # one seed each. The label text must match LABELS exactly.
+          'dpo_lr1e5': 'Ours + DPO (lr1e-5, ep0.4)',
+          'dpo_lr5e6': 'Ours + DPO (lr5e-6, ep1.0)',
+          'noopd': 'Ours w/o OPD (0.5/0.5/0)',
+          'jump': 'Ours (A3 jump)',
           # KL-gate jump rule, no frozen pool. There is no s50 arm -- only s60,
           # s70 and 2:4 were ever trained.
           'a3jump': 'Ours (A3 jump)'}
@@ -82,6 +91,7 @@ def auto_label(run):
     n = re.sub(r'_s42$', '', run.name)
     n = re.sub(r'^s3_[\d.]+b_', '', n)
     n = re.sub(r'_seeds?\d+$', '', n)   # _seed0 / _seed1 / _seeds01
+    n = re.sub(r'_ep\d+$', '', n)        # _ep04 on the first DPO batch
     n = re.sub(r'(^|_)s\d\d(?=_|$)', '', n).strip('_')
     for k in sorted(METHOD, key=len, reverse=True):
         if n == k:
