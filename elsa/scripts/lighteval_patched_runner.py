@@ -67,6 +67,37 @@ def _disable_sample_cache():
           "(LIGHTEVAL_DISABLE_SAMPLE_CACHE=1)", flush=True)
 
 
+def _patch_ifeval_json():
+    """IFEval's JsonFormat check crashes the whole ifeval metric on a degenerate
+    generation.
+
+    lighteval.tasks.tasks.ifeval.instructions.JsonFormat.check_following does
+    `json.loads(value)` inside `except ValueError`. A response that is deeply
+    nested JSON-ish text (`[[[[[[...`) makes the decoder raise RecursionError,
+    which is a RuntimeError, not a ValueError -- so it escapes and takes
+    Pipeline._compute_metrics down with it. Generation had already finished;
+    only scoring died, and the whole benchmark was lost.
+
+    Hit on 2026-09-19 by s3_8b_a3jump_s70. Heavily-pruned models are the ones
+    that emit this kind of degenerate output, so this is not a one-off.
+
+    Not following the JSON instruction is exactly what an unparseable response
+    means, so widening the except to BaseException-minus-the-ones-we-must-not-
+    swallow keeps the metric's semantics and just stops the crash.
+    """
+    from lighteval.tasks.tasks.ifeval.instructions import JsonFormat
+
+    inner = JsonFormat.check_following
+
+    def check_following(self, value):
+        try:
+            return inner(self, value)
+        except (ValueError, RecursionError):
+            return False
+
+    JsonFormat.check_following = check_following
+
+
 def _patch_avg_at_n():
     import numpy as np
     from lighteval.metrics.metrics_sample import AvgAtN
@@ -80,6 +111,7 @@ def _patch_avg_at_n():
 
 _disable_sample_cache()
 _patch_avg_at_n()
+_patch_ifeval_json()
 
 from lighteval.__main__ import app  # noqa: E402
 

@@ -59,9 +59,16 @@ LABELS = {
 }
 METHOD = {'dense': 'dense', 'sparsegpt': 'SparseGPT', 'sgpt_selfgen': 'SparseGPT selfgen',
           'alps': 'ALPS', 'alps_selfgen': 'ALPS selfgen', 'alpsretrain': 'ALPS+retrain',
-          'ours': 'Ours'}
+          'ours': 'Ours',
+          # Extra-seed batches run as s3_8b_<arm>_seed{0,1} / _seeds01; the suffix
+          # is stripped before this lookup so they land on the same label as the
+          # seed-42 run and merge into one block.
+          'ours_noopd': 'Ours w/o OPD (0.5/0.5/0)',
+          # KL-gate jump rule, no frozen pool. There is no s50 arm -- only s60,
+          # s70 and 2:4 were ever trained.
+          'a3jump': 'Ours (A3 jump)'}
 ORDER = ['dense', 'SparseGPT', 'SparseGPT selfgen', 'ALPS', 'ALPS selfgen',
-         'ALPS+retrain', 'Ours']
+         'ALPS+retrain', 'Ours', 'Ours (A3 jump)']
 
 
 def sparsity(run):
@@ -74,6 +81,7 @@ def auto_label(run):
         return LABELS[run.id]
     n = re.sub(r'_s42$', '', run.name)
     n = re.sub(r'^s3_[\d.]+b_', '', n)
+    n = re.sub(r'_seeds?\d+$', '', n)   # _seed0 / _seed1 / _seeds01
     n = re.sub(r'(^|_)s\d\d(?=_|$)', '', n).strip('_')
     for k in sorted(METHOD, key=len, reverse=True):
         if n == k:
@@ -157,7 +165,7 @@ def expected_seeds(run):
 def harvest(api, size, proj):
     f = {'$or': [{f'summary_metrics.{b}_avg_gen_cap{x}': {'$exists': True}}
                  for b in ('math500', 'gsm8k') for x in SUFFIXES]}
-    blocks = []
+    blocks, merged = [], {}
     for r in api.runs(f'{ENT}/{proj}', filters=f, per_page=200):
         s = r.summary._json_dict
         rows = []
@@ -170,21 +178,41 @@ def harvest(api, size, proj):
             rows.append([seed] + cells(s, suf))
         if not rows:
             continue
-        label = f'Qwen 3 {size.upper()} ' + (f's{sparsity(r)} ' if sparsity(r) else '') + auto_label(r)
-        full = [x for x in rows if x[1] != '-']
-        want = expected_seeds(r)
-        if len(full) < want or len(full) < len(rows):
-            label += f'  [{len(full)}/{want} seeds complete -- {r.state}]'
-        elif r.state != 'finished':
-            label += f'  [{r.state}]'
-        if len(rows) >= 2:
-            rows = rows + [['mean'] + agg(rows, st.mean), ['std'] + agg(rows, st.stdev)]
         meth = auto_label(r)
+        key = (sparsity(r), meth)
+        # Merge runs that share an arm. Extra seeds are run as separate wandb
+        # runs (s3_8b_<arm>_seed0, ...), and a re-run after a crashed benchmark
+        # leaves two runs for the same seed -- both would otherwise become
+        # half-empty blocks under one label. Group here, pick the best row per
+        # seed below, then compute mean/std once over the merged seeds.
+        merged.setdefault(key, {'rows': {}, 'ids': [], 'states': [], 'want': 0})
+        g = merged[key]
+        g['ids'].append(r.id)
+        g['states'].append(r.state)
+        g['want'] = max(g['want'], expected_seeds(r))
+        for row in rows:
+            prev = g['rows'].get(row[0])
+            # More numeric cells wins: that is the complete pass, not the
+            # crashed one.
+            score = sum(isinstance(c, (int, float)) for c in row)
+            if prev is None or score > sum(isinstance(c, (int, float)) for c in prev):
+                g['rows'][row[0]] = row
+        print(f'  {size:>4} {r.id} -> s{sparsity(r)} {meth} seeds={sorted(g["rows"])}', file=sys.stderr)
+
+    for (sp, meth), g in merged.items():
+        rows = [g['rows'][s] for s in sorted(g['rows'], key=lambda x: (x != '0', x != '1', x))]
+        label = f'Qwen 3 {size.upper()} ' + (f's{sp} ' if sp else '') + meth
+        full = [x for x in rows if x[1] != '-']
+        want = max(g['want'], len(rows))
+        if len(full) < 3:
+            label += f'  [{len(full)}/3 seeds complete]'
+        if any(st_ != 'finished' for st_ in g['states']):
+            label += f'  [{"/".join(sorted(set(g["states"])))}]'
+        if len(full) >= 2:
+            rows = rows + [['mean'] + agg(rows, st.mean), ['std'] + agg(rows, st.stdev)]
         rank = next((i for i, m in enumerate(ORDER) if meth.startswith(m) and
                      not any(meth.startswith(m2) and len(m2) > len(m) for m2 in ORDER)), len(ORDER))
-        blocks.append(((sparsity(r), rank, meth, r.created_at),
-                       header(label, r.id) + rows + [[''] * 22]))
-        print(f'  {size:>4} {r.id} {label}', file=sys.stderr)
+        blocks.append(((sp, rank, meth), header(label, ' '.join(g['ids'])) + rows + [[''] * 22]))
     blocks.sort(key=lambda x: x[0])
     return [row for _, b in blocks for row in b]
 

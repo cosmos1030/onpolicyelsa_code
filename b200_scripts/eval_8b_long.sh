@@ -32,9 +32,13 @@ case "$ARM" in
   sparsegpt_s50)  M=cosmos1030/qwen3-8b-sgpt-s50pct-ot80fw20;             ME=sparsegpt; SP=0.5 ;;
   sparsegpt_s60)  M=cosmos1030/qwen3-8b-sgpt-s60pct-ot80fw20;             ME=sparsegpt; SP=0.6 ;;
   sparsegpt_s70)  M=cosmos1030/qwen3-8b-sgpt-s70pct-ot80fw20;             ME=sparsegpt; SP=0.7 ;;
-  alps_s50)       M=cosmos1030/qwen3-8b-alps-s50pct;                      ME=alps;      SP=0.5 ;;
-  alps_s60)       M=cosmos1030/qwen3-8b-alps-s60pct;                      ME=alps;      SP=0.6 ;;
-  alps_s70)       M=cosmos1030/qwen3-8b-alps-s70pct;                      ME=alps;      SP=0.7 ;;
+  # Local, not the hub repo: these three are already on this box at 16GB each
+  # under models/, so pulling the identical weights from HF again is pure
+  # wall-clock. The other nine arms were trained on the cluster and exist here
+  # only on the hub, so they keep their repo ids.
+  alps_s50)       M=$ROOT/models/qwen3_8b_alps_s50pct;                    ME=alps;      SP=0.5 ;;
+  alps_s60)       M=$ROOT/models/qwen3_8b_alps_s60pct;                    ME=alps;      SP=0.6 ;;
+  alps_s70)       M=$ROOT/models/qwen3_8b_alps_s70pct;                    ME=alps;      SP=0.7 ;;
   # ALPS mask + NTP/KD/OPD retrain. The tok512 runs, not the August tok256
   # ones -- 4B and 1.7B both used opd_gen_len=512, and mixing the two inside
   # one row would compare training recipes, not sparsity.
@@ -50,7 +54,11 @@ case "$ARM" in
   *) die "unknown arm '$ARM'" ;;
 esac
 
-RUN="s3_8b_${ARM}"
+# RUN_SUFFIX lets a later seed batch land in its OWN wandb run instead of a
+# second run with the same name: harvest_long_tsv.py keys blocks off the run
+# name, so two same-named runs become two half-empty blocks. Seeds 0/1 are run
+# as s3_8b_<arm>_seeds01 and merged into the seed-42 block at harvest time.
+RUN="s3_8b_${ARM}${RUN_SUFFIX:-}"
 MARK="$OUT_ROOT/.done_${RUN}"
 if [ -f "$MARK" ] && [ "${FORCE:-0}" != "1" ]; then
   echo "== $ARM already done ($MARK) -- skipping. FORCE=1 to redo."
