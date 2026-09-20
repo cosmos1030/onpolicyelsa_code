@@ -172,6 +172,26 @@ def expected_seeds(run):
     return 1
 
 
+def run_seed(run):
+    """Seed label for a run whose metrics carry bare keys.
+
+    eval_full.py only suffixes metric keys when it runs MORE THAN ONE seed, so
+    a `--seeds 0` job logs lighteval/math500, not lighteval/math500_seed0.
+    Reading the arg back is the only way to tell seed 0 from seed 42; defaulting
+    to '42' silently collapses every single-seed extra-seed run onto the
+    original run, and the merge below then keeps just one of them.
+    """
+    try:
+        a = (run.metadata or {}).get('args', [])
+    except Exception:
+        a = []
+    if '--seeds' in a:
+        v = a[a.index('--seeds') + 1].split(',')
+        if len(v) == 1:
+            return v[0].strip()
+    return '42'
+
+
 def harvest(api, size, proj):
     f = {'$or': [{f'summary_metrics.{b}_avg_gen_cap{x}': {'$exists': True}}
                  for b in ('math500', 'gsm8k') for x in SUFFIXES]}
@@ -184,7 +204,7 @@ def harvest(api, size, proj):
                 break
             if mixed(s, suf) or not any(is_long(s, b, cap, suf) for b, _, cap in BENCH):
                 continue
-            seed = suf.replace('_seed', '') or '42'
+            seed = suf.replace('_seed', '') or run_seed(r)
             rows.append([seed] + cells(s, suf))
         if not rows:
             continue
