@@ -59,7 +59,13 @@ LR_SCHEDULER=${4:-cosine}
 DATA_PATH=${5:-/NHNHOME/log-postech/doyoonkim/data/ot3_fineweb_40k_qwen3_nostrip_8192.jsonl}
 SEQLEN=${6:-8192}
 MASK_INTERVAL=${7:-32}
-WANDB_PROJECT=${8:-reasoning_qwen3_8b_nostrip8192}
+# 4b, not 8b: this script is a fork of the 8B launcher and inherited its
+# project default, so the two 4B PGD runs on 2026-09-21 logged into
+# reasoning_qwen3_8b_nostrip8192. They carry no benchmark metrics (their
+# built-in eval was killed), so harvest -- which admits a run only if it
+# has <bench>_avg_gen_cap -- never picked them up and the 8B table stayed
+# clean. A future run that DID finish its eval would not be so lucky.
+WANDB_PROJECT=${8:-reasoning_qwen3_4b_nostrip8192}
 
 source /NHNHOME/log-postech/doyoonkim/miniconda3/etc/profile.d/conda.sh
 conda activate rac

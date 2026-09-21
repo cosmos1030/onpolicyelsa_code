@@ -33,7 +33,9 @@ LR_SCHEDULER=${4:-cosine}
 DATA_PATH=${5:-/NHNHOME/log-postech/doyoonkim/data/ot3_fineweb_40k_qwen3_nostrip_8192.jsonl}
 SEQLEN=${6:-8192}
 MASK_INTERVAL=${7:-32}
-WANDB_PROJECT=${8:-reasoning_qwen3_8b_nostrip8192}
+# 4b, not 8b -- same fork-from-the-8B-launcher inheritance that sent the
+# 2026-09-21 alps_pgd 4B runs into the 8B project.
+WANDB_PROJECT=${8:-reasoning_qwen3_4b_nostrip8192}
 
 source /NHNHOME/log-postech/doyoonkim/miniconda3/etc/profile.d/conda.sh
 conda activate rac
