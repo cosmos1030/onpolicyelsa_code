@@ -99,6 +99,12 @@ METHOD = {'dense': 'dense', 'sparsegpt': 'SparseGPT', 'sgpt_selfgen': 'SparseGPT
           # in b9cfaee) but carry no eval, so only these eval runs count.
           'alpspgdtr': 'ALPS + PGD (trust region)',
           'alpspgdnotr': 'ALPS + PGD (no trust region)',
+          # Cubic ramp 0->0.7 by step 232, then frozen-mask sparse training,
+          # PGD OFF. Deliberately NOT 'cubic_matched': that label is the A2sched
+          # control, which keeps PGD's KL-gated swaps running and so landed
+          # within 0.03 of SCOUT. Merging the two would hide exactly the
+          # difference this arm exists to measure.
+          'cubicnopgd': 'Cubic schedule, no PGD (pace-matched)',
           # KL-gate jump rule, no frozen pool. There is no s50 arm -- only s60,
           # s70 and 2:4 were ever trained.
           'a3jump': 'Ours (A3 jump)'}
