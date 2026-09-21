@@ -72,6 +72,14 @@ METHOD = {'dense': 'dense', 'sparsegpt': 'SparseGPT', 'sgpt_selfgen': 'SparseGPT
           # SparseLLM s80 baseline; without this the block is titled with the
           # raw run name.
           'sparsellm': 'SparseLLM',
+          # The alpssft4b re-runs (Sep 13) -- a separate training from the
+          # August ALPS+retrain checkpoint, so they must not collapse onto the
+          # 'ALPS+retrain' label or two different trainings would merge.
+          'alpsretrain_3term': 'ALPS+retrain (0.33/0.33/0.33)',
+          'alpsretrain_2term': 'ALPS+retrain w/o OPD (0.5/0.5/0)',
+          'opdonly': 'Ours OPD-only (0/0/1.0)',
+          'norefresh': 'Ours w/o rollout refresh',
+          'cubic_matched': 'Ours, cubic schedule (pace-matched)',
           'dpo_lr1e5': 'Ours + DPO (lr1e-5, ep0.4)',
           'dpo_lr5e6': 'Ours + DPO (lr5e-6, ep1.0)',
           'noopd': 'Ours w/o OPD (0.5/0.5/0)',
