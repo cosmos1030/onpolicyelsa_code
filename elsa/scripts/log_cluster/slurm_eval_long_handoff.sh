@@ -1,0 +1,93 @@
+#!/bin/bash
+#SBATCH --job-name=eval_long
+#SBATCH --partition=A100
+#SBATCH --qos=normal
+#SBATCH --gres=gpu:1
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=96G
+#SBATCH --time=1-12:00:00
+#SBATCH --output=/home/doyoonkim/projects/onpolicyelsa_code/elsa/logs/eval_long_%x_%j.out
+exec 2>&1
+
+# Long-profile evals handed off from the B200 container, which could not fit
+# them before its deadline. Every checkpoint here is on the hub, so this runs
+# from a repo id with nothing copied between machines.
+#
+#   sbatch -J oursd003_s0 elsa/scripts/log_cluster/slurm_eval_long_handoff.sh oursd003_seed0
+#
+# run_name follows s3_8b_<arm>_s80_seed<N>, which long_tsv_results/
+# harvest_long_tsv.py strips back to <arm> -- so these seeds merge into the
+# arm's existing block instead of opening a second one-seed block.
+set -u
+ARM=${1:?"usage: sbatch slurm_eval_long_handoff.sh <oursd003_seed0|oursd003_seed1|alpsretrainnoopd_seed1>"}
+
+case "$ARM" in
+  # 'Ours (delta=0.03)'. Seed 42 is the training run's own eval (wandb
+  # keuegrrb, pushed this repo at 2026-09-18T00:09 -- same checkpoint).
+  oursd003_seed0)
+    MODEL=cosmos1030/gmp-kd3e-1-8b-s80pct-lr1e-4_20260918_090751
+    RUN=s3_8b_oursd003_s80_seed0; SEED=0 ;;
+  oursd003_seed1)
+    MODEL=cosmos1030/gmp-kd3e-1-8b-s80pct-lr1e-4_20260918_090751
+    RUN=s3_8b_oursd003_s80_seed1; SEED=1 ;;
+  # 'ALPS+retrain w/o OPD'. Seed 0 (wandb lk7ios48) ran from the B200-local
+  # dir gmp_8b_s80pct_lr0.0001_20260917_043650_p392212; this repo carries that
+  # path inside its own eval details, i.e. it is that checkpoint on the hub.
+  alpsretrainnoopd_seed1)
+    MODEL=cosmos1030/gmp-kd5e-1-8b-s80pct-lr1e-4_20260917_105733
+    RUN=s3_8b_alpsretrainnoopd_s80_seed1; SEED=1 ;;
+  *) echo "!! unknown arm '$ARM'" >&2; exit 1 ;;
+esac
+
+source /opt/anaconda3/2022.05/etc/profile.d/conda.sh
+conda activate rac
+
+REPO=/home/doyoonkim/projects/onpolicyelsa_code
+export HF_HOME=/home/shared/huggingface
+export TOKENIZERS_PARALLELISM=false
+# vllm 0.10 in rac runs V1; VLLM_USE_V1=0 is a B200 workaround that does not
+# apply here (slurm_eval_lighteval_only.sh leaves it unset for the same reason).
+export VLLM_USE_V1=1
+export VLLM_HOST_IP=127.0.0.1
+export TMPDIR=/tmp/${USER}/job_${SLURM_JOB_ID}
+export WANDB_DIR=$TMPDIR
+export TRITON_CACHE_DIR=$TMPDIR/triton
+mkdir -p "$TMPDIR"
+
+# lighteval writes thousands of small parquet files; keep that off NFS and copy
+# only the parquet back at exit, so a job killed at its time limit still leaves
+# the generations behind.
+OUT_LOCAL=$TMPDIR/eval_${RUN}
+DETAILS=$HOME/elsa_eval_long/${RUN}_${SLURM_JOB_ID}
+save_details () {
+    [ -d "$OUT_LOCAL" ] || return 0
+    mkdir -p "$DETAILS"
+    (cd "$OUT_LOCAL" && find . -name "*.parquet" -print0 2>/dev/null |
+        while IFS= read -r -d "" f; do
+            mkdir -p "$DETAILS/$(dirname "$f")"
+            cp -n "$f" "$DETAILS/$f" 2>/dev/null || true
+        done)
+    echo "[details] $(find "$DETAILS" -name '*.parquet' 2>/dev/null | wc -l) parquet -> $DETAILS"
+    rm -rf "$TMPDIR"
+}
+trap save_details EXIT
+
+echo "=== $RUN ==="
+echo "  host $(hostname)  job $SLURM_JOB_ID  gpu ${CUDA_VISIBLE_DEVICES:-?}"
+echo "  model $MODEL   seed $SEED"
+nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
+
+cd "$REPO/elsa"
+python scripts/eval_full.py \
+    --model_path "$MODEL" \
+    --wandb_project reasoning_qwen3_8b_nostrip8192 \
+    --wandb_entity dyk6208-gwangju-institute-of-science-and-technology \
+    --run_name "$RUN" \
+    --method gmp --sparsity 0.8 \
+    --profile long --seeds "$SEED" \
+    --tp_size 1 --gpu_util 0.90 \
+    --skip_ppl --skip_zeroshot \
+    --out_base "$OUT_LOCAL"
+echo "##### END ($?) #####"
