@@ -51,6 +51,21 @@ case "$ARM" in
   ours_s50)       M=cosmos1030/gmp-kd3e-1-s50pct-lr5e-5_20260907_210125;  ME=gmp; SP=0.5 ;;
   ours_s60)       M=cosmos1030/gmp-kd3e-1-s60pct-lr5e-5_20260907_142152;  ME=gmp; SP=0.6 ;;
   ours_s70)       M=cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260911_015957;  ME=gmp; SP=0.7 ;;
+  # s80. Three arms that were only ever scored at seed 42, as the long eval
+  # embedded in their own training run -- there is no hub copy, so these point
+  # at the training output dirs on this box. Arm names are chosen so that
+  # harvest's auto_label() strips "_s80"/"_seedN" and lands on a METHOD key
+  # whose text equals the LABELS entry for the seed-42 run; name them
+  # alpsretrain_s80 and the new seeds would form a second "ALPS+retrain" block
+  # instead of merging with the one already there.
+  # ALPS s80 was scored once, at seed 0, by whatever drove s3_8b_s80_alps on
+  # the cluster; seeds 1 and 42 come from here. "alps_s80" is deliberate --
+  # auto_label() strips the _s80 and lands on METHOD['alps'] = 'ALPS', the
+  # same label the seed-0 run already carries, so all three seeds merge.
+  alps_s80)             M=$ROOT/models/qwen3_8b_alps_s80pct;                                          ME=alps; SP=0.8 ;;
+  alpsretrain033_s80)   M=$ROOT/models/gmp_8b_s80pct_lr0.0001_onpol_lmda0.33_20260917_054518_p394552; ME=gmp; SP=0.8 ;;
+  alpsretrainnoopd_s80) M=$ROOT/models/gmp_8b_s80pct_lr0.0001_20260917_043650_p392212;                ME=gmp; SP=0.8 ;;
+  oursd003_s80)         M=$ROOT/models/gmp_8b_s80pct_lr0.0001_onpol_lmda0.33_20260918_035901_p1215965; ME=gmp; SP=0.8 ;;
   *) die "unknown arm '$ARM'" ;;
 esac
 

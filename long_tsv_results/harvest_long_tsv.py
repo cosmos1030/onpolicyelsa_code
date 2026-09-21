@@ -72,6 +72,14 @@ METHOD = {'dense': 'dense', 'sparsegpt': 'SparseGPT', 'sgpt_selfgen': 'SparseGPT
           # SparseLLM s80 baseline; without this the block is titled with the
           # raw run name.
           'sparsellm': 'SparseLLM',
+          # s80 ALPS+retrain / Ours: seed 42 came from the training run's own
+          # eval and is labelled by run id in LABELS above, so the seed-0/1
+          # batches have to resolve to that EXACT text or the arm shows up
+          # twice with one seed each. The arm names in eval_8b_long.sh are
+          # picked to land on these keys.
+          'alpsretrain033': 'ALPS+retrain (0.33/0.33/0.33)',
+          'alpsretrainnoopd': 'ALPS+retrain w/o OPD (0.5/0.5/0)',
+          'oursd003': 'Ours (delta=0.03)',
           'dpo_lr1e5': 'Ours + DPO (lr1e-5, ep0.4)',
           'dpo_lr5e6': 'Ours + DPO (lr5e-6, ep1.0)',
           'noopd': 'Ours w/o OPD (0.5/0.5/0)',
