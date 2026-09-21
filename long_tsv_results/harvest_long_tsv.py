@@ -92,11 +92,18 @@ METHOD = {'dense': 'dense', 'sparsegpt': 'SparseGPT', 'sgpt_selfgen': 'SparseGPT
           'dpo_lr5e6': 'Ours + DPO (lr5e-6, ep1.0)',
           'noopd': 'Ours w/o OPD (0.5/0.5/0)',
           'jump': 'Ours (A3 jump)',
+          # The s70 ladder that separates mask source / PGD / trust region:
+          # ALPS mask held fixed, PGD on, trust region on (klb 0.02) vs off
+          # (klb 99999). Trained on the B200 box 2026-09-21; their TRAINING
+          # runs went into the 8B project by mistake (launcher default, fixed
+          # in b9cfaee) but carry no eval, so only these eval runs count.
+          'alpspgdtr': 'ALPS + PGD (trust region)',
+          'alpspgdnotr': 'ALPS + PGD (no trust region)',
           # KL-gate jump rule, no frozen pool. There is no s50 arm -- only s60,
           # s70 and 2:4 were ever trained.
           'a3jump': 'Ours (A3 jump)'}
 ORDER = ['dense', 'SparseGPT', 'SparseGPT selfgen', 'SparseLLM', 'ALPS', 'ALPS selfgen',
-         'ALPS+retrain', 'Ours', 'Ours (A3 jump)']
+         'ALPS+retrain', 'ALPS + PGD', 'Ours', 'Ours (A3 jump)']
 
 
 def sparsity(run):
