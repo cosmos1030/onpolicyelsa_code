@@ -21,7 +21,11 @@ exec 2>&1
 # harvest_long_tsv.py strips back to <arm> -- so these seeds merge into the
 # arm's existing block instead of opening a second one-seed block.
 set -u
-ARM=${1:?"usage: sbatch slurm_eval_long_handoff.sh <oursd003_seed0|oursd003_seed1|alpsretrainnoopd_seed1>"}
+ARM=${1:?"usage: sbatch slurm_eval_long_handoff.sh <oursd003_seed0|oursd003_seed1|alpsretrainnoopd_seed1|alpspgdtr_seed42>"}
+
+# 8B s80 defaults; the 4B arms below override them.
+PROJECT=reasoning_qwen3_8b_nostrip8192
+SPARSITY=0.8
 
 case "$ARM" in
   # 'Ours (delta=0.03)'. Seed 42 is the training run's own eval (wandb
@@ -38,6 +42,16 @@ case "$ARM" in
   alpsretrainnoopd_seed1)
     MODEL=cosmos1030/gmp-kd5e-1-8b-s80pct-lr1e-4_20260917_105733
     RUN=s3_8b_alpsretrainnoopd_s80_seed1; SEED=1 ;;
+  # 4B s70, ALPS mask + PGD with the trust region (klb 0.02) -- the B200
+  # training finished 2026-09-21 21:27 KST but its built-in eval was killed to
+  # free the GPU, so the checkpoint has no numbers at all. Its wandb TRAINING
+  # run landed in the 8B project (launcher inherited the 8B default, fixed in
+  # b9cfaee); this eval is logged to the 4B project on purpose, which is where
+  # the arm belongs.
+  alpspgdtr_seed42)
+    MODEL=cosmos1030/gmp-4b-s70pct-lr0.0001-onpol-lmda0.33-20260921-212708-p265824
+    RUN=s3_4b_alpspgdtr_s70_seed42; SEED=42
+    PROJECT=reasoning_qwen3_4b_nostrip8192; SPARSITY=0.7 ;;
   *) echo "!! unknown arm '$ARM'" >&2; exit 1 ;;
 esac
 
