@@ -105,6 +105,29 @@ export VLLM_HOST_IP=127.0.0.1
 # container has internet and lighteval fetches datasets that are not cached.
 
 mkdir -p "$OUT_ROOT"
+# Ask wandb first. Three machines evaluate these checkpoints and none of them
+# sees the others' queues; on 2026-09-21 this box spent 4.8 GPU-hours on an
+# eval n84 was already running. wandb_dup_check.py exits 0 when the same TSV
+# cell (label, sparsity, seed) or the same checkpoint is finished at 5/5 long
+# or running with a live heartbeat; 2 means it could not reach wandb, in which
+# case run anyway -- a duplicate costs GPU time, a wrong skip loses a result.
+if [ "${FORCE:-0}" != "1" ]; then
+  for s in ${SEEDS//,/ }; do
+    # not `$(... | tail -1)`: $? would then be tail's status, always 0
+    DUP=$("$PYTHON" "$REPO/b200_scripts/wandb_dup_check.py" "$WANDB_PROJECT" "$RUN" "$s" "$M" 2>/dev/null)
+    RC=$?; DUP=$(printf '%s\n' "$DUP" | tail -1)
+    case $RC in
+      0) echo "== SKIP $RUN seed $s: $DUP"; SKIPPED="${SKIPPED:-} $s" ;;
+      2) echo "== dup check failed for seed $s ($DUP) -- running anyway" ;;
+    esac
+  done
+  if [ -n "${SKIPPED:-}" ]; then
+    KEEP=$(for s in ${SEEDS//,/ }; do case " $SKIPPED " in *" $s "*) ;; *) echo -n "$s,";; esac; done)
+    SEEDS=${KEEP%,}
+    [ -n "$SEEDS" ] || { echo "== every requested seed is already covered -- nothing to run"; exit 0; }
+    echo "== running remaining seeds: $SEEDS"
+  fi
+fi
 LOG="$OUT_ROOT/${RUN}_$(date +%Y%m%d_%H%M%S).log"
 echo "=== 8B long eval ==="
 echo "  arm $ARM   model $M"
