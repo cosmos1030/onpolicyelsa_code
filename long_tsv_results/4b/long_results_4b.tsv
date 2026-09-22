@@ -70,6 +70,11 @@ seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accura
 mean	69.2	91.47	5.47	0.73	4462	47.31	11.28	6.06	8473	71.97	10.47	5.66	2831	44.53	9.83	0.0	16607	90.75	1.62	0.45	1817
 std	0.91	0.58	0.12	0.12	65	4.08	0.29	0.6	103	1.23	0.75	1.27	92	0.57	2.19	0.0	538	0.67	0.27	0.27	18
 																					
+Qwen 3 4B s50 Ours w/o rollout refresh  [1/3 seeds complete]																					wandb stytmxbt
+	avg5	math500				GPQA				IFEval				LCB				GSM8K			
+seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens
+42	68.64	91.4	7.0	1.97	4586	46.97	13.64	7.53	8733	71.9	14.05	7.97	3444	41.04	18.66	0	18483	91.89	1.97	0.66	1941
+																					
 Qwen 3 4B s50 Ours, cubic schedule (pace-matched)  [1/3 seeds complete]																					wandb 0n389gjf
 	avg5	math500				GPQA				IFEval				LCB				GSM8K			
 seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens
@@ -188,21 +193,23 @@ seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accura
 mean	44.94	73.33	23.13	5.27	7652	27.27	68.69	66.09	14012	31.61	52.62	33.93	10104	9.58	71.64	0.0	26809	82.92	7.25	2.47	3269
 std	0.92	0.5	0.61	1.1	44	4.82	1.82	5.81	132	0.64	2.84	4.5	386	0.78	2.69	0.0	446	0.52	0.81	0.47	32
 																					
-Qwen 3 4B s70 ALPS+retrain (0.33/0.33/0.33)  [2/3 seeds complete]  [finished/running]																					wandb 0eqkqmbs qzhxc4h9
+Qwen 3 4B s70 ALPS+retrain (0.33/0.33/0.33)																					wandb 0eqkqmbs qzhxc4h9
 	avg5	math500				GPQA				IFEval				LCB				GSM8K			
 seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens
 0	43.41	73.6	24.4	4.89	7627	25.76	76.77	80.39	14561	29.76	62.48	45.96	11662	6.34	78.73	0	28158	81.58	16.98	9.29	4240
-42	44.72	74.4	24.4	5.38	7684	31.82	75.76	71.43	14338	27.73	64.88	48.0	11836	7.46	74.63	0	27248	82.18	18.65	11.99	4256
-mean	44.06	74.0	24.4	5.13	7655	28.79	76.26	75.91	14449	28.74	63.68	46.98	11749	6.9	76.68	0.0	27703	81.88	17.82	10.64	4248
-std	0.93	0.57	0.0	0.34	40	4.29	0.71	6.34	157	1.44	1.7	1.44	124	0.79	2.9	0.0	643	0.43	1.18	1.91	11
+1	43.45	73.4	25.8	8.45	7898	25.25	76.77	80.0	14595	29.39	61.55	42.14	11575	7.84	76.87	0	27701	81.35	19.41	12.21	4305
+42	43.5	73.4	25.6	6.81	7787	25.25	76.26	68.0	14632	30.31	62.11	46.95	11566	7.09	77.24	0	27814	81.43	19.03	12.2	4247
+mean	43.45	73.47	25.27	6.72	7771	25.42	76.6	76.13	14596	29.82	62.05	45.02	11601	7.09	77.61	0.0	27891	81.45	18.47	11.23	4264
+std	0.04	0.12	0.76	1.78	136	0.29	0.29	7.04	36	0.47	0.47	2.54	53	0.75	0.99	0.0	238	0.12	1.31	1.68	36
 																					
-Qwen 3 4B s70 ALPS+retrain w/o OPD (0.5/0.5/0)  [2/3 seeds complete]  [running]																					wandb 6hizpc1g
+Qwen 3 4B s70 ALPS+retrain w/o OPD (0.5/0.5/0)																					wandb 6hizpc1g
 	avg5	math500				GPQA				IFEval				LCB				GSM8K			
 seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens
 0	42.93	74.4	21.6	5.11	7159	28.79	65.15	63.16	13366	26.25	51.76	38.03	10217	5.6	73.88	0	27334	79.61	8.64	2.38	3179
 1	42.11	70.8	24.4	5.65	7371	24.75	68.69	65.31	13702	27.73	51.76	34.67	10077	7.84	75.37	0	27521	79.45	11.3	3.34	3263
-mean	42.52	72.6	23.0	5.38	7265	26.77	66.92	64.23	13534	26.99	51.76	36.35	10147	6.72	74.63	0.0	27428	79.53	9.97	2.86	3221
-std	0.58	2.55	1.98	0.38	150	2.86	2.5	1.52	237	1.05	0.0	2.38	99	1.58	1.06	0.0	133	0.11	1.88	0.68	59
+42	44.58	71.4	21.6	3.36	7137	34.85	68.18	73.91	13718	30.68	53.79	36.75	10415	6.34	72.39	0	27238	79.61	10.69	3.05	3253
+mean	43.21	72.2	22.53	4.71	7222	29.46	67.34	67.46	13595	28.22	52.43	36.48	10237	6.59	73.88	0.0	27365	79.56	10.21	2.92	3232
+std	1.26	1.93	1.62	1.2	130	5.08	1.91	5.69	199	2.26	1.17	1.7	170	1.14	1.49	0.0	144	0.09	1.39	0.49	46
 																					
 Qwen 3 4B s70 Ours																					wandb 39t1d9g7
 	avg5	math500				GPQA				IFEval				LCB				GSM8K			
@@ -213,9 +220,10 @@ seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accura
 mean	48.81	78.2	20.33	4.95	7217	30.3	60.61	47.61	13129	39.99	46.03	26.5	9075	11.19	67.04	0.0	25672	84.38	9.63	2.97	3372
 std	0.41	2.16	1.42	0.85	95	2.53	1.82	5.76	131	0.38	1.44	1.39	200	1.35	2.48	0.0	94	0.97	0.2	0.49	9
 																					
-Qwen 3 4B s70 Ours OPD-only (0/0/1.0)  [1/3 seeds complete]																					wandb dl1d889j
+Qwen 3 4B s70 Ours OPD-only (0/0/1.0)  [1/3 seeds complete]																					wandb dl1d889j 87x0tda1
 	avg5	math500				GPQA				IFEval				LCB				GSM8K			
 seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens
+0	-	50.4	100	100	16384	33.33	99.49	100	16355	21.26	100	100	16384	-	-	-	-	-	-	-	-
 42	35.25	49.2	100	100	16384	28.79	100	100	16384	20.89	99.82	99.12	16356	0.75	99.63	100	32646	76.65	100	100	8192
 																					
 Qwen 3 4B s70 Ours w/o KD (0.5/0/0.5)  [1/3 seeds complete]																					wandb r8eomj61
@@ -250,6 +258,11 @@ seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accura
 42	38.2	62.0	32.2	8.71	8912	23.23	66.67	63.04	13528	30.5	40.85	23.64	8664	0.75	75.37	0	27711	74.53	13.42	4.07	3621
 mean	38.72	62.6	31.2	7.68	8724	24.07	70.37	65.05	13961	31.48	41.77	23.09	8767	1.74	74.75	0.0	27781	73.72	13.95	4.25	3626
 std	0.8	1.22	2.09	1.08	273	1.46	4.08	2.19	381	0.87	1.6	3.08	157	1.14	0.78	0.0	61	0.7	0.57	0.26	13
+																					
+Qwen 3 4B s70 Cubic schedule, no PGD (pace-matched)  [1/3 seeds complete]																					wandb ay0dnnto
+	avg5	math500				GPQA				IFEval				LCB				GSM8K			
+seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens
+42	49.09	79.4	18.4	4.79	6841	28.79	59.6	52.63	13115	41.77	40.67	21.24	8318	8.58	54.85	0	24848	86.88	7.43	2.27	2988
 																					
 Qwen 3 4B s80 SparseLLM																					wandb p6c4r6lx
 	avg5	math500				GPQA				IFEval				LCB				GSM8K			
