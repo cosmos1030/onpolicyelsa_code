@@ -42,8 +42,13 @@ case "$ARM" in
   # 'ALPS+retrain w/o OPD'. Seed 0 (wandb lk7ios48) ran from the B200-local
   # dir gmp_8b_s80pct_lr0.0001_20260917_043650_p392212; this repo carries that
   # path inside its own eval details, i.e. it is that checkpoint on the hub.
+  # Local copy, not the repo id: huggingface_hub wedged on this repo for 11h
+  # on a stale NFS lock (see the HF_HUB_DOWNLOAD_TIMEOUT note below). The dir
+  # was fetched with curl and carries .download_complete, written only after
+  # all four shards and the tokenizer files were verified present.
   alpsretrainnoopd_seed1)
-    MODEL=cosmos1030/gmp-kd5e-1-8b-s80pct-lr1e-4_20260917_105733
+    MODEL=/home/doyoonkim/models/gmp-kd5e-1-8b-s80pct-lr1e-4_20260917_105733
+    [ -f "$MODEL/.download_complete" ] || MODEL=cosmos1030/gmp-kd5e-1-8b-s80pct-lr1e-4_20260917_105733
     RUN=s3_8b_alpsretrainnoopd_s80_seed1; SEED=1 ;;
   # Repair arm. In job 51031 math500 died before generating anything: two jobs
   # started in the same second, both ran nltk.download into ~/nltk_data, and
@@ -67,6 +72,17 @@ case "$ARM" in
     SEED=${ARM#alpspgdtr_seed}
     RUN=s3_4b_alpspgdtr_s70_seed${SEED}
     PROJECT=reasoning_qwen3_4b_nostrip8192; SPARSITY=0.7 ;;
+  # 4B s70, ALPS mask + PGD with the trust region OFF (klb 99999). Paired with
+  # alpspgdtr above: the difference between the two IS the trust region's
+  # contribution. Trained on the B200 box (wandb z4uyap8g, which like its
+  # sibling landed in the 8B project); two eval attempts there died with no
+  # benchmark finished (sxz86a7y crashed, lrob6piv killed), so it is run here.
+  alpspgdnotr_seed0|alpspgdnotr_seed1|alpspgdnotr_seed42)
+    SEED=${ARM#alpspgdnotr_seed}
+    MODEL=/home/doyoonkim/models/alpspgdnotr_s70
+    [ -f "$MODEL/.download_complete" ] || MODEL=cosmos1030/gmp-4b-s70pct-lr0.0001-onpol-lmda0.33-20260922-002405-p291199
+    RUN=s3_4b_alpspgdnotr_s70_seed${SEED}
+    PROJECT=reasoning_qwen3_4b_nostrip8192; SPARSITY=0.7 ;;
   *) echo "!! unknown arm '$ARM'" >&2; exit 1 ;;
 esac
 
@@ -75,6 +91,12 @@ conda activate rac
 
 REPO=/home/doyoonkim/projects/onpolicyelsa_code
 export HF_HOME=/home/shared/huggingface
+# Without these a stalled HF transfer blocks forever: on 2026-09-21 night four
+# jobs sat 11h at "loading model weights" with the GPU at 0% and produced
+# nothing, because this cluster's link to the HF CDN dies at certain hours
+# without erroring. A timeout turns that hang into a retry.
+export HF_HUB_DOWNLOAD_TIMEOUT=60
+export HF_HUB_ETAG_TIMEOUT=30
 export TOKENIZERS_PARALLELISM=false
 # vllm 0.10 in rac runs V1; VLLM_USE_V1=0 is a B200 workaround that does not
 # apply here (slurm_eval_lighteval_only.sh leaves it unset for the same reason).
