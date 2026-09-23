@@ -104,6 +104,21 @@ case "$ARM" in
     [ -f "$MODEL/.download_complete" ] || MODEL=cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260905_081916
     RUN=s3_8b_s70_norefresh_seed${SEED}
     PROJECT=reasoning_qwen3_8b_nostrip8192; SPARSITY=0.7 ;;
+  # Table 6 rows that are still one seed. Both had a seeds-0/1 attempt on
+  # another box that crashed with no benchmark finished (wandb mhu6dq9x,
+  # 1m5tk7lv), so nothing is lost by redoing them here.
+  norefresh4b_seed0|norefresh4b_seed1)
+    SEED=${ARM#norefresh4b_seed}
+    MODEL=/home/doyoonkim/models/norefresh_4b_s70
+    [ -f "$MODEL/.download_complete" ] || MODEL=cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260903_081638
+    RUN=s3_4b_s70_norefresh_seed${SEED}
+    PROJECT=reasoning_qwen3_4b_nostrip8192; SPARSITY=0.7 ;;
+  wokd4b_seed0|wokd4b_seed1)
+    SEED=${ARM#wokd4b_seed}
+    MODEL=/home/doyoonkim/models/wokd_4b_s70
+    [ -f "$MODEL/.download_complete" ] || MODEL=cosmos1030/gmp-4b-s70pct-lr1e-4_20260917_213402
+    RUN=s3_4b_s70_wokd_seed${SEED}
+    PROJECT=reasoning_qwen3_4b_nostrip8192; SPARSITY=0.7 ;;
   *) echo "!! unknown arm '$ARM'" >&2; exit 1 ;;
 esac
 

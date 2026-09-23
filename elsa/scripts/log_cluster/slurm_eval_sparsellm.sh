@@ -20,8 +20,8 @@ exec 2>&1
 # Three seeds in one job: 1.7B is small enough that splitting them across GPUs
 # would cost more in queue time than it saves.
 set -u
-SIZE=${1:?"usage: sbatch slurm_eval_sparsellm.sh <1.7b|4b> <50|60|70>"}
-SP_PCT=${2:?"usage: sbatch slurm_eval_sparsellm.sh <1.7b|4b> <50|60|70>"}
+SIZE=${1:?"usage: sbatch slurm_eval_sparsellm.sh <1.7b|4b|8b> <50|60|70>"}
+SP_PCT=${2:?"usage: sbatch slurm_eval_sparsellm.sh <1.7b|4b|8b> <50|60|70>"}
 SEEDS=${SEEDS:-0,1,42}
 case "$SP_PCT" in 50|60|70) ;; *) echo "!! sparsity must be 50, 60 or 70" >&2; exit 1 ;; esac
 
@@ -38,6 +38,9 @@ case "${SIZE}_${SP_PCT}" in
   4b_50)   REPO_ID=cosmos1030/sparsellm-s50pct_20260831_204946 ;;
   4b_60)   REPO_ID=cosmos1030/sparsellm-s60pct_20260831_210736 ;;
   4b_70)   REPO_ID=cosmos1030/sparsellm-s70pct_20260831_211530 ;;
+  8b_50)   REPO_ID=cosmos1030/sparsellm-s50pct_20260901_050129 ;;
+  8b_60)   REPO_ID=cosmos1030/sparsellm-s60pct_20260901_062412 ;;
+  8b_70)   REPO_ID=cosmos1030/sparsellm-s70pct_20260901_073704 ;;
   *) echo "!! unknown size '$SIZE'" >&2; exit 1 ;;
 esac
 LOCAL=/home/doyoonkim/models/sparsellm_${SIZE}_s${SP_PCT}

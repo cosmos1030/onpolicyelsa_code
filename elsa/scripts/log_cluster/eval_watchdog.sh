@@ -36,13 +36,16 @@ resubmit () {
             arm=$jobname
             [ -f "$MODELS/$arm/.download_complete" ] || { say "  no local copy for $arm -- not resubmitting"; return 1; }
             sbatch -J "$arm" --partition=A100,H200 "$LAUNCH_LADDER" "$arm" ;;
+        sparsellm8b_s[567]0)
+            sbatch -J "$jobname" --partition=A100,H200 \
+                /home/doyoonkim/projects/onpolicyelsa_code/elsa/scripts/log_cluster/slurm_eval_sparsellm.sh 8b "${jobname#sparsellm8b_s}" ;;
         sparsellm_s[567]0)
             sbatch -J "$jobname" --partition=A100,H200 \
                 /home/doyoonkim/projects/onpolicyelsa_code/elsa/scripts/log_cluster/slurm_eval_sparsellm.sh 1.7b "${jobname#sparsellm_s}" ;;
         sparsellm4b_s[567]0)
             sbatch -J "$jobname" --partition=A100,H200 \
                 /home/doyoonkim/projects/onpolicyelsa_code/elsa/scripts/log_cluster/slurm_eval_sparsellm.sh 4b "${jobname#sparsellm4b_s}" ;;
-        alpspgdtr_*|alpspgdnotr_*|alpsretrainnoopd_*|oursd003_*|cubicnopgd_*|norefresh8b_*)
+        norefresh4b_*|wokd4b_*|alpspgdtr_*|alpspgdnotr_*|alpsretrainnoopd_*|oursd003_*|cubicnopgd_*|norefresh8b_*)
             # job names here are already the launcher's arm names
             arm=$(echo "$jobname" | sed 's/_s\([0-9]\+\)$/_seed\1/; s/_seed_seed/_seed/')
             sbatch -J "$jobname" --partition=A100,H200 --time=1-12:00:00 "$LAUNCH_HANDOFF" "$arm" ;;

@@ -87,6 +87,9 @@ METHOD = {'dense': 'dense', 'sparsegpt': 'SparseGPT', 'sgpt_selfgen': 'SparseGPT
           'alpsretrain_2term': 'ALPS+retrain w/o OPD (0.5/0.5/0)',
           'opdonly': 'Ours OPD-only (0/0/1.0)',
           'norefresh': 'Ours w/o rollout refresh',
+          # seed 42 is wandb r8eomj61, labelled by run id above; these extra
+          # seeds must resolve to the same text or the arm splits in two.
+          'wokd': 'Ours w/o KD (0.5/0/0.5)',
           'cubic_matched': 'Ours, cubic schedule (pace-matched)',
           'dpo_lr1e5': 'Ours + DPO (lr1e-5, ep0.4)',
           'dpo_lr5e6': 'Ours + DPO (lr5e-6, ep1.0)',
