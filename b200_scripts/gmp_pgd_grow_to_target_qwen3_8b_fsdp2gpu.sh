@@ -169,6 +169,7 @@ $TORCHRUN --nproc_per_node=2 --master_port=${MASTER_PORT} main.py \
     --gmp_pruning_scope=${PRUNING_SCOPE} \
     --seqlen=${SEQLEN} \
     --gmp_gradient_checkpointing=${GRAD_CKPT} \
+    --gmp_kl_chunk_size=${KL_CHUNK_SIZE:-256} \
     --gmp_max_prompt_len=512 \
     --gmp_kd_only=${KD_ONLY} \
     --kd_nsamples=${KD_NSAMPLES} \

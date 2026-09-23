@@ -86,6 +86,13 @@ export WANDB_API_KEY=$(cat /NHNHOME/log-postech/doyoonkim/secrets/wandb_api_key)
 # FSDP-sidecar vLLM (separate subprocess, not in-process) is fine with
 # expandable_segments -- only the single-GPU in-process vLLM path
 # (gmp_pgd_grow_to_target_qwen3_4b.sh) needs it left unset.
+# vLLM's in-process CuMemAllocator hard-asserts against expandable_segments,
+# but with OPKD_LAMBDA=0 no vLLM engine is built at all, so the allocator that
+# objects never exists. Without this the full-vocab KD log-softmax fragments
+# the 178 GiB card and OOMs (observed 2026-09-23 on the jump+noOPD arm).
+if [ "${OPKD_LAMBDA:-}" = "0" ] || [ "${OPKD_LAMBDA:-}" = "0.0" ]; then
+    export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+fi
 export TOKENIZERS_PARALLELISM=false
 export TRITON_CACHE_DIR=/NHNHOME/log-postech/doyoonkim/.cache/triton
 export TORCHINDUCTOR_CACHE_DIR=/NHNHOME/log-postech/doyoonkim/.cache/torchinductor
@@ -129,6 +136,7 @@ $PYTHON -u main.py \
     --gmp_pruning_scope=${PRUNING_SCOPE} \
     --seqlen=${SEQLEN} \
     --gmp_gradient_checkpointing=${GRAD_CKPT} \
+    --gmp_kl_chunk_size=${KL_CHUNK_SIZE:-256} \
     --gmp_max_prompt_len=512 \
     --gmp_kd_only=${KD_ONLY} \
     --kd_nsamples=${KD_NSAMPLES} \
