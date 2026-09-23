@@ -16,7 +16,8 @@ Qwen 3 8B s60 SparseGPT	41dgii3b	s3_8b_sparsegpt_s60_seeds01	finished	0,1,42	/ho
 Qwen 3 8B s60 SparseGPT selfgen	1uf66ape	s3_8b_s60_sgpt_selfgen	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_8b_sgpt_s60pct_n128_selfgenv3															
 Qwen 3 8B s60 ALPS	b177u96x	s3_8b_alps_s60	finished	0,1,42	/NHNHOME/log-postech/doyoonkim/models/qwen3_8b_alps_s60pct															
 Qwen 3 8B s60 ALPS	6k9p8u3h	s3_8b_alps_s60_seeds01	finished	0,1,42	/home/doyoonkim/models/alps_s60															
-Qwen 3 8B s60 ALPS selfgen	7bh65g1r	s3_8b_s60_alps_selfgen	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_8b_selfgen_v3_alps_s60pct															
+Qwen 3 8B s60 ALPS selfgen	7bh65g1r	s3_8b_s60_alps_selfgen	finished	0,42	/home1/doyoonkim/projects/elsa/models/qwen3_8b_selfgen_v3_alps_s60pct															
+Qwen 3 8B s60 ALPS selfgen	4a3nztwf	s3_8b_s60_alps_selfgen_s01	running	0,42	/home/doyoonkim/models/selfgen_8b_alps_s60															
 Qwen 3 8B s60 ALPS+retrain	lkprc0o6	s3_8b_alpsretrain_s60	finished	0,1,42	cosmos1030/gmp-kd3e-1-s60pct-lr5e-5_20260908_054305	o90s9lyo	0.33	0.33	0.33	-1	512	True	False	0.01	False	cubic	32	2048	None	8192
 Qwen 3 8B s60 ALPS+retrain	j074xn67	s3_8b_alpsretrain_s60_seeds01	finished	0,1,42	/home/doyoonkim/models/alpsretrain_s60															
 Qwen 3 8B s60 Ours	wjj50tts	s3_8b_ours_s60	finished	0,1,42	cosmos1030/gmp-kd3e-1-s60pct-lr5e-5_20260907_142152	mgf2ka9s	0.33	0.33	0.33	32	512	False	True	0.01	False	cubic	32	2048	None	8192
@@ -31,7 +32,8 @@ Qwen 3 8B s70 ALPS	ik9zmgb9	s3_8b_alps_s70_seed1	finished	0,1,42	/NHNHOME/log-po
 Qwen 3 8B s70 ALPS	wno7wec2	s3_8b_alps_s70_seed0	finished	0,1,42	/NHNHOME/log-postech/doyoonkim/models/qwen3_8b_alps_s70pct															
 Qwen 3 8B s70 ALPS	0y6e6wtx	s3_8b_alps_s70_seed0	finished	0,1,42	/NHNHOME/log-postech/doyoonkim/models/qwen3_8b_alps_s70pct															
 Qwen 3 8B s70 ALPS	8nnrbex5	s3_8b_alps_s70_seed0	finished	0,1,42	/NHNHOME/log-postech/doyoonkim/models/qwen3_8b_alps_s70pct															
-Qwen 3 8B s70 ALPS selfgen	48w3aqxq	s3_8b_s70_alps_selfgen	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_8b_selfgen_v3_alps_s70pct															
+Qwen 3 8B s70 ALPS selfgen	48w3aqxq	s3_8b_s70_alps_selfgen	finished	0,42	/home1/doyoonkim/projects/elsa/models/qwen3_8b_selfgen_v3_alps_s70pct															
+Qwen 3 8B s70 ALPS selfgen	36rtrs3u	s3_8b_s70_alps_selfgen_s01	running	0,42	/home/doyoonkim/models/selfgen_8b_alps_s70															
 Qwen 3 8B s70 ALPS+retrain	d4c200tz	s3_8b_alpsretrain_s70	finished	0,1,42	cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260908_132323	3zpks6yu	0.33	0.33	0.33	-1	512	True	False	0.01	False	cubic	32	2048	None	8192
 Qwen 3 8B s70 ALPS+retrain	gyhf609r	s3_8b_alpsretrain_s70_seed0	finished	0,1,42	cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260908_132323	3zpks6yu	0.33	0.33	0.33	-1	512	True	False	0.01	False	cubic	32	2048	None	8192
 Qwen 3 8B s70 ALPS+retrain	l3b9x301	s3_8b_alpsretrain_s70_seed1	finished	0,1,42	cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260908_132323	3zpks6yu	0.33	0.33	0.33	-1	512	True	False	0.01	False	cubic	32	2048	None	8192
