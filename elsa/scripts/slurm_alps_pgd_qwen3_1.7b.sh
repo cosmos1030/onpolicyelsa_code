@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=alps_sft_1.7b
+#SBATCH --job-name=alps_pgd_1.7b
 #SBATCH --partition=A100-80GB
 #SBATCH --qos=hpgpu
 #SBATCH --gres=gpu:1
@@ -8,28 +8,33 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=80G
 #SBATCH --time=1-00:00:00
-#SBATCH --exclude=n3,n42,n46,n51,n54,n60,n77,n80,n87,n91,n61,n64,n31,n19
+#SBATCH --exclude=n3,n42,n46,n51,n54,n60,n77,n80,n84,n87,n91,n61,n64,n31,n19
 #SBATCH --output=/local-data/user-data/%u/job_%j/slurm/%x_%j.out
 exec 2>&1
 
-# ALPS (one-shot pruned) -> fixed-mask NTP+KD+OPD recovery training, Qwen3-1.7B,
-# OT80/FW20. Loads the already-pruned ALPS checkpoint, freezes its zero
-# pattern (gmp_fixed_mask=true skips Fisher-based/TR-GMP mask updates
-# entirely -- no further pruning), and trains with
-# the same NTP+KD+OPKD (0.33/0.33/0.33) loss mix used by the TR-GMP runs
-# (702346 etc.), for direct comparison against both ALPS-alone (74.6 math500)
-# and TR-GMP-from-dense (which tops out around 63-65 math500 on this sparsity
-# so far). Idea: ALPS's one-shot solve already gets a better starting mask
-# than TR-GMP's gradual growth, so grafting the same NTP+KD+OPD recipe onto
-# it may combine ALPS's mask quality with TR-GMP's on-policy recovery.
+# ALPS mask + PGD, 1.7B. Fork of slurm_alps_sft_ntpkd_opkd_qwen3_1.7b.sh
+# (which retrains on a FROZEN ALPS mask) with PGD turned on, so the mask can
+# move from the ALPS starting point instead of staying where ALPS put it.
+# The 4B analogue is b200_scripts/alps_pgd_qwen3_4b.sh; this is the cluster
+# side of the same experiment.
 #
-# Single A100-80GB (1.7B fits without FSDP, same as slurm_gmp_tr_ntpkd_opkd_qwen3_1.7b.sh).
+# gmp_fixed_mask=true only seeds the mask from the checkpoint's zeros and
+# disables schedule-driven growth -- it does NOT gate PGD. So with
+# gmp_pgd=true the arm starts at the ALPS mask and lets the self-KL-gated
+# prune/revive search re-select weights from there.
 #
-# Usage: sbatch slurm_alps_sft_ntpkd_opkd_qwen3_1.7b.sh <SPARSITY> [LR] [SPARSITY_TYPE] [OPD_GEN_LEN] [LR_SCHEDULER] [DATA_PATH] [SEQLEN] [WANDB_PROJECT]
-# e.g.: sbatch slurm_alps_sft_ntpkd_opkd_qwen3_1.7b.sh 0.5
-#       sbatch slurm_alps_sft_ntpkd_opkd_qwen3_1.7b.sh 0.5 5e-5
-#       sbatch slurm_alps_sft_ntpkd_opkd_qwen3_1.7b.sh 0.6 1e-4 unstructured 512 cosine \
-#         /home1/doyoonkim/projects/elsa/data/ot3_fineweb_40k_qwen3_nostrip_8192.jsonl 8192 reasoning_qwen3_1.7b_nostrip8192
+# Two arms, set by KL_BUDGET:
+#   KL_BUDGET=0.01  (default)  trust region ON -- matches 1.7B SCOUT s70
+#   KL_BUDGET=99999            trust region removed; the bisection accepts
+#                              every prune candidate it can within
+#                              gmp_pgd_kl_bisect_iters=6 steps of doubling
+#
+# ARM_TAG lands in the run name so the two arms cannot collide (that bug cost
+# us a checkpoint once -- see feedback_run_naming).
+#
+# Usage:
+#   sbatch scripts/slurm_alps_pgd_qwen3_1.7b.sh 0.7 1e-4
+#   KL_BUDGET=99999 ARM_TAG=pgd_notr sbatch scripts/slurm_alps_pgd_qwen3_1.7b.sh 0.7 1e-4
 
 SPARSITY=${1:?"Usage: sbatch slurm_alps_sft_ntpkd_opkd_qwen3_1.7b.sh <SPARSITY> [LR] [SPARSITY_TYPE] [OPD_GEN_LEN] [LR_SCHEDULER] [DATA_PATH] [SEQLEN] [WANDB_PROJECT]"}
 LR=${2:-1e-4}
@@ -38,6 +43,14 @@ OPD_GEN_LEN=${4:-512}
 LR_SCHEDULER=${5:-cosine}
 WANDB_PROJECT=${8:-reasoning_qwen3_1.7b_nostrip8192}
 LOSS_WEIGHTS=${9:-0.33,0.33,0.33}  # NTP,KD,OPKD -- e.g. 0,0.5,0.5 to drop NTP and split KD/OPKD evenly
+KL_BUDGET="${KL_BUDGET:-0.01}"   # 1.7B SCOUT s70과 동일
+PGD_INTERVAL="${PGD_INTERVAL:-8}"
+CALIB_SIZE="${CALIB_SIZE:-4}"
+ARM_TAG="${ARM_TAG:-pgd_klb${KL_BUDGET}}"
+# 984061이 in-process vLLM에서 step 46 SIGSEGV(_kl_loss 연속블록 + CuMemAllocator).
+# 24cbd2c에서 검증된 처방은 sidecar + expandable_segments라 기본을 sidecar로 둔다.
+# 결과에는 영향 없음(동일 설정 대조에서 시드 노이즈 안).
+SIDECAR="${SIDECAR:-true}"
 # Optimizer steps at which to drop an extra HF directory, e.g. "512,1024,1536".
 # Empty (default) = endpoint only, i.e. the pre-existing behaviour.
 MILESTONE_STEPS=${MILESTONE_STEPS:-}
@@ -96,11 +109,16 @@ export WANDB_INIT_TIMEOUT=120
 export TMPDIR=/tmp
 export HF_TOKEN=$(cat ~/.hf_token 2>/dev/null || echo "")
 export WANDB_API_KEY=$(grep WANDB_API_KEY ~/.bashrc | cut -d'=' -f2 | tail -1)
-# OPKD lambda가 0이면 use_onpolicy가 꺼져 vLLM 엔진이 아예 안 뜬다. 그러면
-# CuMemAllocator가 없으니 expandable_segments를 쓸 수 있고, 그게 _kl_loss의
-# 큰 연속 블록 요구에 맞는 설정이다(max_split_size_mb:256은 분할을 금지해 정반대).
-# 위 주석이 말하는 926634(step 629 SIGSEGV)가 바로 OPD=0 런이었다.
-if [ "${OPKD_LAMBDA}" = "0" ]; then
+# sidecar면 트레이너가 vLLM의 CuMemAllocator를 안 올리므로 expandable_segments를
+# 쓸 수 있다. max_split_size_mb:256은 큰 연속 블록 분할을 금지해 이 잡엔 정반대 설정.
+# ALLOC_DEFAULT=true는 B200 컨테이너와 동일한 구성이다: 이 변수를 아예 설정하지
+# 않는다. B200 스크립트가 그렇게 돌고 있고 거기서는 이 segfault가 없다. 클러스터
+# 쪽 max_split_size_mb:256은 원래 vLLM CuMemAllocator 우회책으로 들어온 값인데,
+# 256MB 초과 세그먼트의 분할을 금지하므로 _kl_loss의 큰 연속 블록 요구와 정면
+# 충돌한다(= 이 잡에 정반대 설정).
+if [ "${ALLOC_DEFAULT:-false}" = "true" ]; then
+    unset PYTORCH_CUDA_ALLOC_CONF
+elif [ "$SIDECAR" = "true" ]; then
     export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 else
     export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:256
@@ -132,6 +150,12 @@ $PYTHON main.py \
     --sparsity_type=${SPARSITY_TYPE} \
     --do_gmp=true \
     --gmp_fixed_mask=true \
+    --gmp_tr_enabled=false \
+    --gmp_pgd=true \
+    --gmp_pgd_grow_to_target=true \
+    --gmp_pgd_kl_budget=${KL_BUDGET} \
+    --gmp_pgd_interval=${PGD_INTERVAL} \
+    --gmp_pgd_kl_calib_size=${CALIB_SIZE} \
     --steps=2048 \
     --gmp_batch_size=1 \
     --gmp_grad_accum=8 \
@@ -151,6 +175,7 @@ $PYTHON main.py \
     --gmp_milestone_steps="${MILESTONE_STEPS}" \
     --gmp_onpolicy_max_new_tokens=${OPD_GEN_LEN} \
     --gmp_opkd_prev_mask_teacher=false \
+    --gmp_opkd_vllm_sidecar=${SIDECAR} \
     --gmp_opkd_vllm_gpu_mem=0.15 \
     --gmp_prompt_path="$OPD_PROMPT_PATH" \
     --gmp_save_path=/home1/doyoonkim/projects/elsa/models \
@@ -158,11 +183,10 @@ $PYTHON main.py \
     --push_to_hub=true \
     --eval_math500=false \
     --eval_full_bench=true \
-    --eval_profile=${EVAL_PROFILE:-long} \
     --eval_zero_shot=false \
     --wandb=true \
     --wandb_project=${WANDB_PROJECT} \
-    --run_name_suffix="alpssft_${SPARSITY_TAG}_lr${LR}${TAG_SUFFIX}_$([ "${NTP_LAMBDA}" = "0" ] && echo kdopdonly_)$(basename "$DATA_PATH" .jsonl)" \
+    --run_name_suffix="alpspgd_${ARM_TAG}_${SPARSITY_TAG}_lr${LR}${TAG_SUFFIX}_$([ "${NTP_LAMBDA}" = "0" ] && echo kdopdonly_)$(basename "$DATA_PATH" .jsonl)" \
     --seed=42
 EXIT_CODE=$?
 

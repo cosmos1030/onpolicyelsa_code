@@ -156,6 +156,13 @@ def mixed(s, suf):
                and not is_long(s, b, cap, suf) for b, _, cap in BENCH)
 
 
+# 잘렸는데 정답으로 채점된 응답을 오답으로 치는 모드. correct_truncation_rate는
+# lighteval_bench._compute_token_stats에서 mean(truncated | correct)이므로
+# acc x (1 - ct)가 "예산 안에 끝맺으면서 정답"인 비율이다. 원본 float에서 계산한다
+# -- TSV의 반올림된 값을 다시 곱하면 오차가 누적된다.
+STRICT = os.environ.get('HARVEST_STRICT') == '1'
+
+
 def cells(s, suf):
     """One seed's 21 cells; a bench not run at its long cap stays '-'."""
     accs, out = [], []
@@ -165,12 +172,23 @@ def cells(s, suf):
             out += ['-'] * 4
             continue
         a = s.get(akey + suf)
+        if STRICT and isinstance(a, (int, float)):
+            ct = s.get(f'{b}_correct_truncation_rate{suf}')
+            # 정답이 0개면 ct가 nan -- 곱할 대상이 없으니 그대로 둔다.
+            if isinstance(ct, (int, float)) and ct == ct:
+                a = a * (1.0 - ct)
         accs.append(a)
         out += [pct(a), pct(s.get(f'{b}_truncation_rate{suf}')),
                 pct(s.get(f'{b}_correct_truncation_rate{suf}')),
                 tok(s.get(f'{b}_avg_output_tokens{suf}'))]
     avg5 = sum(accs) * 100 / 5 if all(isinstance(a, (int, float)) for a in accs) else '-'
-    return [avg5] + out
+    # GPQA(인덱스 1)를 뺀 4태스크 평균. 2026-09-23부터 새 평가 잡은 GPQA를 아예
+    # 돌리지 않는다(정답의 절반이 잘린 응답이라 능력 지표로 못 씀) -- 그러면 avg5가
+    # 통째로 '-'가 되므로 avg4를 별도 열로 둔다. **맨 끝에** 붙이는 이유는 기존 열
+    # 위치를 읽는 스크립트(strict 계산, 플롯, 노트)를 깨지 않기 위해서다.
+    four = [a for j, a in enumerate(accs) if j != 1]
+    avg4 = sum(four) * 100 / 4 if all(isinstance(a, (int, float)) for a in four) else '-'
+    return [avg5] + out + [avg4]
 
 
 TOKCOLS = {2 + 4 * j + 3 for j in range(5)}   # 'avg tokens' columns (avg5 at 1)
@@ -188,9 +206,9 @@ def agg(rows, fn):
 
 
 def header(label, rid):
-    r1 = [label] + [''] * 20 + [f'wandb {rid}']
-    r2 = ['', 'avg5'] + sum(([b] + [''] * 3 for b in HDR_B), [])
-    r3 = ['seed', 'accuracy'] + COLS * 5
+    r1 = [label] + [''] * 21 + [f'wandb {rid}']
+    r2 = ['', 'avg5'] + sum(([b] + [''] * 3 for b in HDR_B), []) + ['avg4 (no GPQA)']
+    r3 = ['seed', 'accuracy'] + COLS * 5 + ['accuracy']
     return [r1, r2, r3]
 
 
@@ -227,7 +245,7 @@ def run_seed(run):
 def harvest(api, size, proj):
     f = {'$or': [{f'summary_metrics.{b}_avg_gen_cap{x}': {'$exists': True}}
                  for b in ('math500', 'gsm8k') for x in SUFFIXES]}
-    blocks, merged = [], {}
+    blocks, excl_blocks, merged = [], [], {}
     for r in api.runs(f'{ENT}/{proj}', filters=f, per_page=200):
         s = r.summary._json_dict
         rows = []
@@ -241,15 +259,18 @@ def harvest(api, size, proj):
         if not rows:
             continue
         meth = auto_label(r)
+        if r.id in EXCLUDE_RUNS:
+            meth = meth + ' [EXCLUDED]'
         key = (sparsity(r), meth)
         # Merge runs that share an arm. Extra seeds are run as separate wandb
         # runs (s3_8b_<arm>_seed0, ...), and a re-run after a crashed benchmark
         # leaves two runs for the same seed -- both would otherwise become
         # half-empty blocks under one label. Group here, pick the best row per
         # seed below, then compute mean/std once over the merged seeds.
-        merged.setdefault(key, {'rows': {}, 'ids': [], 'states': [], 'want': 0})
+        merged.setdefault(key, {'rows': {}, 'ids': [], 'runs': [], 'states': [], 'want': 0})
         g = merged[key]
         g['ids'].append(r.id)
+        g['runs'].append(r)
         g['states'].append(r.state)
         g['want'] = max(g['want'], expected_seeds(r))
         for row in rows:
@@ -268,27 +289,153 @@ def harvest(api, size, proj):
         want = max(g['want'], len(rows))
         if len(full) < 3:
             label += f'  [{len(full)}/3 seeds complete]'
+        # 런 수가 시드 수보다 많으면 같은 시드를 두 번 이상 돌린 것이다. 2026-09-19에
+        # s3_8b_a3jump_s70이 --seeds 42로 두 번 제출됐는데, 블록에 wandb 런이 2개
+        # 붙어 있어 3시드처럼 보였다(실제로는 1시드). 라벨에 박아서 눈에 띄게 한다.
+        if len(g['ids']) > len(g['rows']):
+            label += f"  [중복시드: 런 {len(g['ids'])}개 / 시드 {len(g['rows'])}개]"
         if any(st_ != 'finished' for st_ in g['states']):
             label += f'  [{"/".join(sorted(set(g["states"])))}]'
         if len(full) >= 2:
             rows = rows + [['mean'] + agg(rows, st.mean), ['std'] + agg(rows, st.stdev)]
         rank = next((i for i, m in enumerate(ORDER) if meth.startswith(m) and
                      not any(meth.startswith(m2) and len(m2) > len(m) for m2 in ORDER)), len(ORDER))
-        blocks.append(((sp, rank, meth), header(label, ' '.join(g['ids'])) + rows + [[''] * 22]))
+        tgt = excl_blocks if '[EXCLUDED]' in meth else blocks
+        tgt.append(((sp, rank, meth), header(label, ' '.join(g['ids'])) + rows + [[''] * 23]))
     blocks.sort(key=lambda x: x[0])
-    return [row for _, b in blocks for row in b]
+    excl_blocks.sort(key=lambda x: x[0])
+    # provenance: 블록 -> (wandb id, run 객체) 목록. write_runs_meta()가 쓴다.
+    prov = []
+    for (sp, rank, meth), _ in blocks:
+        g = merged[(sp, meth)]
+        label = f'Qwen 3 {size.upper()} ' + (f's{sp} ' if sp else '') + meth
+        prov.append((label, g['ids'], g['runs'], sorted(g['rows'])))
+    return ([row for _, b in blocks for row in b],
+            [row for _, b in excl_blocks for row in b], prov)
+
+
+
+# ---------------------------------------------------------------- provenance
+# 결과 표만 보면 같은 이름의 블록 둘이 같은 체크포인트를 두 번 돌린 것인지, 설정이
+# 한 줄 다른 별개 arm인지 알 수 없다. 실제로 4B s70에 "ALPS+retrain"(44.94)과
+# "ALPS+retrain (0.33/0.33/0.33)"(43.45)이 나란히 있었고, 손실 가중치·롤아웃 길이·
+# 스텝이 전부 같고 gmp_onpolicy_kd_interval만 1 vs 32로 달랐다. 그 한 줄을 확인하려면
+# 매번 wandb를 뒤져야 했다. 이 파일이 그 수고를 없앤다.
+#
+# 평가 런(s3_*)의 config에는 model_path만 있고 학습 설정이 없으므로, 체크포인트를
+# 올린 학습 런을 찾아 그 config를 붙인다. 프로젝트 전체 스캔은 비싸므로 결과를
+# train_config_cache.json에 캐시하고, 캐시에 없는 체크포인트가 생겼을 때만 스캔한다.
+TRAIN_KEYS = [('gmp_ntp_lambda', 'ntp'), ('gmp_kd_lambda', 'kd'),
+              ('gmp_onpolicy_kd_lambda', 'opd'),
+              ('gmp_onpolicy_kd_interval', 'rollout_interval'),
+              ('gmp_onpolicy_max_new_tokens', 'rollout_len'),
+              ('gmp_fixed_mask', 'fixed_mask'), ('gmp_pgd', 'pgd'),
+              ('gmp_pgd_kl_budget', 'kl_budget'), ('gmp_tr_enabled', 'tr'),
+              ('gmp_growth_schedule', 'growth'), ('gmp_mask_interval', 'mask_interval'),
+              ('steps', 'steps'), ('learning_rate', 'lr'), ('seqlen', 'seqlen')]
+CACHE = os.path.join(HERE, 'train_config_cache.json')
+
+# 주 결과에서 빼둘 평가런. 삭제하지 않고 EXCL_DIR로 따로 내보낸다 -- harvest는
+# wandb에서 매번 새로 읽으므로 TSV에서 줄만 지우면 다음 주기에 되살아난다.
+#
+# 0eqkqmbs / qzhxc4h9: 4B s70 ALPS+retrain 3-term을 9월에 다시 돌린 런들.
+#   본표·Figure 3(a)가 쓰는 것은 8월 런(5x4prktp, 평가 vfjcx821, avg4 49.36)이고
+#   9월 런은 avg4 47.96이다. 설정 차이는 없다(로그상 갱신 주기도 둘 다 32스텝) --
+#   같은 레시피의 독립 학습 런이 1.4점 차이 난 것이므로 학습 재현 분산의 유일한
+#   데이터점으로 보관하되, 같은 이름의 블록 둘이 주 표에 나란히 있으면 어느 쪽이
+#   baseline인지 알 수 없어 혼동을 부른다.
+EXCLUDE_RUNS = {
+    '0eqkqmbs': '4B s70 ALPS+retrain 3-term, Sep repeat (주 baseline은 8월 vfjcx821)',
+    'qzhxc4h9': '4B s70 ALPS+retrain 3-term, Sep repeat (단일 시드, B200 로컬 체크포인트)',
+}
+EXCL_DIR = os.path.join(os.path.dirname(HERE), 'tsv_excluded')
+
+
+def _ckpt_of(run):
+    """평가 런이 가리키는 체크포인트. 학습 런이 자체 평가한 경우엔 자기 자신."""
+    mp = run.config.get('model_path')
+    if mp:
+        return str(mp)
+    hub = run.summary._json_dict.get('hub_model_id')
+    return str(hub) if hub else ''
+
+
+def _norm(p):
+    """허브 repo id와 로컬 출력 디렉터리를 같은 키로 묶기 위한 말단 타임스탬프."""
+    m = re.search(r'(\d{8}_\d{6})', p or '')
+    return m.group(1) if m else (p or '')
+
+
+def resolve_train_configs(api, proj, ckpts):
+    """체크포인트 -> 학습 config. 캐시에 없는 것이 있을 때만 프로젝트를 훑는다."""
+    import json
+    cache = {}
+    if os.path.exists(CACHE):
+        try:
+            cache = json.load(open(CACHE))
+        except Exception:
+            cache = {}
+    missing = [c for c in ckpts if c and _norm(c) not in cache]
+    if missing:
+        print(f'  [meta] {len(missing)}개 체크포인트의 학습 config 조회 중 ...', file=sys.stderr)
+        for r in api.runs(f'{ENT}/{proj}', per_page=500):
+            c = r.config
+            if 'gmp_onpolicy_kd_lambda' not in c and 'gmp_kd_lambda' not in c:
+                continue          # 평가 런은 건너뛴다
+            blob = str(r.summary._json_dict.get('hub_model_id', '')) + str(c.get('output_dir', '')) + r.name
+            key = _norm(blob)
+            for cand in missing:
+                if _norm(cand) and _norm(cand) in blob:
+                    cache[_norm(cand)] = {'train_run': r.id, 'train_name': r.name[:80],
+                                          **{short: c.get(k) for k, short in TRAIN_KEYS}}
+        json.dump(cache, open(CACHE, 'w'), indent=1, default=str)
+    return cache
+
+
+def write_runs_meta(api, size, proj, prov):
+    """블록별 런 출처 + 학습 설정을 runs_<size>.tsv로."""
+    ckpts = {_ckpt_of(r) for _, _, runs, _ in prov for r in runs}
+    cache = resolve_train_configs(api, proj, ckpts)
+    cols = ['block', 'wandb_id', 'run_name', 'state', 'seeds', 'checkpoint',
+            'train_run'] + [short for _, short in TRAIN_KEYS]
+    out = os.path.join(HERE, size, f'runs_{size}.tsv')
+    with open(out, 'w') as fh:
+        fh.write('\t'.join(cols) + '\n')
+        for label, ids, runs, seeds in prov:
+            for r in runs:
+                ck = _ckpt_of(r)
+                tc = cache.get(_norm(ck), {})
+                row = [label, r.id, r.name[:70], r.state, ','.join(seeds), ck,
+                       str(tc.get('train_run', ''))]
+                row += [str(tc.get(short, '')) for _, short in TRAIN_KEYS]
+                fh.write('\t'.join(row) + '\n')
+    print(f'wrote {out}', file=sys.stderr)
 
 
 def main():
     api = wandb.Api(timeout=180)
     for size, proj in PROJ.items():
-        sheet = harvest(api, size, proj)
-        os.makedirs(f'{HERE}/{size}', exist_ok=True)
-        out = f'{HERE}/{size}/long_results_{size}.tsv'
+        sheet, excl, prov = harvest(api, size, proj)
+        sub = 'strict' if STRICT else ''
+        base = os.path.join(HERE, sub, size) if sub else f'{HERE}/{size}'
+        os.makedirs(base, exist_ok=True)
+        out = os.path.join(base, ('strict_results_%s.tsv' % size) if STRICT
+                           else 'long_results_%s.tsv' % size)
         with open(out, 'w') as fh:
             for row in sheet:
                 fh.write('\t'.join(fmt(i, c) for i, c in enumerate(row)) + '\n')
         print(f'wrote {out}  ({len(sheet)} rows)', file=sys.stderr)
+        if not STRICT:
+            write_runs_meta(api, size, proj, prov)
+        if excl:
+            ed = os.path.join(EXCL_DIR, size)
+            os.makedirs(ed, exist_ok=True)
+            # strict 모드가 같은 파일을 덮어쓰지 않게 이름을 분리한다.
+            ep = os.path.join(ed, ('excluded_strict_%s.tsv' if STRICT else 'excluded_%s.tsv') % size)
+            with open(ep, 'w') as fh:
+                for row in excl:
+                    fh.write('\t'.join(fmt(i, c) for i, c in enumerate(row)) + '\n')
+            print(f'wrote {ep}  ({len(excl)} rows, 주 결과에서 제외)', file=sys.stderr)
 
 
 if __name__ == '__main__':

@@ -31,7 +31,8 @@ DIR = ("/home1/doyoonkim/projects/elsa/logs/policy_divergence/"
        "kl_fixed_vs_selfgen")
 NICE = {"ours": ("SCOUT", "#0f8b7e"), "noopd55": ("SCOUT w/o OPD", "#54A24B"),
         "kdonly": ("SCOUT w/o OPD", "#54A24B"), "opdonly": ("OPD only", "#b08600"),
-        "alps_sft": ("ALPS+retrain", "#d95f0e")}
+        "alps_sft": ("ALPS+retrain", "#d95f0e"),
+        "norefresh": ("SCOUT w/o rollout refresh", "#6a51a3")}
 
 
 def main():

@@ -1,0 +1,62 @@
+block	wandb_id	run_name	state	seeds	checkpoint	train_run	ntp	kd	opd	rollout_interval	rollout_len	fixed_mask	pgd	kl_budget	tr	growth	mask_interval	steps	lr	seqlen
+Qwen 3 8B dense	xp6jch5n	s3_8b_dense	finished	0,1,42	/home1/doyoonkim/.cache/huggingface/hub/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218															
+Qwen 3 8B s50 SparseGPT	zpovcm4b	s3_8b_sparsegpt_s50	finished	0,1,42	cosmos1030/qwen3-8b-sgpt-s50pct-ot80fw20															
+Qwen 3 8B s50 SparseGPT	uubwrjtd	s3_8b_sparsegpt_s50_seeds01	finished	0,1,42	/home/doyoonkim/models/sparsegpt_s50															
+Qwen 3 8B s50 SparseGPT selfgen	4vr9z3wb	s3_8b_s50_sgpt_selfgen	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_8b_sgpt_s50pct_n128_selfgenv3															
+Qwen 3 8B s50 ALPS	dcdjjxif	s3_8b_alps_s50	finished	0,1,42	/NHNHOME/log-postech/doyoonkim/models/qwen3_8b_alps_s50pct															
+Qwen 3 8B s50 ALPS	i2js42zd	s3_8b_alps_s50_seeds01	finished	0,1,42	/home/doyoonkim/models/alps_s50															
+Qwen 3 8B s50 ALPS selfgen	ipdx9nqz	s3_8b_s50_alps_selfgen	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_8b_selfgen_v3_alps_s50pct															
+Qwen 3 8B s50 ALPS+retrain	re907ejb	s3_8b_alpsretrain_s50	finished	0,1,42	cosmos1030/gmp-kd3e-1-s50pct-lr5e-5_20260908_053513	tb09czsq	0.33	0.33	0.33	-1	512	True	False	0.01	False	cubic	32	2048	None	8192
+Qwen 3 8B s50 ALPS+retrain	lqfpuzwt	s3_8b_alpsretrain_s50_seeds01	finished	0,1,42	/home/doyoonkim/models/alpsretrain_s50															
+Qwen 3 8B s50 Ours	2ddtwf5t	s3_8b_ours_s50	finished	0,1,42	cosmos1030/gmp-kd3e-1-s50pct-lr5e-5_20260907_210125	roq1vwuw	0.33	0.33	0.33	32	512	False	True	0.01	False	cubic	32	2048	None	8192
+Qwen 3 8B s50 Ours	sf0xyxbz	s3_8b_ours_s50_seeds01	finished	0,1,42	/home/doyoonkim/models/ours_s50															
+Qwen 3 8B s60 SparseGPT	0jhvupb7	s3_8b_sparsegpt_s60	finished	0,1,42	cosmos1030/qwen3-8b-sgpt-s60pct-ot80fw20															
+Qwen 3 8B s60 SparseGPT	41dgii3b	s3_8b_sparsegpt_s60_seeds01	finished	0,1,42	/home/doyoonkim/models/sparsegpt_s60															
+Qwen 3 8B s60 SparseGPT selfgen	1uf66ape	s3_8b_s60_sgpt_selfgen	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_8b_sgpt_s60pct_n128_selfgenv3															
+Qwen 3 8B s60 ALPS	b177u96x	s3_8b_alps_s60	finished	0,1,42	/NHNHOME/log-postech/doyoonkim/models/qwen3_8b_alps_s60pct															
+Qwen 3 8B s60 ALPS	6k9p8u3h	s3_8b_alps_s60_seeds01	finished	0,1,42	/home/doyoonkim/models/alps_s60															
+Qwen 3 8B s60 ALPS selfgen	7bh65g1r	s3_8b_s60_alps_selfgen	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_8b_selfgen_v3_alps_s60pct															
+Qwen 3 8B s60 ALPS+retrain	lkprc0o6	s3_8b_alpsretrain_s60	finished	0,1,42	cosmos1030/gmp-kd3e-1-s60pct-lr5e-5_20260908_054305	o90s9lyo	0.33	0.33	0.33	-1	512	True	False	0.01	False	cubic	32	2048	None	8192
+Qwen 3 8B s60 ALPS+retrain	j074xn67	s3_8b_alpsretrain_s60_seeds01	finished	0,1,42	/home/doyoonkim/models/alpsretrain_s60															
+Qwen 3 8B s60 Ours	wjj50tts	s3_8b_ours_s60	finished	0,1,42	cosmos1030/gmp-kd3e-1-s60pct-lr5e-5_20260907_142152	mgf2ka9s	0.33	0.33	0.33	32	512	False	True	0.01	False	cubic	32	2048	None	8192
+Qwen 3 8B s60 Ours	osvwfyhk	s3_8b_ours_s60_seeds01	finished	0,1,42	/home/doyoonkim/models/ours_s60															
+Qwen 3 8B s60 Ours (A3 jump)	ikoaz4sk	s3_8b_a3jump_s60	finished	42	/NHNHOME/log-postech/doyoonkim/models/gmp_s60pct_lr5e-05_onpol_lmda0.33_20260914_002323_p2602547															
+Qwen 3 8B s70 SparseGPT	yrtu7fpf	s3_8b_sparsegpt_s70	finished	0,1,42	cosmos1030/qwen3-8b-sgpt-s70pct-ot80fw20															
+Qwen 3 8B s70 SparseGPT	aumwn31v	s3_8b_sparsegpt_s70_seed0	finished	0,1,42	cosmos1030/qwen3-8b-sgpt-s70pct-ot80fw20															
+Qwen 3 8B s70 SparseGPT	c8v1gapa	s3_8b_sparsegpt_s70_seed1	finished	0,1,42	cosmos1030/qwen3-8b-sgpt-s70pct-ot80fw20															
+Qwen 3 8B s70 SparseGPT selfgen	ekfntxg2	s3_8b_s70_sgpt_selfgen	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_8b_sgpt_s70pct_n128_selfgenv3															
+Qwen 3 8B s70 ALPS	n3l54mf1	s3_8b_alps_s70	finished	0,1,42	/NHNHOME/log-postech/doyoonkim/models/qwen3_8b_alps_s70pct															
+Qwen 3 8B s70 ALPS	ik9zmgb9	s3_8b_alps_s70_seed1	finished	0,1,42	/NHNHOME/log-postech/doyoonkim/models/qwen3_8b_alps_s70pct															
+Qwen 3 8B s70 ALPS	wno7wec2	s3_8b_alps_s70_seed0	finished	0,1,42	/NHNHOME/log-postech/doyoonkim/models/qwen3_8b_alps_s70pct															
+Qwen 3 8B s70 ALPS	0y6e6wtx	s3_8b_alps_s70_seed0	finished	0,1,42	/NHNHOME/log-postech/doyoonkim/models/qwen3_8b_alps_s70pct															
+Qwen 3 8B s70 ALPS	8nnrbex5	s3_8b_alps_s70_seed0	finished	0,1,42	/NHNHOME/log-postech/doyoonkim/models/qwen3_8b_alps_s70pct															
+Qwen 3 8B s70 ALPS selfgen	48w3aqxq	s3_8b_s70_alps_selfgen	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_8b_selfgen_v3_alps_s70pct															
+Qwen 3 8B s70 ALPS+retrain	d4c200tz	s3_8b_alpsretrain_s70	finished	0,1,42	cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260908_132323	3zpks6yu	0.33	0.33	0.33	-1	512	True	False	0.01	False	cubic	32	2048	None	8192
+Qwen 3 8B s70 ALPS+retrain	gyhf609r	s3_8b_alpsretrain_s70_seed0	finished	0,1,42	cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260908_132323	3zpks6yu	0.33	0.33	0.33	-1	512	True	False	0.01	False	cubic	32	2048	None	8192
+Qwen 3 8B s70 ALPS+retrain	l3b9x301	s3_8b_alpsretrain_s70_seed1	finished	0,1,42	cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260908_132323	3zpks6yu	0.33	0.33	0.33	-1	512	True	False	0.01	False	cubic	32	2048	None	8192
+Qwen 3 8B s70 Ours	3y9jvl5s	s3_8b_ours_s70	finished	0,1,42	cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260911_015957	ajm5l60w	0.33	0.33	0.33	32	512	False	True	0.03	False	cubic	32	2048	None	8192
+Qwen 3 8B s70 Ours	2qe5zdw3	s3_8b_ours_s70_seeds01	finished	0,1,42	cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260911_015957	ajm5l60w	0.33	0.33	0.33	32	512	False	True	0.03	False	cubic	32	2048	None	8192
+Qwen 3 8B s70 Ours w/o OPD (0.5/0.5/0)	g5htdr2q	gmp_s70pct_kd0.5_lr0.0001_2048steps_prune0pct_pgd_grow2target_klbudget	finished	0,1,42	cosmos1030/gmp-kd5e-1-8b-s70pct-lr1e-4_20260917_181513	g5htdr2q	0.5	0.5	0	32	512	False	True	0.03	False	cubic	32	2048	None	8192
+Qwen 3 8B s70 Ours w/o OPD (0.5/0.5/0)	tlfo1110	s3_8b_ours_s70_noopd_seeds01	finished	0,1,42	/NHNHOME/log-postech/doyoonkim/models/gmp_8b_s70pct_lr0.0001_20260917_150541_p886909															
+Qwen 3 8B s70 Ours w/o rollout refresh	qewhu2u1	s3_8b_s70_norefresh	finished	0,1,42	cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260905_081916	n69llpef	0.33	0.33	0.33	4096	512	False	True	0.02	False	cubic	32	2048	None	8192
+Qwen 3 8B s70 Ours w/o rollout refresh	a275unvw	s3_8b_s70_norefresh_seed0	finished	0,1,42	cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260905_081916	n69llpef	0.33	0.33	0.33	4096	512	False	True	0.02	False	cubic	32	2048	None	8192
+Qwen 3 8B s70 Ours w/o rollout refresh	gyljf5mc	s3_8b_s70_norefresh_s01	finished	0,1,42	cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260905_081916	n69llpef	0.33	0.33	0.33	4096	512	False	True	0.02	False	cubic	32	2048	None	8192
+Qwen 3 8B s70 Ours w/o rollout refresh	t3z5ny3c	s3_8b_s70_norefresh_seed1	finished	0,1,42	/home/doyoonkim/models/norefresh_8b_s70															
+Qwen 3 8B s70 Ours (A3 jump)	z2l7jyva	s3_8b_a3jump_s70	finished	42	/NHNHOME/log-postech/doyoonkim/models/gmp_s70pct_lr0.0001_onpol_lmda0.33_20260908_085535															
+Qwen 3 8B s70 Ours (A3 jump)	wf5nj94s	s3_8b_a3jump_s70	finished	42	/NHNHOME/log-postech/doyoonkim/models/gmp_s70pct_lr0.0001_onpol_lmda0.33_20260908_085535															
+Qwen 3 8B s70 gmp_s70pct_onpol_lam0.33_tok512_lr0.0001_2048steps_prune0pct_pgd_grow2target_klbudget0.03_lr1e-4_pgdi8_globalscope_b200fsdp2	iuwf08pf	gmp_s70pct_onpol_lam0.33_tok512_lr0.0001_2048steps_prune0pct_pgd_grow2	finished	42																
+Qwen 3 8B s70 s3_8b_a3jump003_s70_seed0	k5bkdlum	s3_8b_a3jump003_s70_seed0	finished	0	/NHNHOME/log-postech/doyoonkim/models/gmp_8b_s70pct_lr0.0001_onpol_lmda0.33_20260923_052514_p110151															
+Qwen 3 8B s70 s3_8b_a3jump003_s70_seed1	gi7pz9gp	s3_8b_a3jump003_s70_seed1	finished	1	/NHNHOME/log-postech/doyoonkim/models/gmp_8b_s70pct_lr0.0001_onpol_lmda0.33_20260923_052514_p110151															
+Qwen 3 8B s70 s3_8b_s70_ours_klb002	r3rftcwk	s3_8b_s70_ours_klb002	failed	0,1,42	cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260907_073958	uywgha9p	0.33	0.33	0.33	32	512	False	True	0.02	False	cubic	32	2048	None	8192
+Qwen 3 8B s80 SparseLLM	12qjsvkl	s3_8b_s80_sparsellm	finished	0,1,42	cosmos1030/sparsellm-s80pct_20260903_020850															
+Qwen 3 8B s80 ALPS	bdqripdh	s3_8b_s80_alps	finished	0,1,42	cosmos1030/alps-qwen3-8b-s80pct															
+Qwen 3 8B s80 ALPS+retrain (0.33/0.33/0.33)	9yyo7mmo	gmp_s80pct_onpol_lam0.33_tok512_lr0.0001_2048steps_alpssft8b_s80pct_lr	finished	0,1,42	cosmos1030/gmp-kd3e-1-8b-s80pct-lr1e-4_20260917_121924	9yyo7mmo	0.33	0.33	0.33	32	512	True	False	0.01	False	cubic	32	2048	None	8192
+Qwen 3 8B s80 ALPS+retrain (0.33/0.33/0.33)	q10oyuk4	s3_8b_alpsretrain033_s80_seed0	finished	0,1,42	/NHNHOME/log-postech/doyoonkim/models/gmp_8b_s80pct_lr0.0001_onpol_lmda0.33_20260917_054518_p394552															
+Qwen 3 8B s80 ALPS+retrain (0.33/0.33/0.33)	873d63mf	s3_8b_alpsretrain033_s80_seed0	finished	0,1,42	/NHNHOME/log-postech/doyoonkim/models/gmp_8b_s80pct_lr0.0001_onpol_lmda0.33_20260917_054518_p394552															
+Qwen 3 8B s80 ALPS+retrain (0.33/0.33/0.33)	49uugrbo	s3_8b_alpsretrain033_s80_seed1	finished	0,1,42	/NHNHOME/log-postech/doyoonkim/models/gmp_8b_s80pct_lr0.0001_onpol_lmda0.33_20260917_054518_p394552															
+Qwen 3 8B s80 ALPS+retrain w/o OPD (0.5/0.5/0)	4yuo2b36	gmp_s80pct_kd0.5_lr0.0001_2048steps_alpssft8b_s80pct_lr1e-4_2term_ot3_	finished	0,1,42	cosmos1030/gmp-kd5e-1-8b-s80pct-lr1e-4_20260917_105733	4yuo2b36	0.5	0.5	0	32	512	True	False	0.01	False	cubic	32	2048	None	8192
+Qwen 3 8B s80 ALPS+retrain w/o OPD (0.5/0.5/0)	lk7ios48	s3_8b_alpsretrainnoopd_s80_seed0	finished	0,1,42	/NHNHOME/log-postech/doyoonkim/models/gmp_8b_s80pct_lr0.0001_20260917_043650_p392212															
+Qwen 3 8B s80 ALPS+retrain w/o OPD (0.5/0.5/0)	ptip1c9j	s3_8b_alpsretrainnoopd_s80_seed1	finished	0,1,42	/home/doyoonkim/models/gmp-kd5e-1-8b-s80pct-lr1e-4_20260917_105733	4yuo2b36	0.5	0.5	0	32	512	True	False	0.01	False	cubic	32	2048	None	8192
+Qwen 3 8B s80 Ours (delta=0.03)	keuegrrb	gmp_s80pct_onpol_lam0.33_tok512_lr0.0001_2048steps_prune0pct_pgd_grow2	finished	0,1,42	cosmos1030/gmp-kd3e-1-8b-s80pct-lr1e-4_20260918_090751	keuegrrb	0.33	0.33	0.33	32	512	False	True	0.03	False	cubic	32	2048	None	8192
+Qwen 3 8B s80 Ours (delta=0.03)	us6a2h0v	s3_8b_oursd003_s80_seed1	finished	0,1,42	cosmos1030/gmp-kd3e-1-8b-s80pct-lr1e-4_20260918_090751	keuegrrb	0.33	0.33	0.33	32	512	False	True	0.03	False	cubic	32	2048	None	8192
+Qwen 3 8B s80 Ours (delta=0.03)	xu8nbgav	s3_8b_oursd003_s80_seed0	finished	0,1,42	cosmos1030/gmp-kd3e-1-8b-s80pct-lr1e-4_20260918_090751	keuegrrb	0.33	0.33	0.33	32	512	False	True	0.03	False	cubic	32	2048	None	8192

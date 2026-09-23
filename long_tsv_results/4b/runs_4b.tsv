@@ -1,0 +1,62 @@
+block	wandb_id	run_name	state	seeds	checkpoint	train_run	ntp	kd	opd	rollout_interval	rollout_len	fixed_mask	pgd	kl_budget	tr	growth	mask_interval	steps	lr	seqlen
+Qwen 3 4B dense	b2rdczje	s3_4b_dense	finished	0,1,42	/home1/doyoonkim/.cache/huggingface/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c															
+Qwen 3 4B s50 SparseGPT	flex5m8x	s3_4b_s50_sparsegpt	finished	0,1,42	cosmos1030/sparsegpt-qwen3-4b-s50pct															
+Qwen 3 4B s50 SparseGPT selfgen	pho3cqwf	s3_4b_s50_sgpt_selfgen	finished	0,1,42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_sgpt_s50pct_n128_selfgenv3															
+Qwen 3 4B s50 SparseLLM	diarqepu	s3_4b_sparsellm_s50	running	0,1	/home/doyoonkim/models/sparsellm_4b_s50															
+Qwen 3 4B s50 ALPS	kdimp4bo	s3_4b_s50_alps	finished	0,1,42	cosmos1030/alps-qwen3-4b-s50pct															
+Qwen 3 4B s50 ALPS selfgen	8yyyu8ow	s3_4b_s50_alps_selfgen	finished	0,1,42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_selfgen_v3_s50pct															
+Qwen 3 4B s50 ALPS+retrain	kkpyvjam	s3_4b_s50_alpsretrain	finished	0,1,42	cosmos1030/gmp-kd3e-1-s50pct-lr5e-5_20260812_132642	miysnxlq	0.33	0.33	0.33	1	512	True	False	None	False	None	32	2048	None	8192
+Qwen 3 4B s50 Ours	s6b09k8f	s3_4b_s50_ours	finished	0,1,42	cosmos1030/gmp-kd3e-1-s50pct-lr5e-5_20260901_060006	544kemgd	0.33	0.33	0.33	32	512	False	True	0.01	False	cubic	32	2048	None	8192
+Qwen 3 4B s50 Ours w/o OPD (0.5/0.5/0)	prxftopo	s3_4b_s50_noopd	finished	0,1,42	cosmos1030/gmp-kd5e-1-s50pct-lr5e-5_20260915_130503	jwqzoixm	0.5	0.5	0	32	512	False	True	0.01	False	cubic	32	2048	None	8192
+Qwen 3 4B s50 Ours w/o rollout refresh	stytmxbt	s3_4b_s50_norefresh	finished	42	cosmos1030/gmp-kd3e-1-s50pct-lr5e-5_20260903_080351	rxsmqs5p	0.33	0.33	0.33	4096	512	False	True	0.01	False	cubic	32	2048	None	8192
+Qwen 3 4B s50 Ours, cubic schedule (pace-matched)	0n389gjf	s3_4b_s50_cubic_matched	finished	42	cosmos1030/gmp-kd3e-1-s50pct-lr5e-5_20260903_142204	kp4bd255	0.33	0.33	0.33	32	512	False	True	0.01	False	cubic	32	2048	None	8192
+Qwen 3 4B s60 SparseGPT	rp0bi9rd	s3_4b_s60_sparsegpt	finished	0,1,42	cosmos1030/sparsegpt-qwen3-4b-s60pct															
+Qwen 3 4B s60 SparseGPT selfgen	8fdustqf	s3_4b_s60_sgpt_selfgen	finished	0,1,42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_sgpt_s60pct_n128_selfgenv3															
+Qwen 3 4B s60 SparseLLM	xtprmhgu	s3_4b_sparsellm_s60	running	0,1	/home/doyoonkim/models/sparsellm_4b_s60															
+Qwen 3 4B s60 ALPS	lesvnnsg	s3_4b_s60_alps	finished	0,1,42	cosmos1030/alps-qwen3-4b-s60pct															
+Qwen 3 4B s60 ALPS selfgen	sqpjj6gu	s3_4b_s60_alps_selfgen	finished	0,1,42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_selfgen_v3_s60pct															
+Qwen 3 4B s60 ALPS+retrain	vbd3dndv	s3_4b_s60_alpsretrain	finished	0,1,42	cosmos1030/gmp-kd3e-1-s60pct-lr1e-4_20260814_193400	dqocd3f8	0.33	0.33	0.33	1	512	True	False	None	False	None	32	2048	None	8192
+Qwen 3 4B s60 Ours	x2pcgf19	s3_4b_s60_ours	finished	0,1,42	cosmos1030/gmp-kd3e-1-s60pct-lr5e-5_20260901_075817	02vfcs1b	0.33	0.33	0.33	32	512	False	True	0.02	False	cubic	32	2048	None	8192
+Qwen 3 4B s60 Ours w/o OPD (0.5/0.5/0)	s1pnmvoy	s3_4b_s60_noopd	finished	0,1,42	cosmos1030/gmp-kd5e-1-s60pct-lr5e-5_20260915_181935	de0nllme	0.5	0.5	0	32	512	False	True	0.02	False	cubic	32	2048	None	8192
+Qwen 3 4B s60 Ours, cubic schedule (pace-matched)	dvqrq8zv	s3_4b_s60_cubic_matched	finished	42	cosmos1030/gmp-kd3e-1-s60pct-lr5e-5_20260903_142958	1npg0ri2	0.33	0.33	0.33	32	512	False	True	0.02	False	cubic	32	2048	None	8192
+Qwen 3 4B s70 SparseGPT	r9alde40	s3_4b_s70_sparsegpt	finished	0,1,42	cosmos1030/sparsegpt-qwen3-4b-s70pct															
+Qwen 3 4B s70 SparseGPT selfgen	wue1cbzo	s3_4b_s70_sgpt_selfgen	finished	0,1,42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_sgpt_s70pct_n128_selfgenv3															
+Qwen 3 4B s70 SparseLLM	xrozbvfm	s3_4b_sparsellm_s70	running	0,1	/home/doyoonkim/models/sparsellm_4b_s70															
+Qwen 3 4B s70 ALPS	tn8f17g1	s3_4b_s70_alps	finished	0,1,42	cosmos1030/alps-qwen3-4b-s70pct															
+Qwen 3 4B s70 ALPS selfgen	qztmuivj	s3_4b_s70_alps_selfgen	finished	0,1,42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_selfgen_v3_s70pct															
+Qwen 3 4B s70 ALPS+retrain	vfjcx821	s3_4b_s70_alpsretrain	finished	0,1,42	cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260814_035030	5x4prktp	0.33	0.33	0.33	1	512	True	False	None	False	None	32	2048	None	8192
+Qwen 3 4B s70 ALPS+retrain (0.33/0.33/0.33)	0eqkqmbs	s3_4b_s70_alpsretrain_3term	finished	0,1,42	cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260913_204305	es235y9q	0.33	0.33	0.33	32	512	True	False	0.01	False	cubic	32	2048	None	8192
+Qwen 3 4B s70 ALPS+retrain (0.33/0.33/0.33)	qzhxc4h9	s3_4b_alpsretrain_3term_s70	finished	0,1,42	/NHNHOME/log-postech/doyoonkim/models/gmp_s70pct_lr0.0001_onpol_lmda0.33_20260913_190814_p2391204															
+Qwen 3 4B s70 ALPS+retrain w/o OPD (0.5/0.5/0)	6hizpc1g	s3_4b_s70_alpsretrain_2term	finished	0,1,42	cosmos1030/gmp-kd5e-1-s70pct-lr1e-4_20260913_193547	4n7itrc2	0.5	0.5	0	32	512	True	False	0.01	False	cubic	32	2048	None	8192
+Qwen 3 4B s70 Ours	39t1d9g7	s3_4b_s70_ours	finished	0,1,42	cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260901_080954	r5j1uw8d	0.33	0.33	0.33	32	512	False	True	0.02	False	cubic	32	2048	None	8192
+Qwen 3 4B s70 Ours OPD-only (0/0/1.0)	dl1d889j	s3_4b_s70_opdonly	finished	0,42	cosmos1030/gmp-4b-s70pct-lr1e-4_20260919_041114	eb0trhnz	0	0	1	32	512	False	True	0.02	False	cubic	32	2048	None	8192
+Qwen 3 4B s70 Ours OPD-only (0/0/1.0)	87x0tda1	s3_4b_s70_opdonly	finished	0,42	cosmos1030/gmp-4b-s70pct-lr1e-4_20260919_041114	eb0trhnz	0	0	1	32	512	False	True	0.02	False	cubic	32	2048	None	8192
+Qwen 3 4B s70 Ours w/o KD (0.5/0/0.5)	r8eomj61	gmp_s70pct_onpol_lam0.5_tok512_lr0.0001_2048steps_prune0pct_pgd_grow2t	finished	42	cosmos1030/gmp-4b-s70pct-lr1e-4_20260917_213402	r8eomj61	0.5	0	0.5	32	512	False	True	0.02	False	cubic	32	2048	None	8192
+Qwen 3 4B s70 Ours w/o OPD (0.5/0.5/0)	orwr7glo	s3_4b_s70_noopd	finished	0,1,42	cosmos1030/gmp-kd5e-1-s70pct-lr1e-4_20260915_192606	vew8x5r5	0.5	0.5	0	32	512	False	True	0.02	False	cubic	32	2048	None	8192
+Qwen 3 4B s70 Ours w/o rollout refresh	nve0ruhr	s3_4b_s70_norefresh	finished	42	cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260903_081638	laphj0g7	0.33	0.33	0.33	4096	512	False	True	0.02	False	cubic	32	2048	None	8192
+Qwen 3 4B s70 Ours, cubic schedule (pace-matched)	nyrapua1	s3_4b_s70_cubic_matched	finished	42	cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260903_144159	k43jzq69	0.33	0.33	0.33	32	512	False	True	0.02	False	cubic	32	2048	None	8192
+Qwen 3 4B s70 Ours (A3 jump)	9171lgjn	s3_4b_s70_jump	finished	0,1,42	cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260909_213205	3olz82te	0.33	0.33	0.33	32	512	False	True	0.02	False	cubic	32	2048	None	8192
+Qwen 3 4B s70 s3_4b_alpspgdnotr_s70_seed0	e0ihyq85	s3_4b_alpspgdnotr_s70_seed0	finished	0	cosmos1030/gmp-4b-s70pct-lr0.0001-onpol-lmda0.33-20260922-002405-p291199															
+Qwen 3 4B s70 s3_4b_alpspgdnotr_s70_seed1	ipe0f7yq	s3_4b_alpspgdnotr_s70_seed1	finished	1	cosmos1030/gmp-4b-s70pct-lr0.0001-onpol-lmda0.33-20260922-002405-p291199															
+Qwen 3 4B s70 s3_4b_alpspgdnotr_s70_seed42	cw7zkw1i	s3_4b_alpspgdnotr_s70_seed42	finished	42	cosmos1030/gmp-4b-s70pct-lr0.0001-onpol-lmda0.33-20260922-002405-p291199															
+Qwen 3 4B s70 s3_4b_alpspgdtr_s70_seed0	minaq3tm	s3_4b_alpspgdtr_s70_seed0	finished	0	cosmos1030/gmp-4b-s70pct-lr0.0001-onpol-lmda0.33-20260921-212708-p265824															
+Qwen 3 4B s70 s3_4b_alpspgdtr_s70_seed1	2y2o3gt6	s3_4b_alpspgdtr_s70_seed1	finished	1	cosmos1030/gmp-4b-s70pct-lr0.0001-onpol-lmda0.33-20260921-212708-p265824															
+Qwen 3 4B s70 s3_4b_alpspgdtr_s70_seed42	17aylqzg	s3_4b_alpspgdtr_s70_seed42	finished	42	cosmos1030/gmp-4b-s70pct-lr0.0001-onpol-lmda0.33-20260921-212708-p265824															
+Qwen 3 4B s70 s3_4b_cubicnopgd_s70_seed0	hl7zwbkn	s3_4b_cubicnopgd_s70_seed0	finished	0	cosmos1030/gmp-4b-s70pct-lr0.0001-onpol-lmda0.33-20260922-023308-p310907															
+Qwen 3 4B s70 s3_4b_cubicnopgd_s70_seed1	gljk658o	s3_4b_cubicnopgd_s70_seed1	finished	1	cosmos1030/gmp-4b-s70pct-lr0.0001-onpol-lmda0.33-20260922-023308-p310907															
+Qwen 3 4B s70 s3_4b_cubicnopgd_s70_seed42	ay0dnnto	s3_4b_cubicnopgd_s70_seed42	finished	42	/NHNHOME/log-postech/doyoonkim/models/gmp_4b_s70pct_lr0.0001_onpol_lmda0.33_20260922_023308_p310907															
+Qwen 3 4B s70 s3_4b_s70_norefresh_rep	eniy0b69	s3_4b_s70_norefresh_rep	finished	42	cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260909_221717	izc2311t	0.33	0.33	0.33	4096	512	False	True	0.02	False	cubic	32	2048	None	8192
+Qwen 3 4B s80 SparseLLM	p6c4r6lx	s3_4b_s80_sparsellm	finished	0,1,42	cosmos1030/sparsellm-s80pct_20260903_113201															
+Qwen 3 4B s80 ALPS	bql6bwvl	s3_4b_s80_alps	finished	0,1,42	cosmos1030/alps-qwen3-4b-s80pct															
+Qwen 3 4B s80 ALPS+retrain	q6vjas4j	gmp_s80pct_onpol_lam0.33_tok512_lr0.0001_2048steps_alpssft4b_s80pct_lr	finished	42	cosmos1030/gmp-kd3e-1-4b-s80pct-lr1e-4_20260917_112952	q6vjas4j	0.33	0.33	0.33	32	512	True	False	0.01	False	cubic	32	2048	None	8192
+Qwen 3 4B s80 ALPS+retrain OPD-only (0/0/1.0)	n9omc089	gmp_s80pct_onpol_lam1.0_tok512_lr0.0001_2048steps_alpssft4b_s80pct_lr1	finished	42	cosmos1030/gmp-4b-s80pct-lr1e-4_20260918_071932	n9omc089	0	0	1	32	512	True	False	0.01	False	cubic	32	2048	None	8192
+Qwen 3 4B s80 ALPS+retrain w/o OPD	crdshw6m	gmp_s80pct_kd0.5_lr0.0001_2048steps_alpssft4b_s80pct_lr1e-4_2term_ot3_	finished	42	cosmos1030/gmp-kd5e-1-4b-s80pct-lr1e-4_20260917_102335	crdshw6m	0.5	0.5	0	32	512	True	False	0.01	False	cubic	32	2048	None	8192
+Qwen 3 4B s80 Ours	0qeykb19	s3_4b_s80_ours_s42	finished	0,1,42	cosmos1030/gmp-kd3e-1-s80pct-lr1e-4_20260916_220740	q0kmiudv	0.33	0.33	0.33	32	512	False	True	0.02	False	cubic	32	2048	None	8192
+Qwen 3 4B s80 Ours	ush52nf1	s3_4b_s80_ours_s01	finished	0,1,42	cosmos1030/gmp-kd3e-1-s80pct-lr1e-4_20260916_220740	q0kmiudv	0.33	0.33	0.33	32	512	False	True	0.02	False	cubic	32	2048	None	8192
+Qwen 3 4B s80 Ours + DPO (lr1e-5, ep0.4)	9s01x120	s3_4b_s80_dpo_lr1e5_ep04_s42	finished	0,1,42	Riasok/dpo-scout-s80-ultrafeedback-lr1e-5-beta0.05-epoch0.4_20260918															
+Qwen 3 4B s80 Ours + DPO (lr1e-5, ep0.4)	p6492hqj	s3_4b_s80_dpo_lr1e5_s01	finished	0,1,42	Riasok/dpo-scout-s80-ultrafeedback-lr1e-5-beta0.05-epoch0.4_20260918															
+Qwen 3 4B s80 Ours + DPO (lr5e-6, ep1.0)	vv5x9gx3	s3_4b_s80_dpo_lr5e6_ep10_s42	finished	0,1,42	Riasok/dpo-scout-s80-ultrafeedback-lr5e-6-beta0.05-epoch1.0_20260918															
+Qwen 3 4B s80 Ours + DPO (lr5e-6, ep1.0)	opr5gbsx	s3_4b_s80_dpo_lr5e6_s01	finished	0,1,42	Riasok/dpo-scout-s80-ultrafeedback-lr5e-6-beta0.05-epoch1.0_20260918															
+Qwen 3 4B s80 s3_4b_cubicnopgd_s80_seed42	5scafjrm	s3_4b_cubicnopgd_s80_seed42	finished	42	/NHNHOME/log-postech/doyoonkim/models/gmp_4b_s80pct_lr0.0001_onpol_lmda0.33_20260922_181742_p13958															
+Qwen 3 4B s80 s3_4b_frozenpool_s80_seed42	sg28h4lr	s3_4b_frozenpool_s80_seed42	finished	42	/NHNHOME/log-postech/doyoonkim/models/gmp_4b_s80pct_lr0.0001_onpol_lmda0.33_20260922_062919_p332553															
+Qwen 3 4B s80 s3_4b_s80_alpsretrain_noopd	fkndzhi2	s3_4b_s80_alpsretrain_noopd	failed	0,1	cosmos1030/gmp-kd5e-1-4b-s80pct-lr1e-4_20260917_102335	crdshw6m	0.5	0.5	0	32	512	True	False	0.01	False	cubic	32	2048	None	8192

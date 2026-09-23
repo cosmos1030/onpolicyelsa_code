@@ -20,14 +20,20 @@ LABEL=${2:?"<LABEL> e.g. noopd:s50"}
 MODEL=${3:?"<MODEL_PATH>"}
 
 PYTHON=/home1/doyoonkim/miniconda3/envs/rac/bin/python
-DENSE="/home1/doyoonkim/.cache/huggingface/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c"
+# 인코더 겸 롤아웃 teacher. 1.7B 풀(n30_k64_clean_1p7b)에 모델을 추가할 때는 반드시
+# 1.7B dense를 줘야 한다 -- 4B 인코더로 1.7B 롤아웃을 읽으면 크기 차이를 재게 된다.
+DENSE="${DENSE_OVERRIDE:-/home1/doyoonkim/.cache/huggingface/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c}"
 
 ENV_FILE="/run/slurm/job_env_${SLURM_JOB_ID}"
 [ -f "$ENV_FILE" ] && source "$ENV_FILE"
 [ -z "${LOCAL_JOB_BASE:-}" ] && LOCAL_JOB_BASE="/local-data/user-data/${USER}/job_${SLURM_JOB_ID}"
 mkdir -p "$LOCAL_JOB_BASE/slurm"
-LOG=/home1/doyoonkim/projects/elsa/logs/policy_divergence/add_pooled_${SLURM_JOB_ID}.out
-LOCAL_LOG="$LOCAL_JOB_BASE/slurm/add_pooled_${SLURM_JOB_ID}.out"
+# Follow the job NAME, not the literal "add_pooled": --output uses %x, so an
+# sbatch --job-name= override sends the real log somewhere this trap was not
+# looking. That is how jobs 935976-935978 came back COMPLETED in seconds with
+# no npz and no log to explain it.
+LOG=/home1/doyoonkim/projects/elsa/logs/policy_divergence/${SLURM_JOB_NAME}_${SLURM_JOB_ID}.out
+LOCAL_LOG="$LOCAL_JOB_BASE/slurm/${SLURM_JOB_NAME}_${SLURM_JOB_ID}.out"
 ( while true; do cp "$LOCAL_LOG" "$LOG" 2>/dev/null || true; sleep 30; done ) &
 M=$!
 trap 'kill $M 2>/dev/null; cp "$LOCAL_LOG" "$LOG" 2>/dev/null || true' EXIT

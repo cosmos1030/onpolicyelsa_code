@@ -36,7 +36,8 @@ NPZ = ("/home1/doyoonkim/projects/elsa/logs/policy_divergence/coverage/"
        "coverage_954377.npz")
 NICE = {"ours:s70": ("SCOUT", "#0f8b7e"),
         "noopd55:s70": ("SCOUT w/o OPD", "#54A24B"),
-        "alps_sft:s70": ("ALPS+retrain", "#b08600")}
+        "alps_sft:s70": ("ALPS+retrain", "#b08600"),
+        "norefresh:s70": ("SCOUT w/o rollout refresh", "#6a51a3")}
 
 
 def main():
