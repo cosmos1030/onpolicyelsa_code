@@ -116,7 +116,7 @@ python main.py \
     --eval_math500=false \
     --eval_zero_shot=true \
     --eval_full_bench=true \
-    --eval_profile=quick \
+    --eval_profile=${EVAL_PROFILE:-long} \
     --wandb=true \
     --wandb_project=${WANDB_PROJECT} \
     --seed=42 \

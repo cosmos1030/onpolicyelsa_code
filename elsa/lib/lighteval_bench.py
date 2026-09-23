@@ -295,7 +295,7 @@ def run_lighteval_bench(
     tp_size: int = 1,
     only_tasks: Optional[list] = None,
     seed: int = 42,
-    profile: str = "quick",
+    profile: str = "long",
 ) -> dict:
     """Run the lighteval benchmark suite (or a subset) and return metrics dict.
 
