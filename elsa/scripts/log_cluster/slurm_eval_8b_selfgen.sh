@@ -90,6 +90,7 @@ python scripts/eval_full.py \
     --wandb_entity dyk6208-gwangju-institute-of-science-and-technology \
     --run_name "$RUN" \
     --method "$METHOD" --sparsity "0.${SP_PCT}" \
+    --benchmarks math500,ifeval,lcb,gsm8k \
     --profile long --seeds "$SEEDS" \
     --tp_size 1 --gpu_util 0.90 \
     --skip_ppl --skip_zeroshot \
