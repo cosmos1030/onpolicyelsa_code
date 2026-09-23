@@ -83,6 +83,27 @@ case "$ARM" in
     [ -f "$MODEL/.download_complete" ] || MODEL=cosmos1030/gmp-4b-s70pct-lr0.0001-onpol-lmda0.33-20260922-002405-p291199
     RUN=s3_4b_alpspgdnotr_s70_seed${SEED}
     PROJECT=reasoning_qwen3_4b_nostrip8192; SPARSITY=0.7 ;;
+  # 4B s70, cubic sparsity schedule with PGD removed. Seed 42 (wandb ay0dnnto,
+  # B200) scored 49.09 -- ABOVE SCOUT's 48.81 +- 0.41, which if it holds across
+  # seeds undercuts "the PGD-grown mask is what buys the gain". One seed cannot
+  # settle that, hence these two.
+  cubicnopgd_seed0|cubicnopgd_seed1)
+    SEED=${ARM#cubicnopgd_seed}
+    MODEL=/home/doyoonkim/models/cubicnopgd_s70
+    [ -f "$MODEL/.download_complete" ] || MODEL=cosmos1030/gmp-4b-s70pct-lr0.0001-onpol-lmda0.33-20260922-023308-p310907
+    RUN=s3_4b_cubicnopgd_s70_seed${SEED}
+    PROJECT=reasoning_qwen3_4b_nostrip8192; SPARSITY=0.7 ;;
+  # 8B s70 SCOUT with the rollout pool frozen. Seed 42 (wandb qewhu2u1, run on
+  # the old cluster with --seed 42) is 52.42 against SCOUT's 57.25, i.e. -4.83
+  # where the same ablation at 4B is -0.08. That is the scale-dependence claim
+  # for on-policy refresh, and it currently rests on one seed with no error bar.
+  # Run name matches the seed-42 run's arm so harvest merges all three.
+  norefresh8b_seed0|norefresh8b_seed1)
+    SEED=${ARM#norefresh8b_seed}
+    MODEL=/home/doyoonkim/models/norefresh_8b_s70
+    [ -f "$MODEL/.download_complete" ] || MODEL=cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260905_081916
+    RUN=s3_8b_s70_norefresh_seed${SEED}
+    PROJECT=reasoning_qwen3_8b_nostrip8192; SPARSITY=0.7 ;;
   *) echo "!! unknown arm '$ARM'" >&2; exit 1 ;;
 esac
 
