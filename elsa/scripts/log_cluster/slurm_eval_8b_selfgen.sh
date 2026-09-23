@@ -14,10 +14,12 @@ exec 2>&1
 # 8B RAC ("+RAC" in Figure 2, selfgen v3 here) at seeds 0 and 1; seed 42 is
 # already on the hub side. This is the SLURM version of
 # elsa/scripts/handoff_8b_selfgen_seeds01.sh, which assumes a six-GPU box with
-# no scheduler. Two bugs in that script are fixed here: it passes
-# --wandb_run_name, which eval_full.py does not define (argparse would kill
-# every run at once), and its --benchmarks list omits gpqa, which would leave
-# seeds 0/1 without an avg5 and so unable to form a three-seed mean.
+# no scheduler. One bug in that script is fixed here: it passes
+# --wandb_run_name, which eval_full.py does not define, so argparse would have
+# killed all six runs at once. Its benchmark list is kept as-is -- gpqa is
+# deliberately skipped for these arms. harvest therefore leaves avg5 blank for
+# seeds 0/1 (it needs all five), while the four benchmarks it does have still
+# get their own mean and std.
 #
 #   sbatch -J alps_selfgen_s50 elsa/scripts/log_cluster/slurm_eval_8b_selfgen.sh alps 50
 set -u
