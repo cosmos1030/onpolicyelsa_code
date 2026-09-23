@@ -10,7 +10,8 @@
 # 담지 못한다. 이 루프는 세션과 독립적으로 돈다.
 #
 # 사용: nohup bash long_tsv_results/harvest_loop.sh > /dev/null 2>&1 & disown
-H=/home1/doyoonkim/projects/long_tsv_results
+REPO=/home1/doyoonkim/projects
+H=$REPO/long_tsv_results
 LOG=$H/harvest_cron.log
 PY=/home1/doyoonkim/miniconda3/envs/rac/bin/python
 INTERVAL=${INTERVAL:-1800}
@@ -18,6 +19,11 @@ INTERVAL=${INTERVAL:-1800}
 # 이 루프가 중복 실행되지 않게 잠금
 exec 9>"$H/.harvest_loop.lock"
 flock -n 9 || { echo "[$(date +%F' '%T)] 이미 다른 루프가 돌고 있음, 종료" >> "$LOG"; exit 0; }
+
+# .gitattributes의 keepmine 드라이버는 저장소 설정이 아니라 로컬 git config라
+# 서버마다 따로 심어야 한다. 안 심으면 TSV가 평범하게 병합되어 또 충돌한다.
+git -C "$REPO" config merge.keepmine.driver 'true'
+git -C "$REPO" config merge.keepmine.name 'harvest 생성물: 병합 없이 현재 쪽 유지'
 
 echo "[$(date +%F' '%T)] harvest 루프 시작 (주기 ${INTERVAL}s, pid $$)" >> "$LOG"
 while true; do
@@ -28,6 +34,12 @@ while true; do
         # 수동 실행 중이면 TSV 동시 쓰기를 피해 이번 주기는 건너뛴다
         echo "[$(date +%F' '%T)] 다른 harvest 실행 중, skip" >> "$LOG"
     else
+        # 두 서버가 각자 harvest를 돌려 같은 TSV를 고쳐쓴다. 수확 전에 당겨오고
+        # 수확 후에 올려야 다음 사람이 충돌을 손으로 풀지 않는다. TSV는
+        # .gitattributes의 keepmine 드라이버라 병합이 막히지 않고, 바로 아래
+        # harvest가 정본으로 덮어쓴다.
+        cd "$REPO" && git pull --rebase -q origin master >> "$LOG" 2>&1 \
+            || { git rebase --abort 2>/dev/null; echo "[$(date +%F' '%T)] GIT-PULL-FAIL" >> "$LOG"; }
         BEFORE=$(md5sum $H/*/*.tsv 2>/dev/null | md5sum | cut -c1-8)
         cd "$H" && timeout 1500 $PY harvest_long_tsv.py >> "$LOG" 2>&1
         RC=$?
@@ -42,6 +54,12 @@ while true; do
             echo "[$(date +%F' '%T)] HARVEST-FAIL exit=$RC" >> "$LOG"
         elif [ "$BEFORE" != "$AFTER" ]; then
             echo "[$(date +%F' '%T)] HARVEST-CHANGED" >> "$LOG"
+            # 생성물만 올린다. 저장소엔 진행 중인 스크립트 수정이 널려 있어서
+            # git add -A 를 쓰면 안 된다.
+            cd "$REPO" && git add long_tsv_results && \
+                git commit -q -m "harvest: refreshed long/strict TSVs ($(date +%F' '%T))" >> "$LOG" 2>&1 && \
+                { git push -q origin master >> "$LOG" 2>&1 \
+                  || echo "[$(date +%F' '%T)] GIT-PUSH-FAIL" >> "$LOG"; }
         else
             echo "[$(date +%F' '%T)] harvest ok (변화 없음)" >> "$LOG"
         fi

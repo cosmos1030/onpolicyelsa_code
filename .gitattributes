@@ -1,0 +1,3 @@
+
+# harvest 생성물: 병합 대상이 아니다 (직후 harvest 실행이 정본을 다시 쓴다)
+long_tsv_results/**/*.tsv merge=keepmine
