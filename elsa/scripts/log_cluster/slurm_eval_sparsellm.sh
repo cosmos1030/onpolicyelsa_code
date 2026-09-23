@@ -65,6 +65,7 @@ mkdir -p "$TMPDIR"
 # s3_1.7b_sparsellm_s<NN>: harvest strips the size prefix and the _sNN, landing
 # on METHOD['sparsellm'] = 'SparseLLM', and reads the sparsity back off the same
 # _sNN for the row it belongs to.
+PROJECT_FOR_CHECK=reasoning_qwen3_${SIZE}_nostrip8192
 RUN=s3_${SIZE}_sparsellm_s${SP_PCT}
 OUT_LOCAL=$TMPDIR/eval_${RUN}
 DETAILS=$HOME/elsa_eval_long/${RUN}_${SLURM_JOB_ID}
@@ -89,6 +90,14 @@ nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 cd "$REPO/elsa"
 flock /tmp/${USER}_nltk.lock \
     python -c "import nltk; [nltk.download(p, quiet=True) for p in ('punkt', 'punkt_tab')]" || true
+
+# Another box may already be on this checkpoint: several servers share this
+# wandb project and hub, and a duplicate burns a GPU for hours for nothing.
+if ! python "$REPO/elsa/scripts/log_cluster/preflight_dup_check.py" \
+        --model "$MODEL" --seeds "$SEEDS" --run "$RUN" --project "$PROJECT_FOR_CHECK"; then
+    echo "##### SKIPPED (duplicate running elsewhere) #####"
+    exit 0
+fi
 
 python scripts/eval_full.py \
     --model_path "$MODEL" \

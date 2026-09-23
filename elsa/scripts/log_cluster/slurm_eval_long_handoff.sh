@@ -180,6 +180,14 @@ EXTRA=()
 
 # $PROJECT/$SPARSITY, never a literal: a 4B arm logged into the 8B project
 # with sparsity 0.8 is exactly the mix-up b9cfaee fixed on the training side.
+# Another box may already be on this checkpoint: several servers share this
+# wandb project and hub, and a duplicate burns a GPU for hours for nothing.
+if ! python "$REPO/elsa/scripts/log_cluster/preflight_dup_check.py" \
+        --model "$MODEL" --seeds "$SEED" --run "$RUN" --project "$PROJECT"; then
+    echo "##### SKIPPED (duplicate running elsewhere) #####"
+    exit 0
+fi
+
 python scripts/eval_full.py \
     --model_path "$MODEL" \
     --wandb_project "$PROJECT" \

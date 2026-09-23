@@ -73,6 +73,7 @@ export WANDB_DIR=$TMPDIR
 export TRITON_CACHE_DIR=$TMPDIR/triton
 mkdir -p "$TMPDIR"
 
+PROJECT_FOR_CHECK=reasoning_qwen3_8b_nostrip8192
 RUN=s3_8b_${ARM}_seeds01
 OUT_LOCAL=$TMPDIR/eval_${RUN}
 DETAILS=$HOME/elsa_eval_long/${RUN}_${SLURM_JOB_ID}
@@ -99,6 +100,14 @@ cd "$REPO/elsa"
 # kills every benchmark, not just ifeval.
 flock /tmp/${USER}_nltk.lock \
     python -c "import nltk; [nltk.download(p, quiet=True) for p in ('punkt', 'punkt_tab')]" || true
+
+# Another box may already be on this checkpoint: several servers share this
+# wandb project and hub, and a duplicate burns a GPU for hours for nothing.
+if ! python "$REPO/elsa/scripts/log_cluster/preflight_dup_check.py" \
+        --model "$MODEL" --seeds "$SEEDS" --run "$RUN" --project "$PROJECT_FOR_CHECK"; then
+    echo "##### SKIPPED (duplicate running elsewhere) #####"
+    exit 0
+fi
 
 python scripts/eval_full.py \
     --model_path "$MODEL" \
