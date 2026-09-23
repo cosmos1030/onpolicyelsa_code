@@ -56,7 +56,10 @@ LABELS = {
     'keuegrrb': 'Ours (delta=0.03)',
     '9yyo7mmo': 'ALPS+retrain (0.33/0.33/0.33)',
     '4yuo2b36': 'ALPS+retrain w/o OPD (0.5/0.5/0)',
-}
+    # The launcher's built-in eval never set --run_name, so this landed as
+    # 'pending'; it is the seed-42 half of the delta=0.03 jump retrain whose
+    # seeds 0/1 arrive as s3_8b_a3jump003_s70_seed{0,1}.
+    'iuwf08pf': 'Ours w/o TR (one-step, delta=0.03)',}
 METHOD = {'dense': 'dense', 'sparsegpt': 'SparseGPT', 'sgpt_selfgen': 'SparseGPT selfgen',
           'alps': 'ALPS', 'alps_selfgen': 'ALPS selfgen', 'alpsretrain': 'ALPS+retrain',
           'ours': 'Ours',
@@ -110,9 +113,21 @@ METHOD = {'dense': 'dense', 'sparsegpt': 'SparseGPT', 'sgpt_selfgen': 'SparseGPT
           'cubicnopgd': 'Cubic schedule, no PGD (pace-matched)',
           # KL-gate jump rule, no frozen pool. There is no s50 arm -- only s60,
           # s70 and 2:4 were ever trained.
-          'a3jump': 'Ours (A3 jump)'}
+          'a3jump': 'Ours (A3 jump)',
+          # Retrained 2026-09-23 at delta=0.03 so it matches the 8B s70 SCOUT
+          # reference (ajm5l60w) that Figure 4(a) plots it against; the published
+          # a3jump runs are delta=0.02. Different trainings, so NOT the same label
+          # -- sharing one would present six seeds of a single arm.
+          'a3jump003': 'Ours w/o TR (one-step, delta=0.03)',
+          # izc2311t has jump_to_target=true AND onpolicy_kd_interval=4096: both
+          # the trust region and the rollout refresh are off, and it resumes from
+          # an A3B1jump checkpoint. The '_rep' in its run name made its 34.3 read
+          # as a failed reproduction of the no-refresh arm's 49.2; the 15-point
+          # gap is the jump.
+          'norefresh_rep': 'Ours w/o TR (jump) + w/o rollout refresh'}
 ORDER = ['dense', 'SparseGPT', 'SparseGPT selfgen', 'SparseLLM', 'ALPS', 'ALPS selfgen',
-         'ALPS+retrain', 'ALPS + PGD', 'Ours', 'Ours (A3 jump)']
+         'ALPS+retrain', 'ALPS + PGD', 'Ours', 'Ours (A3 jump)',
+         'Ours w/o TR (one-step, delta=0.03)']
 
 
 def sparsity(run):

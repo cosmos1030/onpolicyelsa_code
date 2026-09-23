@@ -95,3 +95,6 @@ SparseLLM/wandb/
 #    related_papers/ and RAC/ are sources, hence the leading-slash anchors) ──
 /iclr2027_conference.pdf
 /scout_ablation_iclr2027.zip
+
+# harvest backups (regenerated)
+long_tsv_results/backup_*/
