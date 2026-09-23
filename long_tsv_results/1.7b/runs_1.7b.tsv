@@ -11,12 +11,14 @@ Qwen 3 1.7B s50 Ours	7fh2glxs	s3_1.7b_s50_ours	crashed	0,1,42	cosmos1030/gmp-kd3
 Qwen 3 1.7B s50 Ours	gm2zl3ol	s3_1.7b_s50_ours	finished	0,1,42	cosmos1030/gmp-kd3e-1-s50pct-lr5e-5_20260901_071337	3wvt5gme	0.33	0.33	0.33	32	512	False	True	0.02	False	cubic	32	2048	None	8192
 Qwen 3 1.7B s50 Ours w/o OPD (0.5/0.5/0)	0z090sz5	s3_1.7b_s50_noopd	finished	0,1,42	cosmos1030/gmp-kd5e-1-s50pct-lr5e-5_20260916_221150	cnvme56d	0.5	0.5	0	32	512	False	True	0.02	False	cubic	32	2048	None	8192
 Qwen 3 1.7B s60 SparseGPT	ovo16qrk	s3_1.7b_s60_sparsegpt	finished	0,1,42	cosmos1030/sparsegpt-qwen3-1.7b-s60pct															
+Qwen 3 1.7B s60 SparseGPT selfgen	0gjczpqk	s3_1.7b_s60_sgpt_selfgen	running	0	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_sgpt_s60pct_n128_selfgenv3															
 Qwen 3 1.7B s60 SparseLLM	umxtkeom	s3_1.7b_sparsellm_s60	finished	0,1,42	/home/doyoonkim/models/sparsellm_17b_s60															
 Qwen 3 1.7B s60 ALPS	fb772nlt	s3_1.7b_s60_alps	finished	0,1,42	cosmos1030/alps-qwen3-1.7b-s60pct															
 Qwen 3 1.7B s60 ALPS+retrain	hzxoxhy6	s3_1.7b_s60_alpsretrain	finished	0,1,42	cosmos1030/gmp-kd3e-1-s60pct-lr1e-4_20260811_213610	53uwdeop	0.33	0.33	0.33	1	512	True	False	None	False	None	32	2048	None	8192
 Qwen 3 1.7B s60 Ours	padwnv7g	s3_1.7b_s60_ours	finished	0,1,42	cosmos1030/gmp-kd3e-1-s60pct-lr5e-5_20260901_121104	oui58p86	0.33	0.33	0.33	8	512	False	True	0.01	False	cubic	32	2048	None	8192
 Qwen 3 1.7B s60 Ours w/o OPD (0.5/0.5/0)	p6wbr5vh	s3_1.7b_s60_noopd	finished	0,1,42	cosmos1030/gmp-kd5e-1-s60pct-lr5e-5_20260916_225506	jo0mwm4z	0.5	0.5	0	32	512	False	True	0.01	False	cubic	32	2048	None	8192
 Qwen 3 1.7B s70 SparseGPT	l8vhz473	s3_1.7b_s70_sparsegpt	finished	0,1,42	cosmos1030/sparsegpt-qwen3-1.7b-s70pct															
+Qwen 3 1.7B s70 SparseGPT selfgen	7k37ndvr	s3_1.7b_s70_sgpt_selfgen	running	0	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_sgpt_s70pct_n128_selfgenv3															
 Qwen 3 1.7B s70 SparseLLM	xyw3a0cu	s3_1.7b_sparsellm_s70	crashed	0	cosmos1030/sparsellm-qwen3-1.7b-s70pct															
 Qwen 3 1.7B s70 SparseLLM	0d5r5pz8	s3_1.7b_s70_sparsellm	running	0	cosmos1030/sparsellm-qwen3-1.7b-s70pct															
 Qwen 3 1.7B s70 ALPS	0751lhxv	s3_1.7b_s70_alps	finished	0,1,42	cosmos1030/alps-qwen3-1.7b-s70pct															

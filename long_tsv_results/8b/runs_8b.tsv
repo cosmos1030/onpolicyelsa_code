@@ -3,6 +3,7 @@ Qwen 3 8B dense	xp6jch5n	s3_8b_dense	finished	0,1,42	/home1/doyoonkim/.cache/hug
 Qwen 3 8B s50 SparseGPT	zpovcm4b	s3_8b_sparsegpt_s50	finished	0,1,42	cosmos1030/qwen3-8b-sgpt-s50pct-ot80fw20															
 Qwen 3 8B s50 SparseGPT	uubwrjtd	s3_8b_sparsegpt_s50_seeds01	finished	0,1,42	/home/doyoonkim/models/sparsegpt_s50															
 Qwen 3 8B s50 SparseGPT selfgen	4vr9z3wb	s3_8b_s50_sgpt_selfgen	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_8b_sgpt_s50pct_n128_selfgenv3															
+Qwen 3 8B s50 SparseLLM	5p9kg9au	s3_8b_sparsellm_s50	running	0	/home/doyoonkim/models/sparsellm_8b_s50															
 Qwen 3 8B s50 ALPS	dcdjjxif	s3_8b_alps_s50	finished	0,1,42	/NHNHOME/log-postech/doyoonkim/models/qwen3_8b_alps_s50pct															
 Qwen 3 8B s50 ALPS	i2js42zd	s3_8b_alps_s50_seeds01	finished	0,1,42	/home/doyoonkim/models/alps_s50															
 Qwen 3 8B s50 ALPS selfgen	ipdx9nqz	s3_8b_s50_alps_selfgen	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_8b_selfgen_v3_alps_s50pct															
