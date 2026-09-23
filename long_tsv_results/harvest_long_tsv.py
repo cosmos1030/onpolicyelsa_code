@@ -208,8 +208,12 @@ def agg(rows, fn):
     return out
 
 
-def header(label, rid):
-    r1 = [label] + [''] * 21 + [f'wandb {rid}']
+def header(label, rid, ckpt='', urls=''):
+    # 블록 헤더에 체크포인트와 wandb URL을 같이 박는다. id만 있으면 어느 모델의
+    # 숫자인지 알려고 runs_<size>.tsv나 wandb를 따로 열어야 했고, 같은 이름의
+    # 블록이 둘일 때(4B s70 ALPS+retrain 8월/9월) 특히 헷갈렸다.
+    r1 = ([label] + [''] * 21 + [f'wandb {rid}'] +
+          ([ckpt] if ckpt else []) + ([urls] if urls else []))
     r2 = ['', 'avg5'] + sum(([b] + [''] * 3 for b in HDR_B), []) + ['avg4 (no GPQA)']
     r3 = ['seed', 'accuracy'] + COLS * 5 + ['accuracy']
     return [r1, r2, r3]
@@ -303,8 +307,17 @@ def harvest(api, size, proj):
             rows = rows + [['mean'] + agg(rows, st.mean), ['std'] + agg(rows, st.stdev)]
         rank = next((i for i, m in enumerate(ORDER) if meth.startswith(m) and
                      not any(meth.startswith(m2) and len(m2) > len(m) for m2 in ORDER)), len(ORDER))
+        # 체크포인트: 평가런의 model_path, 없으면 그 런 자신이 올린 hub_model_id
+        # (학습런이 자체 평가한 블록이 그렇다).
+        ckpt = ''
+        for r_ in g['runs']:
+            ckpt = r_.config.get('model_path') or r_.summary._json_dict.get('hub_model_id') or ''
+            if ckpt:
+                break
+        urls = ' '.join(f'https://wandb.ai/{ENT}/{proj}/runs/{i}' for i in g['ids'])
         tgt = excl_blocks if '[EXCLUDED]' in meth else blocks
-        tgt.append(((sp, rank, meth), header(label, ' '.join(g['ids'])) + rows + [[''] * 23]))
+        tgt.append(((sp, rank, meth),
+                    header(label, ' '.join(g['ids']), str(ckpt), urls) + rows + [[''] * 23]))
     blocks.sort(key=lambda x: x[0])
     excl_blocks.sort(key=lambda x: x[0])
     # provenance: 블록 -> (wandb id, run 객체) 목록. write_runs_meta()가 쓴다.

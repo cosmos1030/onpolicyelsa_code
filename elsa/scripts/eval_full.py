@@ -12,6 +12,7 @@ Usage:
 import argparse
 import gc
 import json
+import time
 import logging
 import os
 import sys
@@ -171,9 +172,33 @@ def main():
         use_wandb = True
         logger.info(f"[eval_full] wandb run id: {run.id}")
     except Exception as e:
-        logger.warning(f"wandb.init failed ({e}), continuing without wandb — results saved to JSON only")
-        run = None
-        use_wandb = False
+        # Fatal, not a warning. This eval takes hours and its only durable
+        # record is wandb: eval_summary.json is written under out_base, which is
+        # node-local scratch the login node cannot read once the job ends, and
+        # the per-metric logger.info lines survive only because the launcher
+        # mirrors stdout to NFS. Jobs 941159/941160 both lost their wandb run to
+        # a 30s "Failed to read port info" timeout and nobody found out until
+        # four hours later. Retry, then refuse to burn the GPU time blind.
+        logger.warning(f"wandb.init failed ({e}); retrying once in 30s")
+        time.sleep(30)
+        try:
+            run = wandb.init(**init_kwargs)
+            use_wandb = True
+            logger.info(f"[eval_full] wandb run id: {run.id} (second attempt)")
+        except Exception as e2:
+            if os.environ.get("EVAL_ALLOW_NO_WANDB") == "1":
+                logger.warning(f"wandb.init failed twice ({e2}) but "
+                               "EVAL_ALLOW_NO_WANDB=1 -- continuing, results "
+                               "will exist only in this log and in node-local "
+                               "JSON under out_base")
+                run = None
+                use_wandb = False
+            else:
+                raise RuntimeError(
+                    f"wandb.init failed twice ({e2}). Refusing to run a "
+                    "multi-hour eval whose results would not be recorded. Set "
+                    "EVAL_ALLOW_NO_WANDB=1 to override."
+                ) from e2
 
     all_metrics = {
         "method":   args.method,

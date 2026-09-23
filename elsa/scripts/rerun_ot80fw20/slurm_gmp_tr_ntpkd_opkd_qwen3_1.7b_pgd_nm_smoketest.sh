@@ -83,12 +83,12 @@ $PYTHON main.py \
     --gmp_tr_kl_threshold=0.02 \
     --gmp_tr_kl_reduce=mean \
     --gmp_pgd=true \
-    --save_model=false \
+    --save_model=true \
     --push_to_hub=false \
     --eval_math500=false \
     --eval_full_bench=false \
     --eval_zero_shot=false \
-    --wandb=false \
+    --wandb=true \
     --run_name_suffix="pgd_ste_smoketest" \
     --seed=42
 

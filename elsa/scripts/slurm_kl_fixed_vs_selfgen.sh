@@ -3,7 +3,12 @@
 # A100-80GB is not in this list: it only accepts hpgpu/add_hpgpu/test, and a
 # one-GPU 4B job belongs on the 48GB cards anyway. Mixing them put the job
 # straight into 'QOS not permitted to use this partition'.
-#SBATCH --partition=RTX6000ADA,A6000
+# Widened to every 'normal'-QOS partition that fits two 4B models in bf16
+# (~16GB) plus a (chunk, 151936) fp32 block: 48GB A6000/6000ADA, 46GB L40S,
+# 40GB A100-PCIe. Staying off hpgpu partitions matters -- that QOS is
+# saturated by the long-profile eval sweep, so an hpgpu job would queue
+# behind it while these slot in immediately.
+#SBATCH --partition=RTX6000ADA,A6000,L40S,A100-40GB-PCIe
 #SBATCH --qos=normal
 #SBATCH --gres=gpu:1
 #SBATCH --nodes=1
@@ -50,11 +55,17 @@ echo "states=$STATES_DIR  n_rollouts=$N_ROLLOUTS  models=${MODELS:-all}"
 nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader
 
 cd /home1/doyoonkim/projects/elsa
+# KLDENSE / KLMAP let this score a different model family (the 1.7B loss-term
+# arms). The teacher must match the students: a 4B teacher against 1.7B
+# students measures the size gap, not the ablation.
+EXTRA=()
+[ -n "${KLDENSE:-}" ] && EXTRA+=(--dense "$KLDENSE")
+[ -n "${KLMAP:-}" ]   && EXTRA+=(--model_map "$KLMAP")
 $PYTHON scripts/kl_fixed_vs_selfgen.py \
     --states_dir "$STATES_DIR" \
     --out "$OUTDIR/kl_${SLURM_JOB_ID}.json" \
     --n_rollouts "$N_ROLLOUTS" \
-    --models "$MODELS"
+    --models "$MODELS" "${EXTRA[@]}"
 EXIT_CODE=$?
 echo "=== EXIT: $EXIT_CODE ==="
 echo "##### END #####"

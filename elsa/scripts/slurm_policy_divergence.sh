@@ -30,7 +30,9 @@ TAG=${4:-base}
 MODELSET=${5:-all}
 
 PYTHON=/home1/doyoonkim/miniconda3/envs/rac/bin/python
-DENSE="/home1/doyoonkim/.cache/huggingface/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c"
+# DENSE_OVERRIDE / MODELS_OVERRIDE let this run a different model family
+# (e.g. the 1.7B loss-term arms) without forking the script.
+DENSE="${DENSE_OVERRIDE:-/home1/doyoonkim/.cache/huggingface/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c}"
 
 ENV_FILE="/run/slurm/job_env_${SLURM_JOB_ID}"
 [ -f "$ENV_FILE" ] && source "$ENV_FILE"
@@ -124,6 +126,9 @@ fi
 
 echo "=== policy divergence: $N_PROMPTS prompts x $N_SAMPLES samples ==="
 echo "NODE=$(hostname)  JOB=$SLURM_JOB_ID  OUTDIR=$OUTDIR"
+if [ -n "${MODELS_OVERRIDE:-}" ]; then
+    read -r -a MODELS <<< "$MODELS_OVERRIDE"
+fi
 echo "MODELS: ${MODELS[*]}"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 

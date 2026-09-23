@@ -10,9 +10,25 @@ task using the avg_at_n_math metric, e.g. the built-in aime24/aime25 tasks.
 Confirmed on lighteval as installed in the `rac` conda env; check whether a
 newer lighteval release has fixed this before assuming this patch is still
 needed.
+
+Bug 2: lighteval's math answer-extraction can turn a badly-degraded model's
+garbage generation into a deeply-nested sympy expression (repetitive/
+malformed LaTeX from a heavily-pruned model, e.g. S70 SparseLLM), and
+dynamic_metrics.py's `str(pred)` on that expression then blows Python's
+default 1000-frame recursion limit -- "RecursionError: maximum recursion
+depth exceeded" inside add_to_specifics_with_timeout's
+extracted_predictions list comprehension, which kills the ENTIRE eval run
+(gsm8k/math500/etc), not just that one sample -- confirmed on job 825468
+(SparseLLM Qwen3-1.7B s70%, whose outputs are already near-random at that
+sparsity). Raising the limit is the standard workaround for this class of
+sympy-recursion issue; a too-deep expression will just eventually hit
+Python's C stack limit and segfault instead of raising cleanly, so this
+isn't unlimited headroom, just enough for realistic garbage outputs.
 """
 import os
 import sys
+
+sys.setrecursionlimit(10000)
 
 
 def _disable_sample_cache():

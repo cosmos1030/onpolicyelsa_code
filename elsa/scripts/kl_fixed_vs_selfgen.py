@@ -33,8 +33,12 @@ import os
 import numpy as np
 import torch
 
-DENSE = ("/home1/doyoonkim/.cache/huggingface/hub/models--Qwen--Qwen3-4B/"
-         "snapshots/1cfa9a7208912126459214e8b04321603b3df60c")
+# Overridable via --dense. The teacher must be the dense model of the SAME
+# family as the checkpoints being scored -- a 4B teacher against 1.7B students
+# measures the size gap, not the loss-term ablation.
+_DENSE_4B = ("/home1/doyoonkim/.cache/huggingface/hub/models--Qwen--Qwen3-4B/"
+             "snapshots/1cfa9a7208912126459214e8b04321603b3df60c")
+DENSE = _DENSE_4B
 
 # label -> checkpoint. The two SCOUT arms are the comparison; alps_sft is the
 # fixed-mask recovery control, which should show the widest gap of all if the
@@ -85,13 +89,22 @@ def bucketise(vals, n=N_BUCKETS):
 
 
 def main():
+    global DENSE, MODELS
     ap = argparse.ArgumentParser()
     ap.add_argument("--states_dir", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--n_rollouts", type=int, default=16)
     ap.add_argument("--max_new", type=int, default=2048)
-    ap.add_argument("--models", default="", help="comma-separated subset")
+    ap.add_argument("--models", default="", help="comma-separated subset of MODELS")
+    ap.add_argument("--dense", default=_DENSE_4B,
+                    help="teacher; must match the students' model family")
+    ap.add_argument("--model_map", default="",
+                    help="label=path,label=path -- replaces MODELS entirely, "
+                         "for families MODELS does not cover (e.g. 1.7B)")
     args = ap.parse_args()
+    DENSE = args.dense
+    if args.model_map:
+        MODELS = dict(kv.split("=", 1) for kv in args.model_map.split(",") if kv)
 
     from transformers import AutoModelForCausalLM, AutoTokenizer
     dev = "cuda"

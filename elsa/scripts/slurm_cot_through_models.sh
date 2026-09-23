@@ -20,14 +20,20 @@ exec 2>&1
 
 PYTHON=/home1/doyoonkim/miniconda3/envs/rac/bin/python
 DENSE="/home1/doyoonkim/.cache/huggingface/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c"
-SAMPLES=/home1/doyoonkim/projects/elsa/logs/policy_divergence/n6_k96_base
+# Overridable. The default is the 6-prompt pool the published panel uses,
+# but 2 of those 6 prompts (indices 2 and 4 of the ot3_shuf42_200000 window)
+# were found in the training file on 2026-09-16 -- point SAMPLES at
+# n30_k64_clean for the deduplicated 30-prompt set.
+SAMPLES=${SAMPLES:-/home1/doyoonkim/projects/elsa/logs/policy_divergence/n6_k96_base}
 
 ENV_FILE="/run/slurm/job_env_${SLURM_JOB_ID}"
 [ -f "$ENV_FILE" ] && source "$ENV_FILE"
 [ -z "${LOCAL_JOB_BASE:-}" ] && LOCAL_JOB_BASE="/local-data/user-data/${USER}/job_${SLURM_JOB_ID}"
 mkdir -p "$LOCAL_JOB_BASE/slurm"
 
-OUTDIR=/home1/doyoonkim/projects/elsa/logs/policy_divergence/cot_through_models
+# Overridable too: a run against a different prompt pool must not overwrite
+# the previous pool's cot_displacement.json.
+OUTDIR=${OUTDIR:-/home1/doyoonkim/projects/elsa/logs/policy_divergence/cot_through_models}
 mkdir -p "$OUTDIR"
 # --output uses %x, so a literal name here breaks whenever the caller
 # passes --job-name. Follow SLURM_JOB_NAME instead (job 939992 lost

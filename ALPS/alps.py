@@ -32,11 +32,17 @@ class ALPS_prune:
         self.columns = W.shape[1]
 
         self.XtX = torch.zeros((self.columns, self.columns), device=self.dev).float()
+        # Raw (unnormalized) cross term Y_target^T @ X, accumulated only when a
+        # "corrected" reconstruction target (e.g. the dense reference model's
+        # own output on the SAME calibration tokens, instead of X @ W_c) is
+        # supplied via add_target_batch(). Left at zero / unused for standard
+        # ALPS calls, which derive YtX analytically from W_c inside ALPS_admm.
+        self.XtY_raw = torch.zeros((self.rows, self.columns), device=self.dev).float()
 
         self.count = 0
 
         self.nsamples = 0
-     
+
 
     def add_batch(self, inp, out):
         if len(inp.shape) == 2:
@@ -68,8 +74,32 @@ class ALPS_prune:
         self.XtX += inp.matmul(inp.t())
         self.nsamples += tmp
 
-    
-    def ALPS_admm(self, sp, nm_n = 0, nm_m = 0, rho=0.1, max_iter = 300, update_iter = 3, switch_iter = 30):
+    def add_target_batch(self, inp_q, out_p):
+        """Accumulate the cross term for a CORRECTED reconstruction target:
+        out_p is this submodule's output on some reference (e.g. dense-model)
+        trajectory for the SAME calibration tokens, while inp_q is the
+        submodule's actual input on the current (possibly already-pruned)
+        trajectory -- i.e. the same `inp` passed to add_batch() for this
+        sample. Mirrors add_batch()'s reshape/transpose conventions exactly
+        so XtY_raw ends up in the same (rows, columns) layout as the
+        analytic YtX computed in ALPS_admm from W_c.
+        """
+        if len(inp_q.shape) == 2:
+            inp_q = inp_q.unsqueeze(0)
+        if isinstance(self.layer, nn.Linear) or isinstance(self.layer, transformers.Conv1D):
+            if len(inp_q.shape) == 3:
+                inp_q = inp_q.reshape((-1, inp_q.shape[-1]))
+            inp_q = inp_q.t()
+            if len(out_p.shape) == 3:
+                out_p = out_p.reshape((-1, out_p.shape[-1]))
+        out_p = out_p.t()
+        inp_q = inp_q.float()
+        out_p = out_p.float()
+
+        self.XtY_raw += out_p.matmul(inp_q.t())
+
+    def ALPS_admm(self, sp, nm_n = 0, nm_m = 0, rho=0.1, max_iter = 300, update_iter = 3, switch_iter = 30,
+                  corrected_target = False):
         
         # get dense weight
         W = self.layer.weight.data.clone()
@@ -92,9 +122,21 @@ class ALPS_prune:
         self.XtX = self.XtX / X_norm
         self.XtX = (self.XtX.T / X_norm).T    
         
-        self.YtX = torch.zeros_like(W)
-        self.YtX = torch.matmul(W.cpu() * X_norm,self.XtX).to(dev)
-        
+        if corrected_target:
+            # YtX (in this normalized coordinate system) = YtX_raw / X_norm,
+            # broadcast over columns -- see derivation in the commit that
+            # added this: with D=diag(X_norm), XtX_normalized = D^-1 XtX D^-1,
+            # and the standard analytic YtX = (W_c*X_norm) @ XtX_normalized
+            # reduces algebraically to YtX_raw / X_norm (columnwise) where
+            # YtX_raw = Y_target^T @ X_raw. Using the SAME division here keeps
+            # this branch in the identical reparametrized system ALPS_admm
+            # already operates in, so nothing else below needs to change.
+            self.XtY_raw = self.XtY_raw.cpu()
+            self.YtX = (self.XtY_raw / X_norm).to(dev)
+        else:
+            self.YtX = torch.zeros_like(W)
+            self.YtX = torch.matmul(W.cpu() * X_norm,self.XtX).to(dev)
+
 
         admm_st = time.time()
 
@@ -419,4 +461,5 @@ class ALPS_prune:
         self.YXt = None
         self.YtX = None
         self.XtX = None
+        self.XtY_raw = None
         torch.cuda.empty_cache()
