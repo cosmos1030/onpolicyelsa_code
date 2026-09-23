@@ -16,13 +16,14 @@ seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accura
 mean	37.38	57.13	100.0	100.0	16384	28.62	99.49	100.0	16337	24.95	94.89	91.85	15599	0.0	100.0	-	32768	76.19	98.36	98.14	8093	39.57
 std	1.03	2.86	0.0	0.0	0	2.1	0.51	0.0	64	0.64	1.08	0.21	155	0.0	0.0	-	0	0.0	0.42	0.5	29	0.84
 																						
-Qwen 3 1.7B s50 SparseLLM  [2/3 seeds complete]  [running]																						wandb tmbmbjwb	/home/doyoonkim/models/sparsellm_17b_s50	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_1.7b_nostrip8192/runs/tmbmbjwb
+Qwen 3 1.7B s50 SparseLLM																						wandb tmbmbjwb	/home/doyoonkim/models/sparsellm_17b_s50	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_1.7b_nostrip8192/runs/tmbmbjwb
 	avg5	math500				GPQA				IFEval				LCB				GSM8K				avg4 (no GPQA)
 seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy
 0	38.0	54.0	75.6	70.74	12711	26.26	78.28	78.85	13533	32.9	55.27	45.51	9274	2.61	93.66	0	30974	74.22	73.01	72.01	6323	40.93
 1	36.71	56.4	78.4	76.24	13187	20.71	79.29	78.05	13737	31.79	54.71	44.19	9231	2.61	97.01	28.57	31994	72.02	72.18	71.58	6245	40.71
-mean	37.35	55.2	77.0	73.49	12949	23.48	78.79	78.45	13635	32.35	54.99	44.85	9252	2.61	95.34	14.29	31484	73.12	72.59	71.8	6284	40.82
-std	0.91	1.7	1.98	3.89	337	3.93	0.71	0.56	144	0.78	0.39	0.93	30	0.0	2.37	20.2	721	1.55	0.59	0.31	55	0.16
+42	38.95	55.2	82.4	75.36	13729	29.29	77.27	79.31	13462	34.01	54.9	40.22	9245	2.24	97.01	33.33	31978	74.0	70.74	70.49	6130	41.36
+mean	37.88	55.2	78.8	74.11	13209	25.42	78.28	78.74	13577	32.9	54.96	43.3	9250	2.49	95.9	20.63	31648	73.41	71.97	71.36	6233	41.0
+std	1.12	1.2	3.42	2.95	510	4.35	1.01	0.64	143	1.11	0.28	2.75	22	0.22	1.94	18.03	584	1.21	1.15	0.78	97	0.33
 																						
 Qwen 3 1.7B s50 ALPS  [crashed/finished]																						wandb 038q8gps dqdxoshm	cosmos1030/alps-qwen3-1.7b-s50pct	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_1.7b_nostrip8192/runs/038q8gps https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_1.7b_nostrip8192/runs/dqdxoshm
 	avg5	math500				GPQA				IFEval				LCB				GSM8K				avg4 (no GPQA)
@@ -174,6 +175,11 @@ seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accura
 42	28.69	43.2	43.6	9.72	10342	17.68	74.75	71.43	13754	22.37	69.87	58.68	12135	0	89.18	-	30187	60.2	22.06	6.17	4236	31.44
 mean	29.51	44.2	41.73	9.07	10025	22.05	74.41	74.45	13867	21.87	69.62	58.83	12117	0.12	89.55	-	30307	59.31	22.06	6.01	4233	31.38
 std	0.8	1.0	3.41	1.76	354	3.92	0.29	3.32	140	1.54	0.77	5.31	74	0.22	0.99	-	336	0.77	0.15	0.42	25	0.2
+																						
+Qwen 3 1.7B s70 Cubic schedule, no PGD (pace-matched)  [0/3 seeds complete]  [running]																						wandb du55q0hb	cosmos1030/gmp-kd3e-1-1.7b-s70pct-lr1e-4_20260923_062543	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_1.7b_nostrip8192/runs/du55q0hb
+	avg5	math500				GPQA				IFEval				LCB				GSM8K				avg4 (no GPQA)
+seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy
+0	-	50.0	43.8	11.6	10328	-	-	-	-	22.74	86.32	80.49	14662	0.75	94.03	50.0	31426	63.23	31.61	13.07	4941	34.18
 																						
 Qwen 3 1.7B s80 Ours																						wandb 8nqwbomy	cosmos1030/gmp-kd3e-1-s80pct-lr1e-4_20260916_044553	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_1.7b_nostrip8192/runs/8nqwbomy
 	avg5	math500				GPQA				IFEval				LCB				GSM8K				avg4 (no GPQA)

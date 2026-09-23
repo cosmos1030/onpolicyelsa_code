@@ -16,13 +16,14 @@ seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accura
 mean	0.69	0.0	100.0	100.0	16384	0.0	99.49	100.0	16337	2.03	94.89	91.85	15599	0.0	100.0	-	32768	1.42	98.36	98.14	8093	0.86
 std	0.08	0.0	0.0	0.0	0	0.0	0.51	0.0	64	0.0	1.08	0.21	155	0.0	0.0	-	0	0.38	0.42	0.5	29	0.1
 																						
-Qwen 3 1.7B s50 SparseLLM  [2/3 seeds complete]  [running]																						wandb tmbmbjwb	/home/doyoonkim/models/sparsellm_17b_s50	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_1.7b_nostrip8192/runs/tmbmbjwb
+Qwen 3 1.7B s50 SparseLLM																						wandb tmbmbjwb	/home/doyoonkim/models/sparsellm_17b_s50	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_1.7b_nostrip8192/runs/tmbmbjwb
 	avg5	math500				GPQA				IFEval				LCB				GSM8K				avg4 (no GPQA)
 seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy
 0	12.53	15.8	75.6	70.74	12711	5.56	78.28	78.85	13533	17.93	55.27	45.51	9274	2.61	93.66	0	30974	20.77	73.01	72.01	6323	14.28
 1	11.61	13.4	78.4	76.24	13187	4.55	79.29	78.05	13737	17.74	54.71	44.19	9231	1.87	97.01	28.57	31994	20.47	72.18	71.58	6245	13.37
-mean	12.07	14.6	77.0	73.49	12949	5.05	78.79	78.45	13635	17.84	54.99	44.85	9252	2.24	95.34	14.29	31484	20.62	72.59	71.8	6284	13.82
-std	0.66	1.7	1.98	3.89	337	0.71	0.71	0.56	144	0.13	0.39	0.93	30	0.53	2.37	20.2	721	0.21	0.59	0.31	55	0.64
+42	12.66	13.6	82.4	75.36	13729	6.06	77.27	79.31	13462	20.33	54.9	40.22	9245	1.49	97.01	33.33	31978	21.83	70.74	70.49	6130	14.31
+mean	12.27	14.27	78.8	74.11	13209	5.39	78.28	78.74	13577	18.67	54.96	43.3	9250	1.99	95.9	20.63	31648	21.03	71.97	71.36	6233	13.99
+std	0.58	1.33	3.42	2.95	510	0.77	1.01	0.64	143	1.44	0.28	2.75	22	0.57	1.94	18.03	584	0.72	1.15	0.78	97	0.54
 																						
 Qwen 3 1.7B s50 ALPS  [crashed/finished]																						wandb 038q8gps dqdxoshm	cosmos1030/alps-qwen3-1.7b-s50pct	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_1.7b_nostrip8192/runs/038q8gps https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_1.7b_nostrip8192/runs/dqdxoshm
 	avg5	math500				GPQA				IFEval				LCB				GSM8K				avg4 (no GPQA)
@@ -174,6 +175,11 @@ seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accura
 42	21.95	39.0	43.6	9.72	10342	5.05	74.75	71.43	13754	9.24	69.87	58.68	12135	0	89.18	-	30187	56.48	22.06	6.17	4236	26.18
 mean	22.14	40.2	41.73	9.07	10025	5.56	74.41	74.45	13867	9.06	69.62	58.83	12117	0.12	89.55	-	30307	55.75	22.06	6.01	4233	26.28
 std	0.16	1.59	3.41	1.76	354	0.51	0.29	3.32	140	1.76	0.77	5.31	74	0.22	0.99	-	336	0.69	0.15	0.42	25	0.09
+																						
+Qwen 3 1.7B s70 Cubic schedule, no PGD (pace-matched)  [0/3 seeds complete]  [running]																						wandb du55q0hb	cosmos1030/gmp-kd3e-1-1.7b-s70pct-lr1e-4_20260923_062543	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_1.7b_nostrip8192/runs/du55q0hb
+	avg5	math500				GPQA				IFEval				LCB				GSM8K				avg4 (no GPQA)
+seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy
+0	-	44.2	43.8	11.6	10328	-	-	-	-	4.44	86.32	80.49	14662	0.37	94.03	50.0	31426	54.97	31.61	13.07	4941	25.99
 																						
 Qwen 3 1.7B s80 Ours																						wandb 8nqwbomy	cosmos1030/gmp-kd3e-1-s80pct-lr1e-4_20260916_044553	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_1.7b_nostrip8192/runs/8nqwbomy
 	avg5	math500				GPQA				IFEval				LCB				GSM8K				avg4 (no GPQA)
