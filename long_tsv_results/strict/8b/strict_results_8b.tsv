@@ -80,13 +80,14 @@ seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accura
 1	-	34.6	63.0	55.41	12091	-	-	-	-	8.32	85.77	72.22	14318	0.0	100	100	32768	64.37	31.69	28.48	4335	26.82
 42	21.94	34.2	64.2	56.49	12205	3.54	89.9	89.39	15304	7.39	84.29	75.16	14117	0.0	100	100	32768	64.59	32.3	27.86	4368	26.55
 																						
-Qwen 3 8B s60 SparseLLM  [2/3 seeds complete]  [running]																						wandb 3c0n07cu	/home/doyoonkim/models/sparsellm_8b_s60	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_8b_nostrip8192/runs/3c0n07cu
+Qwen 3 8B s60 SparseLLM																						wandb 3c0n07cu	/home/doyoonkim/models/sparsellm_8b_s60	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_8b_nostrip8192/runs/3c0n07cu
 	avg5	math500				GPQA				IFEval				LCB				GSM8K				avg4 (no GPQA)
 seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy
 0	52.23	78.2	17.0	7.13	5572	23.23	37.88	26.98	10595	43.99	36.78	18.21	6921	25.37	58.96	0	23750	90.37	3.11	0.83	1913	59.48
 1	52.0	76.2	17.8	7.07	5856	27.27	32.83	18.18	9909	44.36	38.08	21.05	7186	22.76	63.43	0	24262	89.39	3.49	1.01	1932	58.18
-mean	52.12	77.2	17.4	7.1	5714	25.25	35.35	22.58	10252	44.18	37.43	19.63	7053	24.07	61.19	0.0	24006	89.88	3.3	0.92	1922	58.83
-std	0.17	1.41	0.57	0.04	201	2.86	3.57	6.22	485	0.26	0.91	2.01	187	1.85	3.17	0.0	362	0.7	0.27	0.12	13	0.92
+42	52.01	77.6	16.2	6.73	5638	24.24	35.35	30.43	10111	44.36	39.0	18.37	7263	24.25	61.57	0	24313	89.61	4.25	1.25	1973	58.96
+mean	52.08	77.33	17.0	6.98	5688	24.92	35.35	25.2	10205	44.24	37.95	19.21	7123	24.13	61.32	0.0	24108	89.79	3.61	1.03	1939	58.87
+std	0.13	1.03	0.8	0.21	149	2.1	2.53	6.32	353	0.21	1.11	1.6	179	1.31	2.25	0.0	311	0.52	0.58	0.21	31	0.66
 																						
 Qwen 3 8B s60 ALPS																						wandb b177u96x 6k9p8u3h	/NHNHOME/log-postech/doyoonkim/models/qwen3_8b_alps_s60pct	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_8b_nostrip8192/runs/b177u96x https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_8b_nostrip8192/runs/6k9p8u3h
 	avg5	math500				GPQA				IFEval				LCB				GSM8K				avg4 (no GPQA)
