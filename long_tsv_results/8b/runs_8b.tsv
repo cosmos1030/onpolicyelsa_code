@@ -14,7 +14,9 @@ Qwen 3 8B s50 Ours	2ddtwf5t	s3_8b_ours_s50	finished	0,1,42	cosmos1030/gmp-kd3e-1
 Qwen 3 8B s50 Ours	sf0xyxbz	s3_8b_ours_s50_seeds01	finished	0,1,42	/home/doyoonkim/models/ours_s50															
 Qwen 3 8B s60 SparseGPT	0jhvupb7	s3_8b_sparsegpt_s60	finished	0,1,42	cosmos1030/qwen3-8b-sgpt-s60pct-ot80fw20															
 Qwen 3 8B s60 SparseGPT	41dgii3b	s3_8b_sparsegpt_s60_seeds01	finished	0,1,42	/home/doyoonkim/models/sparsegpt_s60															
-Qwen 3 8B s60 SparseGPT selfgen	1uf66ape	s3_8b_s60_sgpt_selfgen	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_8b_sgpt_s60pct_n128_selfgenv3															
+Qwen 3 8B s60 SparseGPT selfgen	1uf66ape	s3_8b_s60_sgpt_selfgen	finished	0,42	/home1/doyoonkim/projects/elsa/models/qwen3_8b_sgpt_s60pct_n128_selfgenv3															
+Qwen 3 8B s60 SparseGPT selfgen	8gvmt5je	s3_8b_s60_sgpt_selfgen_s01	running	0,42	/home/doyoonkim/models/selfgen_8b_sparsegpt_s60															
+Qwen 3 8B s60 SparseLLM	3c0n07cu	s3_8b_sparsellm_s60	running	0	/home/doyoonkim/models/sparsellm_8b_s60															
 Qwen 3 8B s60 ALPS	b177u96x	s3_8b_alps_s60	finished	0,1,42	/NHNHOME/log-postech/doyoonkim/models/qwen3_8b_alps_s60pct															
 Qwen 3 8B s60 ALPS	6k9p8u3h	s3_8b_alps_s60_seeds01	finished	0,1,42	/home/doyoonkim/models/alps_s60															
 Qwen 3 8B s60 ALPS selfgen	7bh65g1r	s3_8b_s60_alps_selfgen	finished	0,42	/home1/doyoonkim/projects/elsa/models/qwen3_8b_selfgen_v3_alps_s60pct															
