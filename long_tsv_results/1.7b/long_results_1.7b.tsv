@@ -132,10 +132,11 @@ Qwen 3 1.7B s70 SparseGPT selfgen  [0/3 seeds complete]  [running]														
 seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy
 0	-	1.4	97.0	100	15939	-	-	-	-	10.91	98.34	100	16134	0	32.46	-	10688	0.3	96.21	100	7882	3.15
 																						
-Qwen 3 1.7B s70 SparseLLM  [1/3 seeds complete]  [중복시드: 런 2개 / 시드 1개]  [crashed/running]																						wandb xyw3a0cu 0d5r5pz8	cosmos1030/sparsellm-qwen3-1.7b-s70pct	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_1.7b_nostrip8192/runs/xyw3a0cu https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_1.7b_nostrip8192/runs/0d5r5pz8
+Qwen 3 1.7B s70 SparseLLM  [1/3 seeds complete]  [crashed/running]																						wandb xyw3a0cu 0d5r5pz8	cosmos1030/sparsellm-qwen3-1.7b-s70pct	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_1.7b_nostrip8192/runs/xyw3a0cu https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_1.7b_nostrip8192/runs/0d5r5pz8
 	avg5	math500				GPQA				IFEval				LCB				GSM8K				avg4 (no GPQA)
 seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy
 0	8.03	4.8	99.8	100	16352	21.72	100	100	16384	11.83	87.43	95.31	14326	0	96.64	-	31668	1.82	86.13	100	7056	4.61
+1	-	5.0	99.0	100	16221	-	-	-	-	12.2	88.17	93.94	14447	0	97.39	-	31912	1.21	86.88	100	7118	4.6
 																						
 Qwen 3 1.7B s70 ALPS																						wandb 0751lhxv	cosmos1030/alps-qwen3-1.7b-s70pct	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_1.7b_nostrip8192/runs/0751lhxv
 	avg5	math500				GPQA				IFEval				LCB				GSM8K				avg4 (no GPQA)

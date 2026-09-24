@@ -142,10 +142,14 @@ seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accura
 1	-	0.0	100	100	16384	-	-	-	-	0.0	100	100	16384	-	-	-	-	-	-	-	-	-
 42	0.0	0.0	100	100	16384	0.0	100	100	16384	0.0	100	100	16384	0	100	-	32768	0.0	100	100	8192	0.0
 																						
-Qwen 3 8B s70 SparseLLM  [1/3 seeds complete]  [crashed]																						wandb m7t963vv	/home/doyoonkim/models/sparsellm_8b_s70	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_8b_nostrip8192/runs/m7t963vv
+Qwen 3 8B s70 SparseLLM  [crashed/finished]																						wandb m7t963vv oq0rv67v vz43g3ny	/home/doyoonkim/models/sparsellm_8b_s70	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_8b_nostrip8192/runs/m7t963vv https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_8b_nostrip8192/runs/oq0rv67v https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_8b_nostrip8192/runs/vz43g3ny
 	avg5	math500				GPQA				IFEval				LCB				GSM8K				avg4 (no GPQA)
 seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy
 0	3.67	9.6	88.2	80.0	14673	0.0	99.49	100	16314	2.22	91.87	90.0	15111	0	99.63	-	32646	6.52	92.34	90.87	7675	4.58
+1	4.14	11.6	86.2	75.73	14369	0.0	98.48	100	16201	2.59	91.68	87.72	15062	0	99.63	-	32646	6.52	92.27	90.88	7680	5.18
+42	4.18	12.6	85.0	72.73	14182	0.0	99.49	100	16316	1.85	93.16	90.29	15343	0	99.63	-	32646	6.44	92.57	90.87	7693	5.22
+mean	4.0	11.27	86.47	76.15	14408	0.0	99.16	100.0	16277	2.22	92.24	89.34	15172	0.0	99.63	-	32646	6.49	92.39	90.87	7683	4.99
+std	0.28	1.53	1.62	3.65	248	0.0	0.58	0.0	66	0.37	0.81	1.41	150	0.0	0.0	-	0	0.04	0.16	0.01	9	0.36
 																						
 Qwen 3 8B s70 ALPS  [2/3 seeds complete]  [중복시드: 런 5개 / 시드 3개]																						wandb n3l54mf1 ik9zmgb9 wno7wec2 0y6e6wtx 8nnrbex5	/NHNHOME/log-postech/doyoonkim/models/qwen3_8b_alps_s70pct	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_8b_nostrip8192/runs/n3l54mf1 https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_8b_nostrip8192/runs/ik9zmgb9 https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_8b_nostrip8192/runs/wno7wec2 https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_8b_nostrip8192/runs/0y6e6wtx https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_8b_nostrip8192/runs/8nnrbex5
 	avg5	math500				GPQA				IFEval				LCB				GSM8K				avg4 (no GPQA)

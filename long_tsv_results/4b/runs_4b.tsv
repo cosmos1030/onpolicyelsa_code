@@ -33,9 +33,9 @@ Qwen 3 4B s70 ALPS + PGD (trust region)	17aylqzg	s3_4b_alpspgdtr_s70_seed42	fini
 Qwen 3 4B s70 ALPS + PGD (trust region)	2y2o3gt6	s3_4b_alpspgdtr_s70_seed1	finished	0,1,42	cosmos1030/gmp-4b-s70pct-lr0.0001-onpol-lmda0.33-20260921-212708-p265824															
 Qwen 3 4B s70 ALPS + PGD (trust region)	minaq3tm	s3_4b_alpspgdtr_s70_seed0	finished	0,1,42	cosmos1030/gmp-4b-s70pct-lr0.0001-onpol-lmda0.33-20260921-212708-p265824															
 Qwen 3 4B s70 Ours	39t1d9g7	s3_4b_s70_ours	finished	0,1,42	cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260901_080954	r5j1uw8d	0.33	0.33	0.33	32	512	False	True	0.02	False	cubic	32	2048	None	8192
-Qwen 3 4B s70 Ours OPD-only (0/0/1.0)	dl1d889j	s3_4b_s70_opdonly	finished	0,42	cosmos1030/gmp-4b-s70pct-lr1e-4_20260919_041114	eb0trhnz	0	0	1	32	512	False	True	0.02	False	cubic	32	2048	None	8192
-Qwen 3 4B s70 Ours OPD-only (0/0/1.0)	87x0tda1	s3_4b_s70_opdonly	finished	0,42	cosmos1030/gmp-4b-s70pct-lr1e-4_20260919_041114	eb0trhnz	0	0	1	32	512	False	True	0.02	False	cubic	32	2048	None	8192
-Qwen 3 4B s70 Ours OPD-only (0/0/1.0)	ze0mbufm	s3_4b_s70_opdonly_s01	running	0,42	cosmos1030/gmp-4b-s70pct-lr1e-4_20260919_041114	eb0trhnz	0	0	1	32	512	False	True	0.02	False	cubic	32	2048	None	8192
+Qwen 3 4B s70 Ours OPD-only (0/0/1.0)	dl1d889j	s3_4b_s70_opdonly	finished	0,1,42	cosmos1030/gmp-4b-s70pct-lr1e-4_20260919_041114	eb0trhnz	0	0	1	32	512	False	True	0.02	False	cubic	32	2048	None	8192
+Qwen 3 4B s70 Ours OPD-only (0/0/1.0)	87x0tda1	s3_4b_s70_opdonly	finished	0,1,42	cosmos1030/gmp-4b-s70pct-lr1e-4_20260919_041114	eb0trhnz	0	0	1	32	512	False	True	0.02	False	cubic	32	2048	None	8192
+Qwen 3 4B s70 Ours OPD-only (0/0/1.0)	ze0mbufm	s3_4b_s70_opdonly_s01	finished	0,1,42	cosmos1030/gmp-4b-s70pct-lr1e-4_20260919_041114	eb0trhnz	0	0	1	32	512	False	True	0.02	False	cubic	32	2048	None	8192
 Qwen 3 4B s70 Ours w/o KD (0.5/0/0.5)	r8eomj61	gmp_s70pct_onpol_lam0.5_tok512_lr0.0001_2048steps_prune0pct_pgd_grow2t	finished	0,1,42	cosmos1030/gmp-4b-s70pct-lr1e-4_20260917_213402	r8eomj61	0.5	0	0.5	32	512	False	True	0.02	False	cubic	32	2048	None	8192
 Qwen 3 4B s70 Ours w/o KD (0.5/0/0.5)	4shjv676	s3_4b_s70_wokd_seed0	finished	0,1,42	/home/doyoonkim/models/wokd_4b_s70															
 Qwen 3 4B s70 Ours w/o KD (0.5/0/0.5)	uzbizseq	s3_4b_s70_wokd_seed1	finished	0,1,42	/home/doyoonkim/models/wokd_4b_s70															
