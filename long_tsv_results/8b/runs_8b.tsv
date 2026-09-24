@@ -2,8 +2,8 @@ block	wandb_id	run_name	state	seeds	checkpoint	train_run	ntp	kd	opd	rollout_inte
 Qwen 3 8B dense	xp6jch5n	s3_8b_dense	finished	0,1,42	/home1/doyoonkim/.cache/huggingface/hub/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218															
 Qwen 3 8B s50 SparseGPT	zpovcm4b	s3_8b_sparsegpt_s50	finished	0,1,42	cosmos1030/qwen3-8b-sgpt-s50pct-ot80fw20															
 Qwen 3 8B s50 SparseGPT	uubwrjtd	s3_8b_sparsegpt_s50_seeds01	finished	0,1,42	/home/doyoonkim/models/sparsegpt_s50															
-Qwen 3 8B s50 SparseGPT selfgen	4vr9z3wb	s3_8b_s50_sgpt_selfgen	finished	0,42	/home1/doyoonkim/projects/elsa/models/qwen3_8b_sgpt_s50pct_n128_selfgenv3															
-Qwen 3 8B s50 SparseGPT selfgen	k7cdxa9c	s3_8b_s50_sgpt_selfgen_s01	running	0,42	/home/doyoonkim/models/selfgen_8b_sparsegpt_s50															
+Qwen 3 8B s50 SparseGPT selfgen	4vr9z3wb	s3_8b_s50_sgpt_selfgen	finished	0,1,42	/home1/doyoonkim/projects/elsa/models/qwen3_8b_sgpt_s50pct_n128_selfgenv3															
+Qwen 3 8B s50 SparseGPT selfgen	k7cdxa9c	s3_8b_s50_sgpt_selfgen_s01	finished	0,1,42	/home/doyoonkim/models/selfgen_8b_sparsegpt_s50															
 Qwen 3 8B s50 SparseLLM	5p9kg9au	s3_8b_sparsellm_s50	running	0,1	/home/doyoonkim/models/sparsellm_8b_s50															
 Qwen 3 8B s50 ALPS	dcdjjxif	s3_8b_alps_s50	finished	0,1,42	/NHNHOME/log-postech/doyoonkim/models/qwen3_8b_alps_s50pct															
 Qwen 3 8B s50 ALPS	i2js42zd	s3_8b_alps_s50_seeds01	finished	0,1,42	/home/doyoonkim/models/alps_s50															
@@ -52,6 +52,7 @@ Qwen 3 8B s70 Ours w/o rollout refresh	t3z5ny3c	s3_8b_s70_norefresh_seed1	finish
 Qwen 3 8B s70 Ours (A3 jump)	z2l7jyva	s3_8b_a3jump_s70	finished	0,42	/NHNHOME/log-postech/doyoonkim/models/gmp_s70pct_lr0.0001_onpol_lmda0.33_20260908_085535															
 Qwen 3 8B s70 Ours (A3 jump)	wf5nj94s	s3_8b_a3jump_s70	finished	0,42	/NHNHOME/log-postech/doyoonkim/models/gmp_s70pct_lr0.0001_onpol_lmda0.33_20260908_085535															
 Qwen 3 8B s70 Ours (A3 jump)	uq7vzjeb	s3_8b_a3jump_s70_s01	finished	0,42	cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260908_102348	dkek5q9w	0.33	0.33	0.33	32	512	False	True	0.02	False	cubic	32	2048	None	8192
+Qwen 3 8B s70 Ours (A3 jump)	f79fltwx	s3_8b_a3jump_s70_s01	running	0,42	cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260908_102348	dkek5q9w	0.33	0.33	0.33	32	512	False	True	0.02	False	cubic	32	2048	None	8192
 Qwen 3 8B s70 Ours w/o TR (one-step, delta=0.03)	iuwf08pf	gmp_s70pct_onpol_lam0.33_tok512_lr0.0001_2048steps_prune0pct_pgd_grow2	finished	0,1,42																
 Qwen 3 8B s70 Ours w/o TR (one-step, delta=0.03)	k5bkdlum	s3_8b_a3jump003_s70_seed0	finished	0,1,42	/NHNHOME/log-postech/doyoonkim/models/gmp_8b_s70pct_lr0.0001_onpol_lmda0.33_20260923_052514_p110151															
 Qwen 3 8B s70 Ours w/o TR (one-step, delta=0.03)	gi7pz9gp	s3_8b_a3jump003_s70_seed1	finished	0,1,42	/NHNHOME/log-postech/doyoonkim/models/gmp_8b_s70pct_lr0.0001_onpol_lmda0.33_20260923_052514_p110151															
