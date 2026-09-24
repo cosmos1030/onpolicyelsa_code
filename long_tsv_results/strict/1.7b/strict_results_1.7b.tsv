@@ -144,11 +144,12 @@ seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accura
 mean	2.15	0.0	0.53	-	116	0.17	36.03	93.33	5920	10.6	29.57	19.14	4868	0.0	1.12	-	391	0.0	0.18	-	44	2.65
 std	0.1	0.0	0.42	-	68	0.29	0.29	11.55	49	0.47	1.15	3.65	190	0.0	0.0	-	1	0.0	0.04	-	3	0.12
 																						
-Qwen 3 1.7B s70 SparseGPT selfgen  [0/3 seeds complete]  [crashed]																						wandb 7k37ndvr	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_sgpt_s70pct_n128_selfgenv3	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_1.7b_nostrip8192/runs/7k37ndvr
+Qwen 3 1.7B s70 SparseGPT selfgen  [0/3 seeds complete]  [crashed/finished]																						wandb 7k37ndvr yi2emek3	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_sgpt_s70pct_n128_selfgenv3	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_1.7b_nostrip8192/runs/7k37ndvr https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_1.7b_nostrip8192/runs/yi2emek3
 	avg5	math500				GPQA				IFEval				LCB				GSM8K				avg4 (no GPQA)
 seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy
 0	-	0.0	97.0	100	15939	-	-	-	-	0.0	98.34	100	16134	0	32.46	-	10688	0.0	96.21	100	7882	0.0
 1	-	0.0	96.4	100	15845	-	-	-	-	0.0	98.71	100	16187	0	36.19	-	11928	0.0	95.45	100	7822	0.0
+42	-	0.0	96.8	100	15916	-	-	-	-	0.0	98.89	100	16202	0	32.84	-	10838	0.0	95.75	100	7844	0.0
 																						
 Qwen 3 1.7B s70 SparseLLM  [1/3 seeds complete]  [crashed]																						wandb xyw3a0cu 0d5r5pz8	cosmos1030/sparsellm-qwen3-1.7b-s70pct	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_1.7b_nostrip8192/runs/xyw3a0cu https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_1.7b_nostrip8192/runs/0d5r5pz8
 	avg5	math500				GPQA				IFEval				LCB				GSM8K				avg4 (no GPQA)
