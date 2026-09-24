@@ -383,6 +383,11 @@ CACHE = os.path.join(HERE, 'train_config_cache.json')
 EXCLUDE_RUNS = {
     '0eqkqmbs': '4B s70 ALPS+retrain 3-term, Sep repeat (주 baseline은 8월 vfjcx821)',
     'qzhxc4h9': '4B s70 ALPS+retrain 3-term, Sep repeat (단일 시드, B200 로컬 체크포인트)',
+    # 1.7B s60 SCOUT 은 이 칸만 rollout interval 8 로 학습한 체크포인트
+    # (20260901_121104) 로 평가돼 있었다. 다른 칸은 전부 ro=32 다. ro=32 로 학습한
+    # 94pwg46m 의 체크포인트(20260902_173413)로 다시 돌린 값이 같은 런 이름
+    # s3_1.7b_s60_ours 로 들어오므로, 섞이지 않게 옛 런을 빼둔다.
+    'padwnv7g': '1.7B s60 Ours, rollout interval 8 로 학습한 체크포인트 (표준은 ro=32)',
 }
 EXCL_DIR = os.path.join(os.path.dirname(HERE), 'tsv_excluded')
 
