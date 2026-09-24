@@ -34,11 +34,12 @@ seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accura
 mean	42.96	74.4	15.2	7.4	5553	24.92	11.11	8.09	5291	30.01	43.19	30.1	7788	12.69	43.41	0.0	22994	72.78	5.0	3.09	1439	47.47
 std	0.58	2.36	1.2	1.45	187	1.77	2.67	1.12	485	1.75	1.76	4.59	265	0.0	2.75	0.0	486	0.5	0.13	0.57	17	0.65
 																						
-Qwen 3 1.7B s50 ALPS selfgen  [0/3 seeds complete]  [running]																						wandb hosevc69	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_alps_selfgen_v3_s50pct	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_1.7b_nostrip8192/runs/hosevc69
+Qwen 3 1.7B s50 ALPS selfgen  [0/3 seeds complete]																						wandb hosevc69	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_alps_selfgen_v3_s50pct	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_1.7b_nostrip8192/runs/hosevc69
 	avg5	math500				GPQA				IFEval				LCB				GSM8K				avg4 (no GPQA)
 seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy
 0	-	77.4	9.2	1.78	4931	-	-	-	-	44.36	22.18	14.29	4656	10.07	61.19	0	25967	82.11	3.49	1.01	2047	53.49
 1	-	78.0	10.2	0.76	5066	-	-	-	-	41.77	25.32	15.04	5157	10.82	55.97	0	25103	81.5	2.73	0.56	2000	53.02
+42	-	77.8	9.6	1.77	4759	-	-	-	-	42.33	24.03	16.12	4923	11.94	57.84	0	25492	82.87	2.35	0.36	1975	53.73
 																						
 Qwen 3 1.7B s50 ALPS+retrain  [crashed/finished]																						wandb cwz9tepg cbjuilvr	cosmos1030/gmp-kd3e-1-s50pct-lr1e-4_20260811_191146	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_1.7b_nostrip8192/runs/cwz9tepg https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_1.7b_nostrip8192/runs/cbjuilvr
 	avg5	math500				GPQA				IFEval				LCB				GSM8K				avg4 (no GPQA)
