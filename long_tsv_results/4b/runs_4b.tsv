@@ -54,7 +54,8 @@ Qwen 3 4B s70 Cubic schedule, no PGD (pace-matched)	gljk658o	s3_4b_cubicnopgd_s7
 Qwen 3 4B s70 Cubic schedule, no PGD (pace-matched)	hl7zwbkn	s3_4b_cubicnopgd_s70_seed0	finished	0,1,42	cosmos1030/gmp-4b-s70pct-lr0.0001-onpol-lmda0.33-20260922-023308-p310907															
 Qwen 3 4B s80 SparseLLM	p6c4r6lx	s3_4b_s80_sparsellm	finished	0,1,42	cosmos1030/sparsellm-s80pct_20260903_113201															
 Qwen 3 4B s80 ALPS	bql6bwvl	s3_4b_s80_alps	finished	0,1,42	cosmos1030/alps-qwen3-4b-s80pct															
-Qwen 3 4B s80 ALPS+retrain	q6vjas4j	gmp_s80pct_onpol_lam0.33_tok512_lr0.0001_2048steps_alpssft4b_s80pct_lr	finished	42	cosmos1030/gmp-kd3e-1-4b-s80pct-lr1e-4_20260917_112952	q6vjas4j	0.33	0.33	0.33	32	512	True	False	0.01	False	cubic	32	2048	None	8192
+Qwen 3 4B s80 ALPS+retrain	q6vjas4j	gmp_s80pct_onpol_lam0.33_tok512_lr0.0001_2048steps_alpssft4b_s80pct_lr	finished	1,42	cosmos1030/gmp-kd3e-1-4b-s80pct-lr1e-4_20260917_112952	q6vjas4j	0.33	0.33	0.33	32	512	True	False	0.01	False	cubic	32	2048	None	8192
+Qwen 3 4B s80 ALPS+retrain	phrzgtlq	s3_4b_s80_alpsretrain_seed1	finished	1,42	cosmos1030/gmp-kd3e-1-4b-s80pct-lr1e-4_20260917_112952	q6vjas4j	0.33	0.33	0.33	32	512	True	False	0.01	False	cubic	32	2048	None	8192
 Qwen 3 4B s80 ALPS+retrain OPD-only (0/0/1.0)	n9omc089	gmp_s80pct_onpol_lam1.0_tok512_lr0.0001_2048steps_alpssft4b_s80pct_lr1	finished	42	cosmos1030/gmp-4b-s80pct-lr1e-4_20260918_071932	n9omc089	0	0	1	32	512	True	False	0.01	False	cubic	32	2048	None	8192
 Qwen 3 4B s80 ALPS+retrain w/o OPD	crdshw6m	gmp_s80pct_kd0.5_lr0.0001_2048steps_alpssft4b_s80pct_lr1e-4_2term_ot3_	finished	0,1,42	cosmos1030/gmp-kd5e-1-4b-s80pct-lr1e-4_20260917_102335	crdshw6m	0.5	0.5	0	32	512	True	False	0.01	False	cubic	32	2048	None	8192
 Qwen 3 4B s80 ALPS+retrain w/o OPD	fkndzhi2	s3_4b_s80_alpsretrain_noopd	failed	0,1,42	cosmos1030/gmp-kd5e-1-4b-s80pct-lr1e-4_20260917_102335	crdshw6m	0.5	0.5	0	32	512	True	False	0.01	False	cubic	32	2048	None	8192

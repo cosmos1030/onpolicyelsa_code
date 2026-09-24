@@ -880,5 +880,23 @@
   "steps": 2048,
   "lr": null,
   "seqlen": 8192
+ },
+ "20260902_173413": {
+  "train_run": "94pwg46m",
+  "train_name": "gmp_s60pct_onpol_lam0.33_tok512_lr5e-05_2048steps_prune0pct_pgd_grow2target_klbu",
+  "ntp": 0.33,
+  "kd": 0.33,
+  "opd": 0.33,
+  "rollout_interval": 32,
+  "rollout_len": 512,
+  "fixed_mask": false,
+  "pgd": true,
+  "kl_budget": 0.01,
+  "tr": false,
+  "growth": "cubic",
+  "mask_interval": 32,
+  "steps": 2048,
+  "lr": null,
+  "seqlen": 8192
  }
 }

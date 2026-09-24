@@ -8,7 +8,8 @@ Qwen 3 8B s50 SparseLLM	5p9kg9au	s3_8b_sparsellm_s50	failed	0,1,42	/home/doyoonk
 Qwen 3 8B s50 SparseLLM	ya6gvt77	s3_8b_sparsellm_s50	finished	0,1,42	/home/doyoonkim/models/sparsellm_8b_s50															
 Qwen 3 8B s50 ALPS	dcdjjxif	s3_8b_alps_s50	finished	0,1,42	/NHNHOME/log-postech/doyoonkim/models/qwen3_8b_alps_s50pct															
 Qwen 3 8B s50 ALPS	i2js42zd	s3_8b_alps_s50_seeds01	finished	0,1,42	/home/doyoonkim/models/alps_s50															
-Qwen 3 8B s50 ALPS selfgen	ipdx9nqz	s3_8b_s50_alps_selfgen	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_8b_selfgen_v3_alps_s50pct															
+Qwen 3 8B s50 ALPS selfgen	ipdx9nqz	s3_8b_s50_alps_selfgen	finished	0,42	/home1/doyoonkim/projects/elsa/models/qwen3_8b_selfgen_v3_alps_s50pct															
+Qwen 3 8B s50 ALPS selfgen	dxuwhysw	s3_8b_s50_alps_selfgen_s01	running	0,42	cosmos1030/alps-selfgenv3-qwen3-8b-s50pct															
 Qwen 3 8B s50 ALPS+retrain	re907ejb	s3_8b_alpsretrain_s50	finished	0,1,42	cosmos1030/gmp-kd3e-1-s50pct-lr5e-5_20260908_053513	tb09czsq	0.33	0.33	0.33	-1	512	True	False	0.01	False	cubic	32	2048	None	8192
 Qwen 3 8B s50 ALPS+retrain	lqfpuzwt	s3_8b_alpsretrain_s50_seeds01	finished	0,1,42	/home/doyoonkim/models/alpsretrain_s50															
 Qwen 3 8B s50 Ours	2ddtwf5t	s3_8b_ours_s50	finished	0,1,42	cosmos1030/gmp-kd3e-1-s50pct-lr5e-5_20260907_210125	roq1vwuw	0.33	0.33	0.33	32	512	False	True	0.01	False	cubic	32	2048	None	8192
