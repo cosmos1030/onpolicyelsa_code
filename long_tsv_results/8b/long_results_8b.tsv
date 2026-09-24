@@ -22,10 +22,13 @@ seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accura
 0	-	92.0	8.2	1.52	5011	-	-	-	-	70.43	24.4	18.64	5132	37.69	32.84	0	19731	92.87	2.5	0.65	2392	73.25
 42	67.63	91.6	8.2	2.4	4944	45.45	21.21	16.67	9752	69.13	26.06	18.72	5317	38.43	34.7	0	20047	93.56	2.58	0.97	2409	73.18
 																						
-Qwen 3 8B s50 SparseLLM  [1/3 seeds complete]  [running]																						wandb 5p9kg9au	/home/doyoonkim/models/sparsellm_8b_s50	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_8b_nostrip8192/runs/5p9kg9au
+Qwen 3 8B s50 SparseLLM  [2/3 seeds complete]  [running]																						wandb 5p9kg9au	/home/doyoonkim/models/sparsellm_8b_s50	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_8b_nostrip8192/runs/5p9kg9au
 	avg5	math500				GPQA				IFEval				LCB				GSM8K				avg4 (no GPQA)
 seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy
 0	69.88	92.8	4.4	0.86	4162	45.96	6.06	5.49	7686	75.6	10.17	4.89	2677	42.16	19.4	0	17619	92.87	1.21	0.41	1591	75.86
+1	69.09	92.0	5.2	0.43	4189	43.94	9.09	8.05	8249	75.6	11.09	6.36	2845	41.42	21.64	0	17677	92.49	1.36	0.33	1632	75.38
+mean	69.49	92.4	4.8	0.65	4176	44.95	7.58	6.77	7968	75.6	10.63	5.62	2761	41.79	20.52	0.0	17648	92.68	1.29	0.37	1612	75.62
+std	0.56	0.57	0.57	0.3	19	1.43	2.14	1.8	399	0.0	0.65	1.04	119	0.53	1.58	0.0	41	0.27	0.11	0.06	29	0.34
 																						
 Qwen 3 8B s50 ALPS																						wandb dcdjjxif i2js42zd	/NHNHOME/log-postech/doyoonkim/models/qwen3_8b_alps_s50pct	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_8b_nostrip8192/runs/dcdjjxif https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_8b_nostrip8192/runs/i2js42zd
 	avg5	math500				GPQA				IFEval				LCB				GSM8K				avg4 (no GPQA)
