@@ -124,7 +124,12 @@ METHOD = {'dense': 'dense', 'sparsegpt': 'SparseGPT', 'sgpt_selfgen': 'SparseGPT
           # an A3B1jump checkpoint. The '_rep' in its run name made its 34.3 read
           # as a failed reproduction of the no-refresh arm's 49.2; the 15-point
           # gap is the jump.
-          'norefresh_rep': 'Ours w/o TR (jump) + w/o rollout refresh'}
+          'norefresh_rep': 'Ours w/o TR (jump) + w/o rollout refresh',
+          # The fourth cell of the TR x OPD 2x2 in Figure 4(a): jump_to_target=true
+          # AND lambda_OPD=0, trained on the B200 box 2026-09-23/24. Additivity of
+          # the two single-factor arms predicts 4B 40.6 and 8B 49.6 on the five-task
+          # scale; a large miss either way is the result worth reading.
+          'jumpnoopd': 'Ours w/o TR (one-step) + w/o OPD'}
 ORDER = ['dense', 'SparseGPT', 'SparseGPT selfgen', 'SparseLLM', 'ALPS', 'ALPS selfgen',
          'ALPS+retrain', 'ALPS + PGD', 'Ours', 'Ours (A3 jump)',
          'Ours w/o TR (one-step, delta=0.03)']
