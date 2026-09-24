@@ -41,6 +41,8 @@ Qwen 3 4B s70 Ours w/o KD (0.5/0/0.5)	4shjv676	s3_4b_s70_wokd_seed0	finished	0,1
 Qwen 3 4B s70 Ours w/o KD (0.5/0/0.5)	uzbizseq	s3_4b_s70_wokd_seed1	finished	0,1,42	/home/doyoonkim/models/wokd_4b_s70															
 Qwen 3 4B s70 Ours w/o OPD (0.5/0.5/0)	orwr7glo	s3_4b_s70_noopd	finished	0,1,42	cosmos1030/gmp-kd5e-1-s70pct-lr1e-4_20260915_192606	vew8x5r5	0.5	0.5	0	32	512	False	True	0.02	False	cubic	32	2048	None	8192
 Qwen 3 4B s70 Ours w/o TR (jump) + w/o rollout refresh	eniy0b69	s3_4b_s70_norefresh_rep	finished	42	cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260909_221717	izc2311t	0.33	0.33	0.33	4096	512	False	True	0.02	False	cubic	32	2048	None	8192
+Qwen 3 4B s70 Ours w/o TR (one-step) + w/o OPD	7r1km0uf	s3_4b_s70_jumpnoopd_seed1	finished	0,1	/home/doyoonkim/models/jumpnoopd_4b_s70															
+Qwen 3 4B s70 Ours w/o TR (one-step) + w/o OPD	tzuwhhf9	s3_4b_s70_jumpnoopd_seed0	finished	0,1	/home/doyoonkim/models/jumpnoopd_4b_s70															
 Qwen 3 4B s70 Ours w/o rollout refresh	nve0ruhr	s3_4b_s70_norefresh	finished	0,1,42	cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260903_081638	laphj0g7	0.33	0.33	0.33	4096	512	False	True	0.02	False	cubic	32	2048	None	8192
 Qwen 3 4B s70 Ours w/o rollout refresh	c4uytmxd	s3_4b_s70_norefresh_seed0	finished	0,1,42	/home/doyoonkim/models/norefresh_4b_s70															
 Qwen 3 4B s70 Ours w/o rollout refresh	p65lf0k2	s3_4b_s70_norefresh_seed1	finished	0,1,42	/home/doyoonkim/models/norefresh_4b_s70															
