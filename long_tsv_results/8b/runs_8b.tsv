@@ -43,6 +43,7 @@ Qwen 3 8B s70 ALPS selfgen	36rtrs3u	s3_8b_s70_alps_selfgen_s01	finished	0,1,42	/
 Qwen 3 8B s70 ALPS+retrain	d4c200tz	s3_8b_alpsretrain_s70	finished	0,1,42	cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260908_132323	3zpks6yu	0.33	0.33	0.33	-1	512	True	False	0.01	False	cubic	32	2048	None	8192
 Qwen 3 8B s70 ALPS+retrain	gyhf609r	s3_8b_alpsretrain_s70_seed0	finished	0,1,42	cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260908_132323	3zpks6yu	0.33	0.33	0.33	-1	512	True	False	0.01	False	cubic	32	2048	None	8192
 Qwen 3 8B s70 ALPS+retrain	l3b9x301	s3_8b_alpsretrain_s70_seed1	finished	0,1,42	cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260908_132323	3zpks6yu	0.33	0.33	0.33	-1	512	True	False	0.01	False	cubic	32	2048	None	8192
+Qwen 3 8B s70 ALPS+retrain w/o OPD (0.5/0.5/0)	ce7uuj0z	s3_8b_alpsretrainnoopd_s70_seed0	finished	0	/home/doyoonkim/models/alpssftnoopd_8b_s70															
 Qwen 3 8B s70 Ours	3y9jvl5s	s3_8b_ours_s70	finished	0,1,42	cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260911_015957	ajm5l60w	0.33	0.33	0.33	32	512	False	True	0.03	False	cubic	32	2048	None	8192
 Qwen 3 8B s70 Ours	2qe5zdw3	s3_8b_ours_s70_seeds01	finished	0,1,42	cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260911_015957	ajm5l60w	0.33	0.33	0.33	32	512	False	True	0.03	False	cubic	32	2048	None	8192
 Qwen 3 8B s70 Ours w/o OPD (0.5/0.5/0)	g5htdr2q	gmp_s70pct_kd0.5_lr0.0001_2048steps_prune0pct_pgd_grow2target_klbudget	finished	0,1,42	cosmos1030/gmp-kd5e-1-8b-s70pct-lr1e-4_20260917_181513	g5htdr2q	0.5	0.5	0	32	512	False	True	0.03	False	cubic	32	2048	None	8192
