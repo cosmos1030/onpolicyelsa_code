@@ -132,6 +132,7 @@ Qwen 3 1.7B s70 SparseGPT selfgen  [0/3 seeds complete]  [running]														
 	avg5	math500				GPQA				IFEval				LCB				GSM8K				avg4 (no GPQA)
 seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy
 0	-	0.0	97.0	100	15939	-	-	-	-	0.0	98.34	100	16134	0	32.46	-	10688	0.0	96.21	100	7882	0.0
+1	-	0.0	96.4	100	15845	-	-	-	-	0.0	98.71	100	16187	0	36.19	-	11928	0.0	95.45	100	7822	0.0
 																						
 Qwen 3 1.7B s70 SparseLLM  [1/3 seeds complete]  [crashed/running]																						wandb xyw3a0cu 0d5r5pz8	cosmos1030/sparsellm-qwen3-1.7b-s70pct	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_1.7b_nostrip8192/runs/xyw3a0cu https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_1.7b_nostrip8192/runs/0d5r5pz8
 	avg5	math500				GPQA				IFEval				LCB				GSM8K				avg4 (no GPQA)

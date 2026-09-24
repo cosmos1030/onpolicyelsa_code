@@ -23,13 +23,14 @@ seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accura
 1	-	89.6	6.8	1.75	4761	-	-	-	-	54.53	25.88	18.96	5355	39.55	33.96	0	20029	92.8	2.12	0.49	2346	69.12
 42	62.91	89.4	8.2	2.4	4944	37.88	21.21	16.67	9752	56.19	26.06	18.72	5317	38.43	34.7	0	20047	92.65	2.58	0.97	2409	69.17
 																						
-Qwen 3 8B s50 SparseLLM  [2/3 seeds complete]  [failed/running]																						wandb 5p9kg9au ya6gvt77	/home/doyoonkim/models/sparsellm_8b_s50	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_8b_nostrip8192/runs/5p9kg9au https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_8b_nostrip8192/runs/ya6gvt77
+Qwen 3 8B s50 SparseLLM  [failed/finished]																						wandb 5p9kg9au ya6gvt77	/home/doyoonkim/models/sparsellm_8b_s50	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_8b_nostrip8192/runs/5p9kg9au https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_8b_nostrip8192/runs/ya6gvt77
 	avg5	math500				GPQA				IFEval				LCB				GSM8K				avg4 (no GPQA)
 seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy
 0	68.4	92.0	4.4	0.86	4162	43.43	6.06	5.49	7686	71.9	10.17	4.89	2677	42.16	19.4	0	17619	92.49	1.21	0.41	1591	74.64
 1	67.28	91.6	5.2	0.43	4189	40.4	9.09	8.05	8249	70.79	11.09	6.36	2845	41.42	21.64	0	17677	92.19	1.36	0.33	1632	74.0
-mean	67.84	91.8	4.8	0.65	4176	41.92	7.58	6.77	7968	71.35	10.63	5.62	2761	41.79	20.52	0.0	17648	92.34	1.29	0.37	1612	74.32
-std	0.79	0.28	0.57	0.3	19	2.14	2.14	1.8	399	0.78	0.65	1.04	119	0.53	1.58	0.0	41	0.21	0.11	0.06	29	0.45
+42	68.73	92.0	5.2	0.65	4217	45.45	10.1	5.26	7982	69.87	9.98	6.67	2684	43.66	19.03	0	17215	92.65	1.29	0.16	1599	74.54
+mean	68.14	91.87	4.93	0.65	4190	43.1	8.42	6.27	7972	70.86	10.41	5.97	2735	42.41	20.02	0.0	17504	92.44	1.29	0.3	1607	74.39
+std	0.76	0.23	0.46	0.21	28	2.54	2.1	1.54	282	1.02	0.59	0.95	95	1.14	1.41	0.0	251	0.23	0.08	0.12	22	0.34
 																						
 Qwen 3 8B s50 ALPS																						wandb dcdjjxif i2js42zd	/NHNHOME/log-postech/doyoonkim/models/qwen3_8b_alps_s50pct	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_8b_nostrip8192/runs/dcdjjxif https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_8b_nostrip8192/runs/i2js42zd
 	avg5	math500				GPQA				IFEval				LCB				GSM8K				avg4 (no GPQA)
