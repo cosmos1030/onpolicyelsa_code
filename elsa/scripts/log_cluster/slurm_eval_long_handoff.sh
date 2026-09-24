@@ -119,6 +119,29 @@ case "$ARM" in
     [ -f "$MODEL/.download_complete" ] || MODEL=cosmos1030/gmp-4b-s70pct-lr1e-4_20260917_213402
     RUN=s3_4b_s70_wokd_seed${SEED}
     PROJECT=reasoning_qwen3_4b_nostrip8192; SPARSITY=0.7 ;;
+  # Figure 4(a)'s 2x2 fourth cell: the jump rule (w/o trust region) AND the
+  # on-policy term off. Trained on the last B200 container and never evaluated
+  # anywhere -- its 8B seed 42/0 attempts died with the box.
+  jumpnoopd8b_seed0|jumpnoopd8b_seed1|jumpnoopd8b_seed42)
+    SEED=${ARM#jumpnoopd8b_seed}
+    MODEL=/home/doyoonkim/models/jumpnoopd_8b_s70
+    [ -f "$MODEL/.download_complete" ] || MODEL=cosmos1030/gmp-8b-s70pct-jump-noopd-20260924-043024
+    RUN=s3_8b_s70_jumpnoopd_seed${SEED}
+    PROJECT=reasoning_qwen3_8b_nostrip8192; SPARSITY=0.7 ;;
+  jumpnoopd4b_seed0|jumpnoopd4b_seed1|jumpnoopd4b_seed42)
+    SEED=${ARM#jumpnoopd4b_seed}
+    MODEL=/home/doyoonkim/models/jumpnoopd_4b_s70
+    [ -f "$MODEL/.download_complete" ] || MODEL=cosmos1030/gmp-4b-s70pct-jump-noopd-20260923-202338
+    RUN=s3_4b_s70_jumpnoopd_seed${SEED}
+    PROJECT=reasoning_qwen3_4b_nostrip8192; SPARSITY=0.7 ;;
+  # Figure 3(a)'s 8B bar. Seed 42 is already in (wandb 0yl2g96n, 55.75); this
+  # run name is what puts seeds 0/1 in the same block.
+  alpssftnoopd8b_seed0|alpssftnoopd8b_seed1)
+    SEED=${ARM#alpssftnoopd8b_seed}
+    MODEL=/home/doyoonkim/models/alpssftnoopd_8b_s70
+    [ -f "$MODEL/.download_complete" ] || MODEL=cosmos1030/gmp-8b-s70pct-alpssft-noopd-20260924-073338
+    RUN=s3_8b_alpsretrainnoopd_s70_seed${SEED}
+    PROJECT=reasoning_qwen3_8b_nostrip8192; SPARSITY=0.7 ;;
   *) echo "!! unknown arm '$ARM'" >&2; exit 1 ;;
 esac
 
