@@ -93,7 +93,13 @@ flock /tmp/${USER}_nltk.lock \
 
 # Another box may already be on this checkpoint: several servers share this
 # wandb project and hub, and a duplicate burns a GPU for hours for nothing.
-if ! python "$REPO/elsa/scripts/log_cluster/preflight_dup_check.py" \
+# ALLOW_DUP=1 is for a deliberate split: when a 3-seed job is too slow, its
+# remaining seeds are launched as their own jobs and the parent is cancelled
+# the moment it finishes the seed it is on. The overlap is intentional and
+# short, so the guard would only get in the way.
+if [ "${ALLOW_DUP:-0}" = "1" ]; then
+  echo "[preflight] ALLOW_DUP=1 -- skipping the duplicate check on purpose"
+elif ! python "$REPO/elsa/scripts/log_cluster/preflight_dup_check.py" \
         --model "$MODEL" --seeds "$SEEDS" --run "$RUN" --project "$PROJECT_FOR_CHECK"; then
     echo "##### SKIPPED (duplicate running elsewhere) #####"
     exit 0
