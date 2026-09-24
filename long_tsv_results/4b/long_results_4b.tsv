@@ -286,13 +286,14 @@ Qwen 3 4B s70 Ours w/o TR (jump) + w/o rollout refresh  [1/3 seeds complete]				
 seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy
 42	34.34	53.8	38.0	7.81	9524	20.71	76.26	73.17	14100	27.17	67.28	42.18	11905	1.49	76.12	0	27475	68.54	16.6	4.42	3632	37.75
 																						
-Qwen 3 4B s70 Ours w/o TR (one-step) + w/o OPD  [2/3 seeds complete]																						wandb 7r1km0uf tzuwhhf9	/home/doyoonkim/models/jumpnoopd_4b_s70	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_4b_nostrip8192/runs/7r1km0uf https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_4b_nostrip8192/runs/tzuwhhf9
+Qwen 3 4B s70 Ours w/o TR (one-step) + w/o OPD																						wandb 4wn78qux 7r1km0uf tzuwhhf9	/home/doyoonkim/models/jumpnoopd_4b_s70	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_4b_nostrip8192/runs/4wn78qux https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_4b_nostrip8192/runs/7r1km0uf https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_4b_nostrip8192/runs/tzuwhhf9
 	avg5	math500				GPQA				IFEval				LCB				GSM8K				avg4 (no GPQA)
 seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy
 0	39.99	65.6	25.2	4.88	7885	23.23	60.61	54.35	13109	33.09	43.62	29.61	9010	4.48	64.18	0	26004	73.54	9.4	2.06	3207	44.18
 1	39.04	63.0	28.6	4.44	7866	23.23	61.62	43.48	13100	30.13	45.1	33.13	9156	4.1	64.93	0	25881	74.75	11.6	3.35	3188	43.0
-mean	39.52	64.3	26.9	4.66	7876	23.23	61.11	48.91	13105	31.61	44.36	31.37	9083	4.29	64.55	0.0	25942	74.15	10.5	2.7	3197	43.59
-std	0.67	1.84	2.4	0.31	13	0.0	0.71	7.69	6	2.09	1.05	2.49	103	0.26	0.53	0.0	87	0.86	1.55	0.91	13	0.83
+42	39.31	61.4	26.4	4.23	7945	26.26	56.57	59.62	12590	31.98	43.99	30.06	8900	2.24	65.67	0	25818	74.68	10.01	2.84	3120	42.57
+mean	39.45	63.33	26.73	4.52	7899	24.24	59.6	52.48	12933	31.73	44.24	30.93	9022	3.61	64.93	0.0	25901	74.32	10.34	2.75	3172	43.25
+std	0.49	2.12	1.72	0.33	41	1.75	2.67	8.23	297	1.49	0.77	1.92	129	1.2	0.75	0.0	94	0.68	1.14	0.65	45	0.83
 																						
 Qwen 3 4B s70 Ours w/o rollout refresh																						wandb nve0ruhr c4uytmxd p65lf0k2	cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260903_081638	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_4b_nostrip8192/runs/nve0ruhr https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_4b_nostrip8192/runs/c4uytmxd https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_4b_nostrip8192/runs/p65lf0k2
 	avg5	math500				GPQA				IFEval				LCB				GSM8K				avg4 (no GPQA)
