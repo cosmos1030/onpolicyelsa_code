@@ -193,6 +193,7 @@ Qwen 3 1.7B s70 Cubic schedule, no PGD (pace-matched)  [0/3 seeds complete]  [ru
 	avg5	math500				GPQA				IFEval				LCB				GSM8K				avg4 (no GPQA)
 seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy
 0	-	44.2	43.8	11.6	10328	-	-	-	-	4.44	86.32	80.49	14662	0.37	94.03	50.0	31426	54.97	31.61	13.07	4941	25.99
+1	-	43.4	45.4	10.33	10311	-	-	-	-	5.36	84.66	77.17	14346	0.37	94.4	0	31367	54.59	31.08	16.47	4988	25.93
 																						
 Qwen 3 1.7B s80 Ours																						wandb 8nqwbomy	cosmos1030/gmp-kd3e-1-s80pct-lr1e-4_20260916_044553	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_1.7b_nostrip8192/runs/8nqwbomy
 	avg5	math500				GPQA				IFEval				LCB				GSM8K				avg4 (no GPQA)
