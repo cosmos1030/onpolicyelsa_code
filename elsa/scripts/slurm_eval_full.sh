@@ -9,7 +9,10 @@
 #SBATCH --mem=80G
 #SBATCH --time=12:00:00
 #SBATCH --exclude=n3,n42,n46,n51,n54,n60,n77,n80,n87,n91
-#SBATCH --output=/home1/doyoonkim/projects/elsa/logs/eval_full_%j.out
+# 잡 표준출력은 노드 로컬에 쓴다. NFS(/home1)에 직접 쓰던 2026-09-23,
+# /home1이 11:34~14:45 멈추자 돌던 eval 12개가 uninterruptible I/O에 박혀
+# GPU를 0%로 28시간 점유했다. 끝날 때 trap이 /home1으로 한 번 복사한다.
+#SBATCH --output=/local-data/user-data/%u/eval_full_%j.out
 exec 2>&1
 
 # Complete eval (PPL + zero-shot + lighteval bench, 7 tasks by default) for an
@@ -100,10 +103,19 @@ save_details () {
         done)
     echo "[details] $(find "$DETAILS_NFS" -name "*.parquet" 2>/dev/null | wc -l) parquet -> $DETAILS_NFS ($(du -sh "$DETAILS_NFS" 2>/dev/null | cut -f1))"
 }
-trap save_details EXIT
+NFS_LOG="/home1/doyoonkim/projects/elsa/logs/eval_full_${SLURM_JOB_ID}.out"
+LOCAL_LOG="/local-data/user-data/${USER}/eval_full_${SLURM_JOB_ID}.out"
+save_log () {
+    [ -f "$LOCAL_LOG" ] || return 0
+    mkdir -p "$(dirname "$NFS_LOG")"
+    cp "$LOCAL_LOG" "$NFS_LOG" 2>/dev/null || true
+}
+on_exit () { save_details; save_log; }
+trap on_exit EXIT
 mkdir -p "$LOCAL_JOB_BASE/wandb"
 
-export WANDB_DIR="/home1/doyoonkim/projects/elsa/logs/wandb_${SLURM_JOB_ID}"
+# wandb 디렉터리도 같은 이유로 노드 로컬에 둔다.
+export WANDB_DIR="$LOCAL_JOB_BASE/wandb_${SLURM_JOB_ID}"
 mkdir -p "$WANDB_DIR"
 export WANDB_SERVICE_WAIT=300
 export WANDB_START_METHOD=fork
