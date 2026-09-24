@@ -145,10 +145,11 @@ seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accura
 mean	2.4	7.1	92.7	86.31	15310	0.17	99.16	99.31	16255	0.06	99.75	99.68	16347	0.0	100.0	100.0	32768	4.68	94.21	93.44	7809	2.93
 std	0.31	0.99	1.27	2.61	167	0.29	0.77	1.2	117	0.11	0.11	0.55	16	0.0	0.0	0.0	0	0.18	0.36	0.3	23	0.3
 																						
-Qwen 3 8B s70 ALPS selfgen  [1/3 seeds complete]  [finished/running]																						wandb 48w3aqxq 36rtrs3u	/home1/doyoonkim/projects/elsa/models/qwen3_8b_selfgen_v3_alps_s70pct	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_8b_nostrip8192/runs/48w3aqxq https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_8b_nostrip8192/runs/36rtrs3u
+Qwen 3 8B s70 ALPS selfgen  [1/3 seeds complete]																						wandb 48w3aqxq 36rtrs3u	/home1/doyoonkim/projects/elsa/models/qwen3_8b_selfgen_v3_alps_s70pct	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_8b_nostrip8192/runs/48w3aqxq https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_8b_nostrip8192/runs/36rtrs3u
 	avg5	math500				GPQA				IFEval				LCB				GSM8K				avg4 (no GPQA)
 seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy
 0	-	0.4	99.6	98.96	16321	-	-	-	-	1.48	97.41	93.16	15993	0	95.52	-	31302	0.15	99.77	99.73	8179	0.51
+1	-	0.0	100	100	16384	-	-	-	-	0.92	97.97	95.69	16052	0.0	96.27	100	31546	0.61	99.17	98.92	8142	0.38
 42	0.32	0.0	100	100	16384	0.51	98.48	98.33	16148	0.74	97.6	96.33	15997	0	94.78	-	31057	0.38	99.62	99.33	8165	0.28
 																						
 Qwen 3 8B s70 ALPS+retrain																						wandb d4c200tz gyhf609r l3b9x301	cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260908_132323	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_8b_nostrip8192/runs/d4c200tz https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_8b_nostrip8192/runs/gyhf609r https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_8b_nostrip8192/runs/l3b9x301
