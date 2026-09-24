@@ -82,6 +82,11 @@ METHOD = {'dense': 'dense', 'sparsegpt': 'SparseGPT', 'sgpt_selfgen': 'SparseGPT
           # picked to land on these keys.
           'alpsretrain033': 'ALPS+retrain (0.33/0.33/0.33)',
           'alpsretrainnoopd': 'ALPS+retrain w/o OPD (0.5/0.5/0)',
+          # 4B s80 쪽 런 이름만 밑줄이 하나 더 있다(s3_4b_s80_alpsretrain_noopd).
+          # 키가 없어서 라벨이 런 이름 그대로 잡혔고, 시드 42(crdshw6m)와 다른
+          # 블록으로 갈라져 시드 0 결과가 표에 안 들어갔다. crdshw6m 의 LABELS
+          # 문자열과 정확히 같아야 합쳐진다.
+          'alpsretrain_noopd': 'ALPS+retrain w/o OPD',
           'oursd003': 'Ours (delta=0.03)',
           # The alpssft4b re-runs (Sep 13) -- a separate training from the
           # August ALPS+retrain checkpoint, so they must not collapse onto the
