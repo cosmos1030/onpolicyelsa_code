@@ -98,3 +98,6 @@ SparseLLM/wandb/
 
 # harvest backups (regenerated)
 long_tsv_results/backup_*/
+
+# tr_opd tidy 는 개별 CSV 와 중복이고 dump_tr_opd_curves.py 로 재생성된다 (7.6MB)
+elsa/figures/plotdata/tr_opd/all_runs_tidy.csv
