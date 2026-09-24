@@ -142,6 +142,11 @@ seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accura
 1	-	0.0	100	100	16384	-	-	-	-	0.0	100	100	16384	-	-	-	-	-	-	-	-	-
 42	0.0	0.0	100	100	16384	0.0	100	100	16384	0.0	100	100	16384	0	100	-	32768	0.0	100	100	8192	0.0
 																						
+Qwen 3 8B s70 SparseLLM  [1/3 seeds complete]  [crashed]																						wandb m7t963vv	/home/doyoonkim/models/sparsellm_8b_s70	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_8b_nostrip8192/runs/m7t963vv
+	avg5	math500				GPQA				IFEval				LCB				GSM8K				avg4 (no GPQA)
+seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy
+0	3.67	9.6	88.2	80.0	14673	0.0	99.49	100	16314	2.22	91.87	90.0	15111	0	99.63	-	32646	6.52	92.34	90.87	7675	4.58
+																						
 Qwen 3 8B s70 ALPS  [2/3 seeds complete]  [중복시드: 런 5개 / 시드 3개]																						wandb n3l54mf1 ik9zmgb9 wno7wec2 0y6e6wtx 8nnrbex5	/NHNHOME/log-postech/doyoonkim/models/qwen3_8b_alps_s70pct	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_8b_nostrip8192/runs/n3l54mf1 https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_8b_nostrip8192/runs/ik9zmgb9 https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_8b_nostrip8192/runs/wno7wec2 https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_8b_nostrip8192/runs/0y6e6wtx https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_8b_nostrip8192/runs/8nnrbex5
 	avg5	math500				GPQA				IFEval				LCB				GSM8K				avg4 (no GPQA)
 seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy
