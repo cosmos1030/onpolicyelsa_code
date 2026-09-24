@@ -72,10 +72,11 @@ seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accura
 mean	9.17	4.47	95.33	93.98	15796	0.34	98.15	98.89	16152	8.01	87.86	72.99	14651	1.12	98.26	53.17	32381	31.89	66.06	64.36	6191	11.37
 std	0.48	0.92	0.92	1.25	143	0.29	1.62	0.96	202	0.65	1.13	2.79	149	0.37	0.43	12.22	69	0.82	0.96	1.18	72	0.52
 																						
-Qwen 3 8B s60 SparseGPT selfgen  [1/3 seeds complete]  [finished/running]																						wandb 1uf66ape 8gvmt5je	/home1/doyoonkim/projects/elsa/models/qwen3_8b_sgpt_s60pct_n128_selfgenv3	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_8b_nostrip8192/runs/1uf66ape https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_8b_nostrip8192/runs/8gvmt5je
+Qwen 3 8B s60 SparseGPT selfgen  [1/3 seeds complete]																						wandb 1uf66ape 8gvmt5je	/home1/doyoonkim/projects/elsa/models/qwen3_8b_sgpt_s60pct_n128_selfgenv3	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_8b_nostrip8192/runs/1uf66ape https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_8b_nostrip8192/runs/8gvmt5je
 	avg5	math500				GPQA				IFEval				LCB				GSM8K				avg4 (no GPQA)
 seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy
 0	-	37.0	61.0	55.31	11787	-	-	-	-	8.13	85.03	72.67	14218	0.37	99.63	66.67	32669	67.4	29.57	24.85	4182	28.23
+1	-	34.6	63.0	55.41	12091	-	-	-	-	8.32	85.77	72.22	14318	0.0	100	100	32768	64.37	31.69	28.48	4335	26.82
 42	21.94	34.2	64.2	56.49	12205	3.54	89.9	89.39	15304	7.39	84.29	75.16	14117	0.0	100	100	32768	64.59	32.3	27.86	4368	26.55
 																						
 Qwen 3 8B s60 SparseLLM  [1/3 seeds complete]  [running]																						wandb 3c0n07cu	/home/doyoonkim/models/sparsellm_8b_s60	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_8b_nostrip8192/runs/3c0n07cu
@@ -131,10 +132,11 @@ seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accura
 mean	0.0	0.0	100.0	100.0	16384	0.0	100.0	100.0	16384	0.0	100.0	100.0	16384	0.0	100.0	-	32768	0.0	100.0	100.0	8192	0.0
 std	0.0	0.0	0.0	0.0	0	0.0	0.0	0.0	0	0.0	0.0	0.0	0	0.0	0.0	-	0	0.0	0.0	0.0	0	0.0
 																						
-Qwen 3 8B s70 SparseGPT selfgen  [1/3 seeds complete]  [finished/running]																						wandb ekfntxg2 sm6ykbxw	/home1/doyoonkim/projects/elsa/models/qwen3_8b_sgpt_s70pct_n128_selfgenv3	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_8b_nostrip8192/runs/ekfntxg2 https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_8b_nostrip8192/runs/sm6ykbxw
+Qwen 3 8B s70 SparseGPT selfgen  [1/3 seeds complete]																						wandb ekfntxg2 sm6ykbxw	/home1/doyoonkim/projects/elsa/models/qwen3_8b_sgpt_s70pct_n128_selfgenv3	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_8b_nostrip8192/runs/ekfntxg2 https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_8b_nostrip8192/runs/sm6ykbxw
 	avg5	math500				GPQA				IFEval				LCB				GSM8K				avg4 (no GPQA)
 seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy
 0	-	0.0	100	100	16384	-	-	-	-	0.0	100	100	16384	0	100	-	32768	0.0	100	100	8192	0.0
+1	-	0.0	100	100	16384	-	-	-	-	0.0	100	100	16384	-	-	-	-	-	-	-	-	-
 42	0.0	0.0	100	100	16384	0.0	100	100	16384	0.0	100	100	16384	0	100	-	32768	0.0	100	100	8192	0.0
 																						
 Qwen 3 8B s70 ALPS  [2/3 seeds complete]  [중복시드: 런 5개 / 시드 3개]																						wandb n3l54mf1 ik9zmgb9 wno7wec2 0y6e6wtx 8nnrbex5	/NHNHOME/log-postech/doyoonkim/models/qwen3_8b_alps_s70pct	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_8b_nostrip8192/runs/n3l54mf1 https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_8b_nostrip8192/runs/ik9zmgb9 https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_8b_nostrip8192/runs/wno7wec2 https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_8b_nostrip8192/runs/0y6e6wtx https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_8b_nostrip8192/runs/8nnrbex5
