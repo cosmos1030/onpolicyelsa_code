@@ -397,6 +397,11 @@ EXCLUDE_RUNS = {
     # 94pwg46m 의 체크포인트(20260902_173413)로 다시 돌린 값이 같은 런 이름
     # s3_1.7b_s60_ours 로 들어오므로, 섞이지 않게 옛 런을 빼둔다.
     'padwnv7g': '1.7B s60 Ours, rollout interval 8 로 학습한 체크포인트 (표준은 ro=32)',
+    # 정성 분석용으로 math500 만 다시 돌려 generation parquet 을 받은 런들이다.
+    # 수치는 기존 블록과 같고 벤치마크가 하나뿐이라 표에 들어가면 안 된다.
+    'bcad7t58': '4B s70 Ours, math500 only (generation 덤프용)',
+    'ogv0dzew': '4B dense, math500 only (generation 덤프용)',
+    '8dn55vnn': '4B dense seed1, math500 only (분기 대조군 덤프용)',
 }
 EXCL_DIR = os.path.join(os.path.dirname(HERE), 'tsv_excluded')
 

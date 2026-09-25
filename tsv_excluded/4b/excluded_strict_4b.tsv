@@ -1,7 +1,7 @@
 Qwen 3 4B s3_4b_dense_mathdet [EXCLUDED]  [0/3 seeds complete]																						wandb ogv0dzew	/home1/doyoonkim/.cache/huggingface/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_4b_nostrip8192/runs/ogv0dzew
 	avg5	math500				GPQA				IFEval				LCB				GSM8K				avg4 (no GPQA)
 seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy
-42	-	94.8	2.4	0.21	3873	-	-	-	-	-	-	-	-	-	-	-	-	-	-	-	-	-
+42	-	94.6	2.4	0.21	3873	-	-	-	-	-	-	-	-	-	-	-	-	-	-	-	-	-
 																						
 Qwen 3 4B s3_4b_dense_mathdet_s1 [EXCLUDED]  [0/3 seeds complete]																						wandb 8dn55vnn	/home1/doyoonkim/.cache/huggingface/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_4b_nostrip8192/runs/8dn55vnn
 	avg5	math500				GPQA				IFEval				LCB				GSM8K				avg4 (no GPQA)
@@ -11,14 +11,14 @@ seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accura
 Qwen 3 4B s70 ALPS+retrain (0.33/0.33/0.33) [EXCLUDED]																						wandb 0eqkqmbs qzhxc4h9	cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260913_204305	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_4b_nostrip8192/runs/0eqkqmbs https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_4b_nostrip8192/runs/qzhxc4h9
 	avg5	math500				GPQA				IFEval				LCB				GSM8K				avg4 (no GPQA)
 seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy
-0	43.41	73.6	24.4	4.89	7627	25.76	76.77	80.39	14561	29.76	62.48	45.96	11662	6.34	78.73	0	28158	81.58	16.98	9.29	4240	47.82
-1	43.45	73.4	25.8	8.45	7898	25.25	76.77	80.0	14595	29.39	61.55	42.14	11575	7.84	76.87	0	27701	81.35	19.41	12.21	4305	47.99
-42	43.5	73.4	25.6	6.81	7787	25.25	76.26	68.0	14632	30.31	62.11	46.95	11566	7.09	77.24	0	27814	81.43	19.03	12.2	4247	48.06
-mean	43.45	73.47	25.27	6.72	7771	25.42	76.6	76.13	14596	29.82	62.05	45.02	11601	7.09	77.61	0.0	27891	81.45	18.47	11.23	4264	47.96
-std	0.04	0.12	0.76	1.78	136	0.29	0.29	7.04	36	0.47	0.47	2.54	53	0.75	0.99	0.0	238	0.12	1.31	1.68	36	0.12
+0	34.29	70.0	24.4	4.89	7627	5.05	76.77	80.39	14561	16.08	62.48	45.96	11662	6.34	78.73	0	28158	74.0	16.98	9.29	4240	41.61
+1	33.7	67.2	25.8	8.45	7898	5.05	76.77	80.0	14595	17.01	61.55	42.14	11575	7.84	76.87	0	27701	71.42	19.41	12.21	4305	40.86
+42	34.23	68.4	25.6	6.81	7787	8.08	76.26	68.0	14632	16.08	62.11	46.95	11566	7.09	77.24	0	27814	71.49	19.03	12.2	4247	40.77
+mean	34.08	68.53	25.27	6.72	7771	6.06	76.6	76.13	14596	16.39	62.05	45.02	11601	7.09	77.61	0.0	27891	72.3	18.47	11.23	4264	41.08
+std	0.32	1.4	0.76	1.78	136	1.75	0.29	7.04	36	0.53	0.47	2.54	53	0.75	0.99	0.0	238	1.47	1.31	1.68	36	0.46
 																						
 Qwen 3 4B s70 s3_4b_s70_ours_mathdet [EXCLUDED]  [0/3 seeds complete]																						wandb bcad7t58	cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260901_080954	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_4b_nostrip8192/runs/bcad7t58
 	avg5	math500				GPQA				IFEval				LCB				GSM8K				avg4 (no GPQA)
 seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy
-42	-	77.6	20.6	5.93	7308	-	-	-	-	-	-	-	-	-	-	-	-	-	-	-	-	-
+42	-	73.0	20.6	5.93	7308	-	-	-	-	-	-	-	-	-	-	-	-	-	-	-	-	-
 																						

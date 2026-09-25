@@ -1,7 +1,7 @@
 block	wandb_id	run_name	state	seeds	checkpoint	train_run	ntp	kd	opd	rollout_interval	rollout_len	fixed_mask	pgd	kl_budget	tr	growth	mask_interval	steps	lr	seqlen
 Qwen 3 1.7B dense	6hrpz2d5	s3_1.7b_dense	finished	0,1,42	/home1/doyoonkim/.cache/huggingface/hub/models--Qwen--Qwen3-1.7B/snapshots/70d244cc86ccca08cf5af4e1e306ecf908b1ad5e															
 Qwen 3 1.7B s50 SparseGPT	o0k35icm	s3_1.7b_s50_sparsegpt	finished	0,1,42	cosmos1030/sparsegpt-qwen3-1.7b-s50pct															
-Qwen 3 1.7B s50 SparseGPT selfgen	b4jxvxcf	s3_1.7b_s50_sgpt_selfgen	running	0,1	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_sgpt_s50pct_n128_selfgenv3															
+Qwen 3 1.7B s50 SparseGPT selfgen	b4jxvxcf	s3_1.7b_s50_sgpt_selfgen	finished	0,1,42	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_sgpt_s50pct_n128_selfgenv3															
 Qwen 3 1.7B s50 SparseLLM	tmbmbjwb	s3_1.7b_sparsellm_s50	finished	0,1,42	/home/doyoonkim/models/sparsellm_17b_s50															
 Qwen 3 1.7B s50 ALPS	038q8gps	s3_1.7b_s50_alps	crashed	0,1,42	cosmos1030/alps-qwen3-1.7b-s50pct															
 Qwen 3 1.7B s50 ALPS	dqdxoshm	s3_1.7b_s50_alps	finished	0,1,42	cosmos1030/alps-qwen3-1.7b-s50pct															

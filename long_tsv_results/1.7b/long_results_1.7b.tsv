@@ -16,13 +16,14 @@ seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accura
 mean	37.38	57.13	100.0	100.0	16384	28.62	99.49	100.0	16337	24.95	94.89	91.85	15599	0.0	100.0	-	32768	76.19	98.36	98.14	8093	39.57
 std	1.03	2.86	0.0	0.0	0	2.1	0.51	0.0	64	0.64	1.08	0.21	155	0.0	0.0	-	0	0.0	0.42	0.5	29	0.84
 																						
-Qwen 3 1.7B s50 SparseGPT selfgen  [2/3 seeds complete]  [running]																						wandb b4jxvxcf	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_sgpt_s50pct_n128_selfgenv3	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_1.7b_nostrip8192/runs/b4jxvxcf
+Qwen 3 1.7B s50 SparseGPT selfgen																						wandb b4jxvxcf	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_sgpt_s50pct_n128_selfgenv3	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_1.7b_nostrip8192/runs/b4jxvxcf
 	avg5	math500				GPQA				IFEval				LCB				GSM8K				avg4 (no GPQA)
 seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy
 0	-	50.0	96.2	98.0	15771	-	-	-	-	24.4	90.57	88.64	14875	1.49	90.3	100	29590	68.01	79.83	81.72	6787	35.97
 1	-	50.4	97.0	99.21	15900	-	-	-	-	22.18	91.5	89.17	15020	0.37	87.31	100	28612	69.67	77.48	78.35	6644	35.66
-mean	-	50.2	96.6	98.6	15836	-	-	-	-	23.29	91.04	88.9	14948	0.93	88.81	100.0	29101	68.84	78.66	80.03	6716	35.82
-std	-	0.28	0.57	0.85	91	-	-	-	-	1.57	0.65	0.37	103	0.79	2.11	0.0	691	1.18	1.66	2.38	101	0.22
+42	-	49.8	96.8	99.2	15862	-	-	-	-	20.15	91.68	90.83	15047	2.24	89.93	66.67	29492	67.7	79.0	80.18	6743	34.97
+mean	-	50.07	96.67	98.8	15845	-	-	-	-	22.24	91.25	89.54	14981	1.37	89.18	88.89	29231	68.46	78.77	80.08	6725	35.53
+std	-	0.31	0.42	0.69	66	-	-	-	-	2.13	0.59	1.14	92	0.94	1.63	19.25	538	1.06	1.19	1.69	73	0.51
 																						
 Qwen 3 1.7B s50 SparseLLM																						wandb tmbmbjwb	/home/doyoonkim/models/sparsellm_17b_s50	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_1.7b_nostrip8192/runs/tmbmbjwb
 	avg5	math500				GPQA				IFEval				LCB				GSM8K				avg4 (no GPQA)
