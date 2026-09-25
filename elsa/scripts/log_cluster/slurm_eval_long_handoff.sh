@@ -142,6 +142,17 @@ case "$ARM" in
     [ -f "$MODEL/.download_complete" ] || MODEL=cosmos1030/gmp-8b-s70pct-alpssft-noopd-20260924-073338
     RUN=s3_8b_alpsretrainnoopd_s70_seed${SEED}
     PROJECT=reasoning_qwen3_8b_nostrip8192; SPARSITY=0.7 ;;
+  # Figure 3's 4B s80 ALPS+training baseline -- the arm the 18.15 vs 32.96
+  # claim is measured against, and it had NO seeds: the only attempt
+  # (wandb 1eseieot, n45) crashed with zero benchmarks and was never retried.
+  # Not to be confused with the _noopd sibling, which is a different
+  # checkpoint (kd5e vs kd3e) and already has seeds 0/1.
+  alpsretrain4b_s80_seed0|alpsretrain4b_s80_seed1|alpsretrain4b_s80_seed42)
+    SEED=${ARM#alpsretrain4b_s80_seed}
+    MODEL=/home/doyoonkim/models/alpsretrain_4b_s80
+    [ -f "$MODEL/.download_complete" ] || MODEL=cosmos1030/gmp-kd3e-1-4b-s80pct-lr1e-4_20260917_112952
+    RUN=s3_4b_s80_alpsretrain_seed${SEED}
+    PROJECT=reasoning_qwen3_4b_nostrip8192; SPARSITY=0.8 ;;
   *) echo "!! unknown arm '$ARM'" >&2; exit 1 ;;
 esac
 
@@ -189,6 +200,11 @@ echo "  host $(hostname)  job $SLURM_JOB_ID  gpu ${CUDA_VISIBLE_DEVICES:-?}"
 echo "  model $MODEL   seed $SEED"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 
+# GPU_UTIL is overridable because 0.90 is borderline for 8B: job 51407 died
+# with OUT_OF_MEMORY in lcb's 32768 window after 8h, while the same arm's
+# seeds 0/1 squeaked through. A comment inside the python command below breaks
+# its backslash continuation -- that is what turned job 51425 into a 56-second
+# "command not found" -- so notes stay up here.
 cd "$REPO/elsa"
 # ifeval's instruction checks import nltk at module import, so EVERY benchmark
 # dies if punkt is missing or half-written -- two jobs starting in the same
@@ -219,7 +235,7 @@ python scripts/eval_full.py \
     --method gmp --sparsity "$SPARSITY" \
     --profile long --seeds "$SEED" \
     "${EXTRA[@]}" \
-    --tp_size 1 --gpu_util 0.90 \
+    --tp_size 1 --gpu_util "${GPU_UTIL:-0.90}" \
     --skip_ppl --skip_zeroshot \
     --out_base "$OUT_LOCAL"
 echo "##### END ($?) #####"

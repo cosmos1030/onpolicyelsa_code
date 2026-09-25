@@ -48,7 +48,8 @@ resubmit () {
         norefresh4b_*|wokd4b_*|alpspgdtr_*|alpspgdnotr_*|alpsretrainnoopd_*|oursd003_*|cubicnopgd_*|norefresh8b_*)
             # job names here are already the launcher's arm names
             arm=$(echo "$jobname" | sed 's/_s\([0-9]\+\)$/_seed\1/; s/_seed_seed/_seed/')
-            sbatch -J "$jobname" --partition=A100,H200 --time=1-12:00:00 "$LAUNCH_HANDOFF" "$arm" ;;
+            sbatch --export=ALL,GPU_UTIL="${GPU_UTIL:-0.90}" -J "$jobname" \
+                --partition=A100,H200 --time=1-12:00:00 "$LAUNCH_HANDOFF" "$arm" ;;
         *) say "  unknown job name $jobname -- not resubmitting"; return 1 ;;
     esac
 }
@@ -87,6 +88,47 @@ while true; do
         else
             echo "$sz $now" > "$mark"
         fi
+        echo "$jname" > "$STATE/.job_$jid"
     done < <(squeue -u "$USER" -h -t RUNNING -o "%i %j")
+
+    # A job that DIES is invisible to the stall check above -- it simply leaves
+    # the queue. Job 51425 exited after 56s ("command not found" from a comment
+    # that broke a backslash continuation) and nothing noticed until a human
+    # read sacct. So judge every job once it is gone.
+    for mk in "$STATE"/.job_*; do
+        [ -e "$mk" ] || continue
+        jid=${mk##*/.job_}
+        squeue -h -j "$jid" -o "%T" 2>/dev/null | grep -qE "RUNNING|PENDING|CONFIGURING" && continue
+        jname=$(cat "$mk"); rm -f "$mk" "$STATE/.size_$jid"
+        st=$(sacct -X -j "$jid" -o State -n 2>/dev/null | head -1 | awk '{print $1}')
+        f=$(ls -t "$LOGS"/*_"$jid".out 2>/dev/null | head -1)
+        el=$(sacct -X -j "$jid" -o ElapsedRaw -n 2>/dev/null | head -1 | tr -d ' ')
+        bad=""
+        case "$st" in
+            FAILED|OUT_OF_MEMORY|NODE_FAIL|TIMEOUT|PREEMPTED) bad="$st" ;;
+            COMPLETED)
+                # "succeeded" in minutes with no benchmark is the empty-run
+                # failure: a broken command line, a truncated checkpoint, or a
+                # dataset that would not load. eval_full exits 0 either way.
+                if [ -n "$f" ] && [ "${el:-99999}" -lt 900 ] && ! grep -q "lighteval/math500:" "$f"; then
+                    bad="EMPTY(${el}s)"
+                fi ;;
+        esac
+        [ -z "$bad" ] && { say "done   $jid ($jname): $st"; continue; }
+        n=$(cat "$STATE/.retry_$jname" 2>/dev/null || echo 0)
+        if [ "$n" -ge 3 ]; then
+            say "FAILED $jid ($jname): $bad -- already retried $n times, giving up"
+            continue
+        fi
+        echo $((n+1)) > "$STATE/.retry_$jname"
+        say "FAILED $jid ($jname): $bad -- retry $((n+1))/3"
+        [ -n "$f" ] && tail -3 "$f" | tr '\r' '\n' | tail -1 | sed 's/^/    last: /'
+        # OOM is about the KV cache, so come back with less of the card.
+        if [ "$st" = "OUT_OF_MEMORY" ]; then
+            GPU_UTIL=0.85 resubmit "$jname" && say "  resubmitted $jname (gpu_util 0.85)"
+        else
+            resubmit "$jname" && say "  resubmitted $jname"
+        fi
+    done
     sleep "$INTERVAL"
 done

@@ -1,0 +1,9 @@
+Qwen 3 1.7B s60 Ours [EXCLUDED]																						wandb padwnv7g	cosmos1030/gmp-kd3e-1-s60pct-lr5e-5_20260901_121104	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_1.7b_nostrip8192/runs/padwnv7g
+	avg5	math500				GPQA				IFEval				LCB				GSM8K				avg4 (no GPQA)
+seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy
+0	42.74	65.8	28.8	5.47	7789	27.78	69.7	56.36	13576	37.71	49.35	26.96	9144	3.36	87.31	0	29697	79.08	10.69	3.16	3118	46.49
+1	42.41	65.6	27.4	4.27	7687	26.26	66.16	57.69	13476	39.56	46.58	28.5	8855	2.99	83.58	0	29215	77.63	10.46	1.95	3205	46.44
+42	43.77	66.2	29.0	8.46	7912	28.79	59.6	56.14	13056	39.93	48.98	29.17	9182	4.48	87.31	0	29680	79.45	9.63	2.58	3135	47.51
+mean	42.97	65.87	28.4	6.07	7796	27.61	65.15	56.73	13369	39.06	48.31	28.21	9060	3.61	86.07	0.0	29531	78.72	10.26	2.56	3152	46.81
+std	0.71	0.31	0.87	2.16	113	1.27	5.13	0.84	276	1.19	1.51	1.13	179	0.78	2.15	0.0	274	0.96	0.56	0.61	46	0.61
+																						
