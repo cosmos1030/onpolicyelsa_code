@@ -34,10 +34,25 @@ def _text(r):
     return str(t)
 
 
+def _find_parquet(d, seed):
+    """glob 대신 os.walk 를 쓴다. dense 모델의 details 경로에는
+    `.cache` 처럼 점으로 시작하는 디렉터리가 들어가는데 glob 의 `**` 는 그런
+    디렉터리를 건너뛰어 파일을 못 찾는다."""
+    want = f'seed{seed}' if seed is not None else None
+    hits = []
+    for root, _, files in os.walk(d):
+        for f in files:
+            if f.endswith('.parquet') and 'math500' in root:
+                hits.append(os.path.join(root, f))
+    if want:
+        pref = [p for p in hits if f'/{want}/' in p]
+        if pref:
+            return pref
+    return [p for p in hits if '/seed' not in p] or hits
+
+
 def load_gen(d, seed):
-    f = glob.glob(f'{d}/lighteval/seed{seed}/math500/**/*.parquet', recursive=True)
-    if not f:
-        f = glob.glob(f'{d}/lighteval/math500/**/*.parquet', recursive=True)
+    f = _find_parquet(d, seed)
     x = pd.read_parquet(f[0])
     out = []
     for _, row in x.iterrows():
