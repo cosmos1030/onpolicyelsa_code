@@ -317,7 +317,11 @@ def harvest(api, size, proj):
     for (sp, meth), g in merged.items():
         rows = [g['rows'][s] for s in sorted(g['rows'], key=lambda x: (x != '0', x != '1', x))]
         label = f'Qwen 3 {size.upper()} ' + (f's{sp} ' if sp else '') + meth
-        full = [x for x in rows if x[1] != '-']
+        # 완료 판정은 avg5(x[1])가 아니라 avg4(x[-1]) 로 한다. 2026-09-23 부터 GPQA 를
+        # 돌리지 않아 avg5 가 항상 '-' 이고, 그대로 두면 네 과제가 다 채워진 블록도
+        # "[0/3 seeds complete]" 로 보여 이미 끝난 arm 을 다시 돌릴 위험이 있다.
+        # avg4 는 네 과제가 모두 있을 때만 숫자가 되므로 판정 기준으로 적절하다.
+        full = [x for x in rows if x[-1] != '-']
         want = max(g['want'], len(rows))
         if len(full) < 3:
             label += f'  [{len(full)}/3 seeds complete]'
