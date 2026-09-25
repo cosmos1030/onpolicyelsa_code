@@ -8,8 +8,8 @@ Qwen 3 8B s50 SparseLLM	5p9kg9au	s3_8b_sparsellm_s50	failed	0,1,42	/home/doyoonk
 Qwen 3 8B s50 SparseLLM	ya6gvt77	s3_8b_sparsellm_s50	finished	0,1,42	/home/doyoonkim/models/sparsellm_8b_s50															
 Qwen 3 8B s50 ALPS	dcdjjxif	s3_8b_alps_s50	finished	0,1,42	/NHNHOME/log-postech/doyoonkim/models/qwen3_8b_alps_s50pct															
 Qwen 3 8B s50 ALPS	i2js42zd	s3_8b_alps_s50_seeds01	finished	0,1,42	/home/doyoonkim/models/alps_s50															
-Qwen 3 8B s50 ALPS selfgen	ipdx9nqz	s3_8b_s50_alps_selfgen	finished	0,42	/home1/doyoonkim/projects/elsa/models/qwen3_8b_selfgen_v3_alps_s50pct															
-Qwen 3 8B s50 ALPS selfgen	dxuwhysw	s3_8b_s50_alps_selfgen_s01	running	0,42	cosmos1030/alps-selfgenv3-qwen3-8b-s50pct															
+Qwen 3 8B s50 ALPS selfgen	ipdx9nqz	s3_8b_s50_alps_selfgen	finished	0,1,42	/home1/doyoonkim/projects/elsa/models/qwen3_8b_selfgen_v3_alps_s50pct															
+Qwen 3 8B s50 ALPS selfgen	dxuwhysw	s3_8b_s50_alps_selfgen_s01	finished	0,1,42	cosmos1030/alps-selfgenv3-qwen3-8b-s50pct															
 Qwen 3 8B s50 ALPS+retrain	re907ejb	s3_8b_alpsretrain_s50	finished	0,1,42	cosmos1030/gmp-kd3e-1-s50pct-lr5e-5_20260908_053513	tb09czsq	0.33	0.33	0.33	-1	512	True	False	0.01	False	cubic	32	2048	None	8192
 Qwen 3 8B s50 ALPS+retrain	lqfpuzwt	s3_8b_alpsretrain_s50_seeds01	finished	0,1,42	/home/doyoonkim/models/alpsretrain_s50															
 Qwen 3 8B s50 Ours	2ddtwf5t	s3_8b_ours_s50	finished	0,1,42	cosmos1030/gmp-kd3e-1-s50pct-lr5e-5_20260907_210125	roq1vwuw	0.33	0.33	0.33	32	512	False	True	0.01	False	cubic	32	2048	None	8192
@@ -33,7 +33,7 @@ Qwen 3 8B s70 SparseGPT	aumwn31v	s3_8b_sparsegpt_s70_seed0	finished	0,1,42	cosmo
 Qwen 3 8B s70 SparseGPT	c8v1gapa	s3_8b_sparsegpt_s70_seed1	finished	0,1,42	cosmos1030/qwen3-8b-sgpt-s70pct-ot80fw20															
 Qwen 3 8B s70 SparseGPT selfgen	ekfntxg2	s3_8b_s70_sgpt_selfgen	finished	0,1,42	/home1/doyoonkim/projects/elsa/models/qwen3_8b_sgpt_s70pct_n128_selfgenv3															
 Qwen 3 8B s70 SparseGPT selfgen	sm6ykbxw	s3_8b_s70_sgpt_selfgen_s01	finished	0,1,42	/home/doyoonkim/models/selfgen_8b_sparsegpt_s70															
-Qwen 3 8B s70 SparseGPT selfgen	wwbamet4	s3_8b_s70_sgpt_selfgen_s01	running	0,1,42	/home/doyoonkim/models/selfgen_8b_sparsegpt_s70															
+Qwen 3 8B s70 SparseGPT selfgen	wwbamet4	s3_8b_s70_sgpt_selfgen_s01	finished	0,1,42	/home/doyoonkim/models/selfgen_8b_sparsegpt_s70															
 Qwen 3 8B s70 SparseLLM	m7t963vv	s3_8b_sparsellm_s70	crashed	0,1,42	/home/doyoonkim/models/sparsellm_8b_s70															
 Qwen 3 8B s70 SparseLLM	oq0rv67v	s3_8b_sparsellm_s70	finished	0,1,42	/home/doyoonkim/models/sparsellm_8b_s70															
 Qwen 3 8B s70 SparseLLM	vz43g3ny	s3_8b_sparsellm_s70	finished	0,1,42	/home/doyoonkim/models/sparsellm_8b_s70															
@@ -56,6 +56,7 @@ Qwen 3 8B s70 Ours w/o OPD (0.5/0.5/0)	tlfo1110	s3_8b_ours_s70_noopd_seeds01	fin
 Qwen 3 8B s70 Ours w/o TR (one-step) + w/o OPD	8maxkce2	s3_8b_s70_jumpnoopd_seed1	finished	0,1,42	/home/doyoonkim/models/jumpnoopd_8b_s70															
 Qwen 3 8B s70 Ours w/o TR (one-step) + w/o OPD	tzph5phl	s3_8b_s70_jumpnoopd_seed0	finished	0,1,42	/home/doyoonkim/models/jumpnoopd_8b_s70															
 Qwen 3 8B s70 Ours w/o TR (one-step) + w/o OPD	mlwyjfft	s3_8b_s70_jumpnoopd_seed42	finished	0,1,42	/home/doyoonkim/models/jumpnoopd_8b_s70															
+Qwen 3 8B s70 Ours w/o TR (one-step) + w/o OPD	qw5b4lm3	s3_8b_s70_jumpnoopd_seed42	finished	0,1,42	/home/doyoonkim/models/jumpnoopd_8b_s70															
 Qwen 3 8B s70 Ours w/o rollout refresh	qewhu2u1	s3_8b_s70_norefresh	finished	0,1,42	cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260905_081916	n69llpef	0.33	0.33	0.33	4096	512	False	True	0.02	False	cubic	32	2048	None	8192
 Qwen 3 8B s70 Ours w/o rollout refresh	a275unvw	s3_8b_s70_norefresh_seed0	finished	0,1,42	cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260905_081916	n69llpef	0.33	0.33	0.33	4096	512	False	True	0.02	False	cubic	32	2048	None	8192
 Qwen 3 8B s70 Ours w/o rollout refresh	gyljf5mc	s3_8b_s70_norefresh_s01	finished	0,1,42	cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260905_081916	n69llpef	0.33	0.33	0.33	4096	512	False	True	0.02	False	cubic	32	2048	None	8192
