@@ -916,5 +916,41 @@
   "steps": 2048,
   "lr": null,
   "seqlen": 8192
+ },
+ "20260901_071402": {
+  "train_run": "hcd9uxpn",
+  "train_name": "gmp_s60pct_onpol_lam0.33_tok512_lr5e-05_2048steps_prune0pct_pgd_grow2target_klbu",
+  "ntp": 0.33,
+  "kd": 0.33,
+  "opd": 0.33,
+  "rollout_interval": 32,
+  "rollout_len": 512,
+  "fixed_mask": false,
+  "pgd": true,
+  "kl_budget": 0.02,
+  "tr": false,
+  "growth": "cubic",
+  "mask_interval": 32,
+  "steps": 2048,
+  "lr": null,
+  "seqlen": 8192
+ },
+ "20260926_153440": {
+  "train_run": "qh0knzoz",
+  "train_name": "gmp_s70pct_kd0.5_lr5e-05_2048steps_alpssft_s70pct_lr5e-5_ot3_fineweb_40k_qwen3_n",
+  "ntp": 0.5,
+  "kd": 0.5,
+  "opd": 0,
+  "rollout_interval": 32,
+  "rollout_len": 512,
+  "fixed_mask": true,
+  "pgd": false,
+  "kl_budget": 0.01,
+  "tr": false,
+  "growth": "cubic",
+  "mask_interval": 32,
+  "steps": 2048,
+  "lr": null,
+  "seqlen": 8192
  }
 }

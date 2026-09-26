@@ -20,6 +20,9 @@ Qwen 3 1.7B s60 ALPS selfgen	f3xn45oa	s3_1.7b_s60_alps_selfgen	finished	0,1,42	/
 Qwen 3 1.7B s60 ALPS+retrain	hzxoxhy6	s3_1.7b_s60_alpsretrain	finished	0,1,42	cosmos1030/gmp-kd3e-1-s60pct-lr1e-4_20260811_213610	53uwdeop	0.33	0.33	0.33	1	512	True	False	None	False	None	32	2048	None	8192
 Qwen 3 1.7B s60 Ours	yee9525e	s3_1.7b_s60_ours	finished	0,1,42	cosmos1030/gmp-kd3e-1-s60pct-lr5e-5_20260902_173413	94pwg46m	0.33	0.33	0.33	32	512	False	True	0.01	False	cubic	32	2048	None	8192
 Qwen 3 1.7B s60 Ours w/o OPD (0.5/0.5/0)	p6wbr5vh	s3_1.7b_s60_noopd	finished	0,1,42	cosmos1030/gmp-kd5e-1-s60pct-lr5e-5_20260916_225506	jo0mwm4z	0.5	0.5	0	32	512	False	True	0.01	False	cubic	32	2048	None	8192
+Qwen 3 1.7B s60 s3_1.7b_s60_ours_klb002_seed0	9c2imlap	s3_1.7b_s60_ours_klb002_seed0	finished	0	cosmos1030/gmp-kd3e-1-s60pct-lr5e-5_20260901_071402	hcd9uxpn	0.33	0.33	0.33	32	512	False	True	0.02	False	cubic	32	2048	None	8192
+Qwen 3 1.7B s60 s3_1.7b_s60_ours_klb002_seed1	08ybxvjf	s3_1.7b_s60_ours_klb002_seed1	finished	1	cosmos1030/gmp-kd3e-1-s60pct-lr5e-5_20260901_071402	hcd9uxpn	0.33	0.33	0.33	32	512	False	True	0.02	False	cubic	32	2048	None	8192
+Qwen 3 1.7B s60 s3_1.7b_s60_ours_klb002_seed42	2risr2ww	s3_1.7b_s60_ours_klb002_seed42	finished	42	cosmos1030/gmp-kd3e-1-s60pct-lr5e-5_20260901_071402	hcd9uxpn	0.33	0.33	0.33	32	512	False	True	0.02	False	cubic	32	2048	None	8192
 Qwen 3 1.7B s70 SparseGPT	l8vhz473	s3_1.7b_s70_sparsegpt	finished	0,1,42	cosmos1030/sparsegpt-qwen3-1.7b-s70pct															
 Qwen 3 1.7B s70 SparseGPT selfgen	7k37ndvr	s3_1.7b_s70_sgpt_selfgen	crashed	0,1,42	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_sgpt_s70pct_n128_selfgenv3															
 Qwen 3 1.7B s70 SparseGPT selfgen	yi2emek3	s3_1.7b_s70_sgpt_selfgen_seed42	finished	0,1,42	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_sgpt_s70pct_n128_selfgenv3															
@@ -32,4 +35,5 @@ Qwen 3 1.7B s70 ALPS+retrain	jnh2a153	s3_1.7b_s70_alpsretrain	finished	0,1,42	co
 Qwen 3 1.7B s70 Ours	am3govuj	s3_1.7b_s70_ours	finished	0,1,42	cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260901_084730	q9f33zl7	0.33	0.33	0.33	32	512	False	True	0.02	False	cubic	32	2048	None	8192
 Qwen 3 1.7B s70 Ours w/o OPD (0.5/0.5/0)	hlnkd7jt	s3_1.7b_s70_noopd	finished	0,1,42	cosmos1030/gmp-kd5e-1-s70pct-lr1e-4_20260915_124804	f5d0b6pf	0.5	0.5	0	32	512	False	True	0.02	False	cubic	32	2048	None	8192
 Qwen 3 1.7B s70 Cubic schedule, no PGD (pace-matched)	du55q0hb	s3_1.7b_s70_cubicnopgd	finished	0,1,42	cosmos1030/gmp-kd3e-1-1.7b-s70pct-lr1e-4_20260923_062543	nxry83x2	0.33	0.33	0.33	32	512	False	False	0.02	False	cubic	32	2048	None	8192
+Qwen 3 1.7B s70 gmp_s70pct_kd0.5_lr5e-05_2048steps_alpssft_s70pct_lr5e-5_ot3_fineweb_40k_qwen3_nostrip_8192	qh0knzoz	gmp_s70pct_kd0.5_lr5e-05_2048steps_alpssft_s70pct_lr5e-5_ot3_fineweb_4	finished	42	cosmos1030/gmp-kd5e-1-1.7b-s70pct-lr5e-5_20260926_153440	qh0knzoz	0.5	0.5	0	32	512	True	False	0.01	False	cubic	32	2048	None	8192
 Qwen 3 1.7B s80 Ours	8nqwbomy	s3_1.7b_s80_ours	finished	0,1,42	cosmos1030/gmp-kd3e-1-s80pct-lr1e-4_20260916_044553	hz4kw1sr	0.33	0.33	0.33	32	512	False	True	0.02	False	cubic	32	2048	None	8192
