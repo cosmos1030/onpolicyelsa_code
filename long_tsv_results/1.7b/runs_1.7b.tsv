@@ -32,6 +32,8 @@ Qwen 3 1.7B s70 SparseLLM	fd8bhrdh	s3_1.7b_s70_sparsellm_seed42	finished	0,1,42	
 Qwen 3 1.7B s70 ALPS	0751lhxv	s3_1.7b_s70_alps	finished	0,1,42	cosmos1030/alps-qwen3-1.7b-s70pct															
 Qwen 3 1.7B s70 ALPS selfgen	pbroz1nr	s3_1.7b_s70_alps_selfgen	finished	0,1,42	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_alps_selfgen_v3_s70pct															
 Qwen 3 1.7B s70 ALPS+retrain	jnh2a153	s3_1.7b_s70_alpsretrain	finished	0,1,42	cosmos1030/gmp-kd3e-1-s70pct-lr5e-5_20260811_231644	zexfluvb	0.33	0.33	0.33	1	512	True	False	None	False	None	32	2048	None	8192
+Qwen 3 1.7B s70 ALPS+retrain w/o OPD (0.5/0.5/0)	ln50iaul	s3_1.7b_s70_alpsretrain_2term_seed1	finished	42	/home1/doyoonkim/projects/elsa/models/gmp_1.7b_s70pct_lr5e-05_20260926_034710_p3335307															
+Qwen 3 1.7B s70 ALPS+retrain w/o OPD (0.5/0.5/0)	vbhs2no7	s3_1.7b_s70_alpsretrain_2term_seed0	finished	42	/home1/doyoonkim/projects/elsa/models/gmp_1.7b_s70pct_lr5e-05_20260926_034710_p3335307															
 Qwen 3 1.7B s70 Ours	am3govuj	s3_1.7b_s70_ours	finished	0,1,42	cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260901_084730	q9f33zl7	0.33	0.33	0.33	32	512	False	True	0.02	False	cubic	32	2048	None	8192
 Qwen 3 1.7B s70 Ours w/o OPD (0.5/0.5/0)	hlnkd7jt	s3_1.7b_s70_noopd	finished	0,1,42	cosmos1030/gmp-kd5e-1-s70pct-lr1e-4_20260915_124804	f5d0b6pf	0.5	0.5	0	32	512	False	True	0.02	False	cubic	32	2048	None	8192
 Qwen 3 1.7B s70 Cubic schedule, no PGD (pace-matched)	du55q0hb	s3_1.7b_s70_cubicnopgd	finished	0,1,42	cosmos1030/gmp-kd3e-1-1.7b-s70pct-lr1e-4_20260923_062543	nxry83x2	0.33	0.33	0.33	32	512	False	False	0.02	False	cubic	32	2048	None	8192
