@@ -72,6 +72,9 @@ Qwen 3 8B s70 gmp_s70pct_kd0.5_lr0.0001_2048steps_alpssft8b_s70pct_lr1e-4_ot3_fi
 Qwen 3 8B s70 s3_8b_s70_ours_klb002	r3rftcwk	s3_8b_s70_ours_klb002	failed	0,1,42	cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260907_073958	uywgha9p	0.33	0.33	0.33	32	512	False	True	0.02	False	cubic	32	2048	None	8192
 Qwen 3 8B s80 SparseLLM	12qjsvkl	s3_8b_s80_sparsellm	finished	0,1,42	cosmos1030/sparsellm-s80pct_20260903_020850															
 Qwen 3 8B s80 ALPS	bdqripdh	s3_8b_s80_alps	finished	0,1,42	cosmos1030/alps-qwen3-8b-s80pct															
+Qwen 3 8B s80 ALPS selfgen	hr1wltyz	s3_8b_s80_alps_selfgen_seed1	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_8b_selfgen_v3_alps_s80pct															
+Qwen 3 8B s80 ALPS selfgen	ndbj6m16	s3_8b_s80_alps_selfgen_seed0	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_8b_selfgen_v3_alps_s80pct															
+Qwen 3 8B s80 ALPS selfgen	tkbhy5k5	s3_8b_s80_alps_selfgen_seed42	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_8b_selfgen_v3_alps_s80pct															
 Qwen 3 8B s80 ALPS+retrain (0.33/0.33/0.33)	9yyo7mmo	gmp_s80pct_onpol_lam0.33_tok512_lr0.0001_2048steps_alpssft8b_s80pct_lr	finished	0,1,42	cosmos1030/gmp-kd3e-1-8b-s80pct-lr1e-4_20260917_121924	9yyo7mmo	0.33	0.33	0.33	32	512	True	False	0.01	False	cubic	32	2048	None	8192
 Qwen 3 8B s80 ALPS+retrain (0.33/0.33/0.33)	q10oyuk4	s3_8b_alpsretrain033_s80_seed0	finished	0,1,42	/NHNHOME/log-postech/doyoonkim/models/gmp_8b_s80pct_lr0.0001_onpol_lmda0.33_20260917_054518_p394552															
 Qwen 3 8B s80 ALPS+retrain (0.33/0.33/0.33)	873d63mf	s3_8b_alpsretrain033_s80_seed0	finished	0,1,42	/NHNHOME/log-postech/doyoonkim/models/gmp_8b_s80pct_lr0.0001_onpol_lmda0.33_20260917_054518_p394552															
