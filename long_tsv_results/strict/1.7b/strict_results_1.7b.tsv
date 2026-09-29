@@ -99,6 +99,11 @@ Qwen 3 1.7B s50 gmp_s50pct_onpol_lam0.33_tok512_lr0.0001_2048steps_2to4_alps24sc
 seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy
 42	35.97	62.8	27.4	7.37	7872	6.57	75.76	74.51	14634	29.94	41.4	26.36	8542	7.09	72.76	0	27873	73.46	15.92	3.1	4020	43.32
 																						
+Qwen 3 1.7B s50 gmp_s50pct_onpol_lam0.33_tok512_lr0.0001_2048steps_2to4_alpssft_n24_lr1e-4_ot3_fineweb_40k_qwen3_nostrip_8192  [1/3 seeds complete]																						wandb uiyeocv7	cosmos1030/gmp-kd3e-1-1.7b-n24-s50pct-lr1e-4_20260930_072819	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_1.7b_nostrip8192/runs/uiyeocv7
+	avg5	math500				GPQA				IFEval				LCB				GSM8K				avg4 (no GPQA)
+seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy
+42	35.66	61.2	27.8	6.99	7954	7.07	79.29	77.05	14748	30.31	41.96	22.27	8693	8.21	74.25	0	27567	71.49	17.82	6.45	4158	42.8
+																						
 Qwen 3 1.7B s60 SparseGPT																						wandb ovo16qrk	cosmos1030/sparsegpt-qwen3-1.7b-s60pct	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_1.7b_nostrip8192/runs/ovo16qrk
 	avg5	math500				GPQA				IFEval				LCB				GSM8K				avg4 (no GPQA)
 seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy
