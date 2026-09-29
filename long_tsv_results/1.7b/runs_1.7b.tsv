@@ -14,7 +14,7 @@ Qwen 3 1.7B s50 ALPS+retrain	cbjuilvr	s3_1.7b_s50_alpsretrain	finished	0,1,42	co
 Qwen 3 1.7B s50 Ours	7fh2glxs	s3_1.7b_s50_ours	crashed	0,1,42	cosmos1030/gmp-kd3e-1-s50pct-lr5e-5_20260901_071337	3wvt5gme	0.33	0.33	0.33	32	512	False	True	0.02	False	cubic	32	2048	None	8192
 Qwen 3 1.7B s50 Ours	gm2zl3ol	s3_1.7b_s50_ours	finished	0,1,42	cosmos1030/gmp-kd3e-1-s50pct-lr5e-5_20260901_071337	3wvt5gme	0.33	0.33	0.33	32	512	False	True	0.02	False	cubic	32	2048	None	8192
 Qwen 3 1.7B s50 Ours w/o OPD (0.5/0.5/0)	0z090sz5	s3_1.7b_s50_noopd	finished	0,1,42	cosmos1030/gmp-kd5e-1-s50pct-lr5e-5_20260916_221150	cnvme56d	0.5	0.5	0	32	512	False	True	0.02	False	cubic	32	2048	None	8192
-Qwen 3 1.7B s50 gmp_s50pct_onpol_lam0.33_tok512_lr0.0001_2048steps_2to4_alps24scout_n24_lr1e-4_ot3_fineweb_40k_qwen3_nostrip_8192	au400obq	gmp_s50pct_onpol_lam0.33_tok512_lr0.0001_2048steps_2to4_alps24scout_n2	running	42																
+Qwen 3 1.7B s50 gmp_s50pct_onpol_lam0.33_tok512_lr0.0001_2048steps_2to4_alps24scout_n24_lr1e-4_ot3_fineweb_40k_qwen3_nostrip_8192	au400obq	gmp_s50pct_onpol_lam0.33_tok512_lr0.0001_2048steps_2to4_alps24scout_n2	finished	42	cosmos1030/gmp-kd3e-1-1.7b-n24-s50pct-lr1e-4_20260930_033246	au400obq	0.33	0.33	0.33	32	512	False	True	0.02	False	cubic	32	2048	None	8192
 Qwen 3 1.7B s60 SparseGPT	ovo16qrk	s3_1.7b_s60_sparsegpt	finished	0,1,42	cosmos1030/sparsegpt-qwen3-1.7b-s60pct															
 Qwen 3 1.7B s60 SparseGPT selfgen	0gjczpqk	s3_1.7b_s60_sgpt_selfgen	crashed	0,1,42	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_sgpt_s60pct_n128_selfgenv3															
 Qwen 3 1.7B s60 SparseGPT selfgen	nwqk6e7z	s3_1.7b_s60_sgpt_selfgen_seed42	finished	0,1,42	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_sgpt_s60pct_n128_selfgenv3															
