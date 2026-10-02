@@ -1078,5 +1078,41 @@
   "steps": 2048,
   "lr": null,
   "seqlen": 8192
+ },
+ "20261002_153016": {
+  "train_run": "aprxceyq",
+  "train_name": "gmp_s50pct_onpol_lam0.33_tok512_lr0.0001_2048steps_2to4_alps24scout_n24_lr1e-4_t",
+  "ntp": 0.33,
+  "kd": 0.33,
+  "opd": 0.33,
+  "rollout_interval": 32,
+  "rollout_len": 512,
+  "fixed_mask": false,
+  "pgd": true,
+  "kl_budget": 0.02,
+  "tr": false,
+  "growth": "cubic",
+  "mask_interval": 32,
+  "steps": 2048,
+  "lr": null,
+  "seqlen": 8192
+ },
+ "20261002_160223": {
+  "train_run": "ullepzlb",
+  "train_name": "gmp_s50pct_onpol_lam0.33_tok512_lr0.0001_2048steps_2to4_alps24scout_n24_lr1e-4_t",
+  "ntp": 0.33,
+  "kd": 0.33,
+  "opd": 0.33,
+  "rollout_interval": 32,
+  "rollout_len": 512,
+  "fixed_mask": false,
+  "pgd": true,
+  "kl_budget": 0.02,
+  "tr": false,
+  "growth": "cubic",
+  "mask_interval": 32,
+  "steps": 2048,
+  "lr": null,
+  "seqlen": 8192
  }
 }
