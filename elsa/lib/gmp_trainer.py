@@ -462,6 +462,33 @@ def _pgd_topk_mask_from_vals(vals, lo, hi, k, dev, use_fsdp, want_highest):
         import torch.distributed as _dist
     if k <= 0:
         return {n: torch.zeros_like(v, dtype=torch.bool) for n, v in vals.items()}
+    import os as _os_topk
+    if (not use_fsdp and k <= _PGD_EXACT_TOPK_MAX_K
+            and _os_topk.environ.get('GMP_PGD_TOPK_BISECT') != '1'):
+        # Exact k-th value straight from the data instead of 64 bisection
+        # passes. The bisection below costs 64 x (one compare+sum per param
+        # tensor + a .item() sync) = ~1.5s at 1.7B, and a pgd_kl_budget event
+        # runs it 4 times (two KL probes, final prune, revive) -- measured as
+        # the bulk of the +8.9s/event that made SCOUT 49 min slower than
+        # ALPS+training over 2048 steps (wallclock_A vs _B, 2026-10-07). After
+        # the target sparsity is reached k is a few thousand, so the k
+        # extreme values of each tensor (torch.topk) contain the global k
+        # extreme ones, and the k-th of their concatenation IS the global k-th.
+        # That is the value the bisection converges to (its bracket width,
+        # ~100/2**64, is far below fp32 spacing), so `sel` and the tie block
+        # below see the same threshold. Large k (the early growth phase, k in
+        # the millions) and FSDP (per-rank shards) keep the bisection.
+        # GMP_PGD_TOPK_BISECT=1 forces the old path for A/B checks.
+        _parts = [torch.topk(v.reshape(-1), min(k, v.numel()), largest=want_highest, sorted=False).values
+                  for v in vals.values()]
+        _cat = torch.cat(_parts)
+        del _parts
+        _kk = min(k, _cat.numel())
+        _kth = torch.kthvalue(_cat, (_cat.numel() - _kk + 1) if want_highest else _kk).values
+        del _cat
+        thr = float(_kth.item())
+        sel = {n: ((v >= thr) if want_highest else (v <= thr)) for n, v in vals.items()}
+        return _pgd_thin_tie_cluster(vals, sel, thr, k, dev, use_fsdp)
     cnt_t = torch.zeros(1, dtype=torch.long, device=dev)
     for _ in range(64):
         mid = (lo + hi) / 2.0
@@ -509,6 +536,21 @@ def _pgd_topk_mask_from_vals(vals, lo, hi, k, dev, use_fsdp, want_highest):
     # isolating this tie-breaking block's own wall-clock cost from
     # everything else): GMP_PGD_SKIP_TIEBREAK=1 reverts to the old
     # all-or-nothing behavior with none of the extra tensor ops below.
+    return _pgd_thin_tie_cluster(vals, sel, thr, k, dev, use_fsdp)
+
+
+# Largest k served by the exact torch.topk path in _pgd_topk_mask_from_vals.
+# Per-tensor topk is cheap at a few thousand but its output (n_tensors x k
+# values) and sort cost grow with k; above this the 64-pass bisection is used.
+_PGD_EXACT_TOPK_MAX_K = 1 << 18
+
+
+def _pgd_thin_tie_cluster(vals, sel, thr, k, dev, use_fsdp):
+    """Tie-breaking tail of _pgd_topk_mask_from_vals (see the comment above its
+    call site there): thin the exact-`thr` tie cluster at random so the
+    selected count lands near k instead of all-or-nothing on the tie."""
+    if use_fsdp:
+        import torch.distributed as _dist
     import os as _os_tiebreak
     if _os_tiebreak.environ.get('GMP_PGD_SKIP_TIEBREAK') == '1':
         return sel
