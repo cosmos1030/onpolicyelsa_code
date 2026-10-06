@@ -67,7 +67,7 @@ class SparseGPT_OPT:
         self.H += inp.matmul(inp.t())
 
     def fasterprune(
-        self, sparsity, prunen=0, prunem=0, blocksize=128, percdamp=.01
+        self, sparsity, prunen=0, prunem=0, blocksize=128, percdamp=.01, groupsize=-1
     ):
         W = self.layer.weight.data.clone()
         if isinstance(self.layer, nn.Conv2d):
@@ -76,7 +76,14 @@ class SparseGPT_OPT:
             W = W.t()
         W = W.float()
 
-        if hasattr(self, 'quantizer'):
+        # groupsize > 0: re-derive the scale/zero every `groupsize` input
+        # columns (standard GPTQ group-wise quantization) instead of once per
+        # output channel for the whole row. At 2-3 bits this is not a detail --
+        # one scale per row has to cover the row's entire dynamic range, so a
+        # 2-bit row collapses to {-s, 0, +s}. -1 keeps the original
+        # per-output-channel behaviour, so every existing SparseLLM/SparseGPT
+        # baseline run is bit-identical.
+        if hasattr(self, 'quantizer') and groupsize <= 0:
             if not self.quantizer.ready():
                 self.quantizer.find_params(W, weight=True)
 
@@ -132,6 +139,9 @@ class SparseGPT_OPT:
                 q[mask1[:, i]] = 0
 
                 if hasattr(self, 'quantizer'):
+                    if groupsize > 0 and ((i1 + i) % groupsize == 0):
+                        self.quantizer.find_params(
+                            W[:, (i1 + i):(i1 + i + groupsize)], weight=True)
                     q = quantize(
                         q.unsqueeze(1), self.quantizer.scale, self.quantizer.zero, self.quantizer.maxq
                     ).flatten()
@@ -219,7 +229,7 @@ class SparseGPT_LlaMA:
         self.H += inp.matmul(inp.t())
 
     def fasterprune(
-        self, sparsity, prunen=0, prunem=0, blocksize=128, percdamp=.01
+        self, sparsity, prunen=0, prunem=0, blocksize=128, percdamp=.01, groupsize=-1
     ):
         W = self.layer.weight.data.clone()
         if isinstance(self.layer, nn.Conv2d):
@@ -228,7 +238,14 @@ class SparseGPT_LlaMA:
             W = W.t()
         W = W.float()
 
-        if hasattr(self, 'quantizer'):
+        # groupsize > 0: re-derive the scale/zero every `groupsize` input
+        # columns (standard GPTQ group-wise quantization) instead of once per
+        # output channel for the whole row. At 2-3 bits this is not a detail --
+        # one scale per row has to cover the row's entire dynamic range, so a
+        # 2-bit row collapses to {-s, 0, +s}. -1 keeps the original
+        # per-output-channel behaviour, so every existing SparseLLM/SparseGPT
+        # baseline run is bit-identical.
+        if hasattr(self, 'quantizer') and groupsize <= 0:
             if not self.quantizer.ready():
                 self.quantizer.find_params(W, weight=True)
 
@@ -284,6 +301,9 @@ class SparseGPT_LlaMA:
                 q[mask1[:, i]] = 0
 
                 if hasattr(self, 'quantizer'):
+                    if groupsize > 0 and ((i1 + i) % groupsize == 0):
+                        self.quantizer.find_params(
+                            W[:, (i1 + i):(i1 + i + groupsize)], weight=True)
                     q = quantize(
                         q.unsqueeze(1), self.quantizer.scale, self.quantizer.zero, self.quantizer.maxq
                     ).flatten()

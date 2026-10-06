@@ -41,12 +41,15 @@ import re
 
 import numpy as np
 
-NICE = {"ours:s70": ("SCOUT", "#0f8b7e"),
+# 라벨은 논문 본문 표기를 따른다. 예전에는 "ALPS+retrain" 이라 적고 Figure 7
+# 캡션에서 "본문의 ALPS+training 을 가리킨다" 고 따로 설명해야 했다.
+# 색은 Figure 3 범례와 맞춘다 (SCOUT 빨강, ALPS+training 파랑).
+NICE = {"ours:s70": ("SCOUT", "#d1332e"),
         "norefresh:s70": ("SCOUT w/o rollout refresh", "#6a51a3"),
-        "noopd55:s70": ("SCOUT w/o OPD", "#54A24B"),
-        "kdonly:s70": ("SCOUT w/o OPD", "#54A24B"),
+        "noopd55:s70": ("SCOUT w/o OPD", "#f0a13a"),
+        "kdonly:s70": ("SCOUT w/o OPD", "#f0a13a"),
         "opdonly:s70": ("OPD only", "#b08600"),
-        "alps_sft:s70": ("ALPS+retrain", "#b08600")}
+        "alps_sft:s70": ("ALPS+training", "#2e75b6")}
 
 
 def main():

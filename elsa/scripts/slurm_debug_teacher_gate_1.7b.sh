@@ -1,0 +1,221 @@
+#!/bin/bash
+#SBATCH --job-name=dbg_teachergate_1.7b
+#SBATCH --partition=A100-80GB
+#SBATCH --qos=hpgpu
+#SBATCH --gres=gpu:1
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=80G
+#SBATCH --time=01:30:00
+#SBATCH --exclude=n3,n42,n46,n51,n54,n60,n77,n80,n87,n91,n61,n64,n31,n19
+#SBATCH --output=/local-data/user-data/%u/job_%j/slurm/%x_%j.out
+exec 2>&1
+
+# ALPS (one-shot pruned) -> fixed-mask NTP+KD+OPD recovery training, Qwen3-1.7B,
+# OT80/FW20. Loads the already-pruned ALPS checkpoint, freezes its zero
+# pattern (gmp_fixed_mask=true skips Fisher-based/TR-GMP mask updates
+# entirely -- no further pruning), and trains with
+# the same NTP+KD+OPKD (0.33/0.33/0.33) loss mix used by the TR-GMP runs
+# (702346 etc.), for direct comparison against both ALPS-alone (74.6 math500)
+# and TR-GMP-from-dense (which tops out around 63-65 math500 on this sparsity
+# so far). Idea: ALPS's one-shot solve already gets a better starting mask
+# than TR-GMP's gradual growth, so grafting the same NTP+KD+OPD recipe onto
+# it may combine ALPS's mask quality with TR-GMP's on-policy recovery.
+#
+# Single A100-80GB (1.7B fits without FSDP, same as slurm_gmp_tr_ntpkd_opkd_qwen3_1.7b.sh).
+#
+# Usage: sbatch slurm_alps_sft_ntpkd_opkd_qwen3_1.7b.sh <SPARSITY> [LR] [SPARSITY_TYPE] [OPD_GEN_LEN] [LR_SCHEDULER] [DATA_PATH] [SEQLEN] [WANDB_PROJECT]
+# e.g.: sbatch slurm_alps_sft_ntpkd_opkd_qwen3_1.7b.sh 0.5
+#       sbatch slurm_alps_sft_ntpkd_opkd_qwen3_1.7b.sh 0.5 5e-5
+#       sbatch slurm_alps_sft_ntpkd_opkd_qwen3_1.7b.sh 0.6 1e-4 unstructured 512 cosine \
+#         /home1/doyoonkim/projects/elsa/data/ot3_fineweb_40k_qwen3_nostrip_8192.jsonl 8192 reasoning_qwen3_1.7b_nostrip8192
+
+SPARSITY=${1:?"Usage: sbatch slurm_alps_sft_ntpkd_opkd_qwen3_1.7b.sh <SPARSITY> [LR] [SPARSITY_TYPE] [OPD_GEN_LEN] [LR_SCHEDULER] [DATA_PATH] [SEQLEN] [WANDB_PROJECT]"}
+LR=${2:-1e-4}
+SPARSITY_TYPE=${3:-unstructured}
+OPD_GEN_LEN=${4:-512}
+LR_SCHEDULER=${5:-cosine}
+WANDB_PROJECT=${8:-reasoning_qwen3_1.7b_nostrip8192}
+LOSS_WEIGHTS=${9:-0.33,0.33,0.33}  # NTP,KD,OPKD -- e.g. 0,0.5,0.5 to drop NTP and split KD/OPKD evenly
+# Optimizer steps at which to drop an extra HF directory, e.g. "512,1024,1536".
+# Empty (default) = endpoint only, i.e. the pre-existing behaviour.
+MILESTONE_STEPS=${MILESTONE_STEPS:-}
+# _run_tag carries only sparsity, lr and the OPKD lambda, so two arms that
+# differ only in the NTP/KD split or in milestones collide in wandb. Set this.
+TAG_SUFFIX=${TAG_SUFFIX:-}
+# _kl_loss allocates a contiguous (1, chunk, vocab) fp32 block per chunk:
+# 2048 x 151936 x 4B = 1.24GB, which PYTORCH_CUDA_ALLOC_CONF's
+# max_split_size_mb:256 forbids splitting a segment to satisfy. That is the
+# documented cause of the random SIGSEGV in kl_div that killed 924437
+# (step 1237), 926634 (629) and 927230 (317). 256 puts the block at 156MB,
+# under the limit. Chunking cuts the SEQUENCE axis while log_softmax runs
+# over vocab (dim=-1), so this changes peak memory only -- the loss is the
+# same number. The allocator itself is left alone because the OPD arms run
+# vLLM in-process and its CuMemAllocator hard-asserts on expandable_segments.
+KL_CHUNK_SIZE=${KL_CHUNK_SIZE:-256}
+NTP_LAMBDA=$(echo "$LOSS_WEIGHTS" | cut -d, -f1)
+KD_LAMBDA=$(echo "$LOSS_WEIGHTS" | cut -d, -f2)
+OPKD_LAMBDA=$(echo "$LOSS_WEIGHTS" | cut -d, -f3)
+KD_ONLY=$(python3 -c "print('true' if float('${NTP_LAMBDA}')==0.0 else 'false')")
+
+if [ "$SPARSITY_TYPE" = "2:4" ]; then
+    ALPS_MODEL="/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_alps_s24"
+    SPARSITY_TAG="n24"
+else
+    SPARSITY_PCT=$(python3 -c "print(int(${SPARSITY}*100))")
+    ALPS_MODEL="/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_alps_s${SPARSITY_PCT}pct"
+    SPARSITY_TAG="s${SPARSITY_PCT}pct"
+fi
+# --model points at the already-pruned ALPS checkpoint (the student's starting
+# point); the KD/OPKD teacher must be the ORIGINAL DENSE model instead, or it
+# silently becomes a frozen copy of this same pruned checkpoint (main.py's
+# gmp_teacher load used to default to FLAGS.model unconditionally -- fixed to
+# respect --gmp_teacher_model, see main.py `_teacher_model_path`).
+DENSE_MODEL="/home1/doyoonkim/.cache/huggingface/hub/models--Qwen--Qwen3-1.7B/snapshots/70d244cc86ccca08cf5af4e1e306ecf908b1ad5e"
+
+PYTHON=/home1/doyoonkim/miniconda3/envs/rac/bin/python
+DATA_PATH="${6:-/home1/doyoonkim/projects/elsa/data/ot3_fineweb_40k_qwen3_nostrip_8192.jsonl}"
+SEQLEN="${7:-8192}"
+OPD_PROMPT_PATH="/home1/doyoonkim/projects/elsa/data/ot3_fineweb_200k_qwen3_opdprompts.jsonl"
+
+ENV_FILE="/run/slurm/job_env_${SLURM_JOB_ID}"
+[ -f "$ENV_FILE" ] && source "$ENV_FILE"
+if [ -z "${LOCAL_JOB_BASE:-}" ]; then
+    LOCAL_JOB_BASE="/local-data/user-data/${USER}/job_${SLURM_JOB_ID}"
+fi
+mkdir -p "$LOCAL_JOB_BASE/wandb" "$LOCAL_JOB_BASE/slurm"
+mkdir -p /home1/doyoonkim/projects/elsa/logs
+NFS_LOG="/home1/doyoonkim/projects/elsa/logs/${SLURM_JOB_NAME}_${SLURM_JOB_ID}.out"
+trap 'cp "$LOCAL_JOB_BASE/slurm/${SLURM_JOB_NAME}_${SLURM_JOB_ID}.out" "$NFS_LOG" 2>/dev/null || true' EXIT
+
+export WANDB_DIR="$LOCAL_JOB_BASE/wandb"
+export WANDB_RUN_ID_OUTPUT="$LOCAL_JOB_BASE/wandb_run_id"
+export WANDB_SERVICE_WAIT=300
+export WANDB_INIT_TIMEOUT=120
+export TMPDIR=/tmp
+export HF_TOKEN=$(cat ~/.hf_token 2>/dev/null || echo "")
+export WANDB_API_KEY=$(grep WANDB_API_KEY ~/.bashrc | cut -d'=' -f2 | tail -1)
+# OPKD lambda가 0이면 use_onpolicy가 꺼져 vLLM 엔진이 아예 안 뜬다. 그러면
+# CuMemAllocator가 없으니 expandable_segments를 쓸 수 있고, 그게 _kl_loss의
+# 큰 연속 블록 요구에 맞는 설정이다(max_split_size_mb:256은 분할을 금지해 정반대).
+# 위 주석이 말하는 926634(step 629 SIGSEGV)가 바로 OPD=0 런이었다.
+if [ "${OPKD_LAMBDA}" = "0" ]; then
+    export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+else
+    export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:256
+fi
+export TOKENIZERS_PARALLELISM=false
+export VLLM_USE_V1=0
+export VLLM_HOST_IP=127.0.0.1
+export TRITON_CACHE_DIR=/tmp/triton_cache_${USER}
+export HF_DATASETS_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+
+# ALPS 가 푼 2:4 배치에서 출발해 그 위에서 마스크를 정련한다.
+# gmp_fixed_mask=false + gmp_pgd_grow_to_target=false 조합이 핵심이다:
+# grow_to_target 경로는 학습 중간에 2:4 를 깨뜨렸다가 마지막에만 복구하므로
+# (gmp_trainer.py `_pgd_desired` 주석) 쓰지 않는다. false 로 두면
+# _pgd_nm_post_target 경로를 타서 그룹마다 살릴 2개만 매 이벤트 다시 고르고,
+# prune 수 = revive 수가 그룹 단위로 맞아 2:4 가 절대 깨지지 않는다.
+# 주석은 반드시 여기(백슬래시 연속 인자 목록 '밖')에 둘 것 -- 인자 목록 안에
+# 넣으면 그 뒤 플래그가 전부 증발한다 (1029073/1029074 가 그렇게 죽었다).
+#
+# STE (GMP_STE=true): 하드 마스킹에서는 죽은 좌표의 param.data 가 매 스텝 0 으로
+# 리셋되므로 (_apply_mask) 되살아날 만큼 크기를 모을 수 없다. STE 는 forward 에서만
+# weight*mask 를 적용하고 param.data 는 건드리지 않아 Adam 이 마스크 밑에서
+# 진짜 궤적을 누적한다. 단 gmp_trainer.py `_srste_decay_step` docstring 에 적어둔
+# 4B 2:4 측정대로, STE 단독은 죽은 좌표가 살아있는 좌표보다 2-3배 더 표류해
+# saliency 가 역전되고 마스크가 끝까지 수렴하지 않는다(이벤트당 1.9M 좌표 재결정,
+# 하드 마스킹 대조군은 마지막 이벤트 0). 그래서 SR-STE 감쇠(STE_DECAY, AST 의
+# grad += decay*w*(1-mask))를 같이 켠다. 4B 2:4 스윕 최고는 decay 1e-3~2e-3,
+# decay=1e-4 는 avg4 5.14 로 붕괴했다.
+# 학습 끝에 gmp_trainer.py 의 "STE finalize" 블록이 최종 마스크를 param.data 에
+# 한 번 하드 적용한 뒤 저장하므로, 체크포인트 자체는 정상적으로 2:4 희소하다.
+#
+# TEACHER_GATE=true: self-KL 예산 게이트를 dense teacher 기준 accept-if-better 로 바꾼다.
+# 기존 게이트는 KL(이전 마스크 || 후보)라서 "너무 많이 바꾸지 마라"만 말할 수 있고
+# "이 변경이 더 낫다"를 말할 수 없다. 1.7B ALPS-2:4(oueiexlt) 측정에서 kl_at_k_actual
+# 평균 0.0008 대 예산 0.0200, 256 이벤트 중 254개가 후보 전체 수락 — 게이트가 한 번도
+# 구속하지 않았고, 따라서 ALPS 의 layerwise 재구성 마스크를 매 8스텝 diagonal Fisher
+# argmax 로 갈아치우고 있었다. 그래서 SCOUT 이 ALPS+training 과 동률이었다
+# (47.35±0.48 vs 47.27±0.29, n=3). 기준 분포를 teacher 로 바꾸면 같은 탐색이
+# KL(dense || 후보)를 최소화하는 argmin 이 되고, 아무 후보도 현 마스크를 못 이기면
+# 그대로 둔다 — probe 배치 위에서 단조 개선이 보장된다. PGD 이벤트당 teacher forward 1회 추가.
+echo "=== ALPS 2:4 -> SCOUT (mask refine in-group, saliency=${SALIENCY:-fisher}) NTP+KD+OPKD(${NTP_LAMBDA}/${KD_LAMBDA}/${OPKD_LAMBDA}) milestones=[${MILESTONE_STEPS:-none}] Qwen3-1.7B ${SPARSITY_TAG} (${SPARSITY_TYPE}) lr=${LR} opd_gen_len=${OPD_GEN_LEN} lr_scheduler=${LR_SCHEDULER} seqlen=${SEQLEN} (OT80/FW20 nostrip8192) ==="
+echo "NODE=$(hostname)  JOB=$SLURM_JOB_ID  MODEL=$ALPS_MODEL"
+nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
+
+if ! curl -s --connect-timeout 10 https://api.wandb.ai/healthz > /dev/null 2>&1; then
+    echo "ERROR: No internet on $(hostname). Exiting."
+    exit 1
+fi
+
+cd /home1/doyoonkim/projects/elsa
+
+$PYTHON main.py \
+    --model="$ALPS_MODEL" \
+    --gmp_teacher_model="$DENSE_MODEL" \
+    --dataset=mixed_cot \
+    --data_path="$DATA_PATH" \
+    --sparsity_ratio=${SPARSITY} \
+    --sparsity_type=${SPARSITY_TYPE} \
+    --do_gmp=true \
+    --gmp_fixed_mask=false \
+    --gmp_init_mask_from_weights=true \
+    --gmp_pgd=true \
+    --gmp_pgd_grow_to_target=false \
+    --gmp_pgd_kl_budget=${PGD_KL_BUDGET:-0.02} \
+    --gmp_pgd_interval=${PGD_INTERVAL:-8} \
+    --gmp_saliency=${SALIENCY:-fisher} \
+    --gmp_pgd_teacher_gate=${TEACHER_GATE:-false} \
+    --gmp_pgd_teacher_gate_margin=${TG_MARGIN:-0} \
+    --gmp_pgd_teacher_gate_grid=${TG_GRID:-} \
+    --gmp_pgd_kl_calib_size=${KL_CALIB_SIZE:-4} \
+    --gmp_pgd_kl_calib_seqlen=${KL_CALIB_SEQLEN:-512} \
+    --gmp_ste=${GMP_STE:-false} \
+    --gmp_ste_decay=${STE_DECAY:-0} \
+    --gmp_ste_shrink=${STE_SHRINK:-0} \
+    --steps=48 \
+    --kd_nsamples=256 \
+    --gmp_batch_size=1 \
+    --gmp_grad_accum=8 \
+    --lr=${LR} \
+    --lr_scheduler=${LR_SCHEDULER} \
+    --lr_warmup_steps=8 \
+    --gmp_warmup_ratio=0.05 \
+    --seqlen=${SEQLEN} \
+    --gmp_gradient_checkpointing=true \
+    --gmp_kl_chunk_size=${KL_CHUNK_SIZE} \
+    --gmp_max_prompt_len=512 \
+    --gmp_kd_only=${KD_ONLY} \
+    --gmp_ntp_lambda=${NTP_LAMBDA} \
+    --gmp_kd_lambda=${KD_LAMBDA} \
+    --gmp_onpolicy_kd_lambda=${OPKD_LAMBDA} \
+    --gmp_onpolicy_kd_interval=${ROLLOUT_INTERVAL:-32} \
+    --gmp_milestone_steps="${MILESTONE_STEPS}" \
+    --gmp_onpolicy_max_new_tokens=${OPD_GEN_LEN} \
+    --gmp_opkd_prev_mask_teacher=false \
+    --gmp_opkd_vllm_gpu_mem=0.15 \
+    --gmp_prompt_path="$OPD_PROMPT_PATH" \
+    --gmp_save_path=/home1/doyoonkim/projects/elsa/models \
+    --save_model=false \
+    --push_to_hub=false \
+    --eval_math500=false \
+    --eval_full_bench=false \
+    --eval_profile=${EVAL_PROFILE:-long} \
+    --eval_zero_shot=false \
+    --wandb=true \
+    --wandb_project=${WANDB_PROJECT} \
+    --run_name_suffix="alps24scout_${SPARSITY_TAG}_lr${LR}${TAG_SUFFIX}_$([ "${NTP_LAMBDA}" = "0" ] && echo kdopdonly_)$(basename "$DATA_PATH" .jsonl)" \
+    --seed=42
+EXIT_CODE=$?
+
+# Propagate main.py's exit code. Without this the script always ended 0
+# and sacct reported COMPLETED even when main.py had core-dumped: job
+# 924437 died of the known _kl_loss SIGSEGV at step 1237/2048, wrote no
+# final checkpoint, and still showed COMPLETED -- the only way to notice
+# was to read the log and compare the last "Step N/2048" against 2048.
+echo "=== main.py EXIT: $EXIT_CODE ==="
+echo "##### END #####"
+exit $EXIT_CODE

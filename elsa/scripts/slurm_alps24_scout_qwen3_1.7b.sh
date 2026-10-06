@@ -132,6 +132,25 @@ export TRANSFORMERS_OFFLINE=1
 # decay=1e-4 는 avg4 5.14 로 붕괴했다.
 # 학습 끝에 gmp_trainer.py 의 "STE finalize" 블록이 최종 마스크를 param.data 에
 # 한 번 하드 적용한 뒤 저장하므로, 체크포인트 자체는 정상적으로 2:4 희소하다.
+#
+# COMPENSATE=true: projection 이 4-그룹의 doomed 2개를 0으로 만들기 전에 그 기여를
+# 생존자 2개로 옮긴다 (w_S += C_SS^-1 C_SD w_D, C 는 그룹의 4x4 입력 활성 공분산).
+# N:M 이 묶어버린 좌표에 한정한 OBS/SparseGPT 국소 재구성이고, 목표 support 도
+# trust-region 규칙도 바꾸지 않고 '적용되는 전이를 기능적으로 더 싸게' 만들 뿐이다.
+# 동기: 4-그룹 안에서 3등 좌표가 2등의 ~75% 중요도를 갖는다는 측정 — 2:4 는 손실이
+# 여전히 신경 쓰는 좌표를 반드시 버려야 한다. 2026-10-02 teacher_gate 결과에서
+# 이벤트당 개선(0.0006)이 다음 이벤트까지 남지 않는 것으로 나왔는데, 그 개선을
+# 가중치 수준에서 고정하는 것이 이 플래그다. 지금까지 한 번도 켜본 적 없음.
+#
+# TEACHER_GATE=true: self-KL 예산 게이트를 dense teacher 기준 accept-if-better 로 바꾼다.
+# 기존 게이트는 KL(이전 마스크 || 후보)라서 "너무 많이 바꾸지 마라"만 말할 수 있고
+# "이 변경이 더 낫다"를 말할 수 없다. 1.7B ALPS-2:4(oueiexlt) 측정에서 kl_at_k_actual
+# 평균 0.0008 대 예산 0.0200, 256 이벤트 중 254개가 후보 전체 수락 — 게이트가 한 번도
+# 구속하지 않았고, 따라서 ALPS 의 layerwise 재구성 마스크를 매 8스텝 diagonal Fisher
+# argmax 로 갈아치우고 있었다. 그래서 SCOUT 이 ALPS+training 과 동률이었다
+# (47.35±0.48 vs 47.27±0.29, n=3). 기준 분포를 teacher 로 바꾸면 같은 탐색이
+# KL(dense || 후보)를 최소화하는 argmin 이 되고, 아무 후보도 현 마스크를 못 이기면
+# 그대로 둔다 — probe 배치 위에서 단조 개선이 보장된다. PGD 이벤트당 teacher forward 1회 추가.
 echo "=== ALPS 2:4 -> SCOUT (mask refine in-group, saliency=${SALIENCY:-fisher}) NTP+KD+OPKD(${NTP_LAMBDA}/${KD_LAMBDA}/${OPKD_LAMBDA}) milestones=[${MILESTONE_STEPS:-none}] Qwen3-1.7B ${SPARSITY_TAG} (${SPARSITY_TYPE}) lr=${LR} opd_gen_len=${OPD_GEN_LEN} lr_scheduler=${LR_SCHEDULER} seqlen=${SEQLEN} (OT80/FW20 nostrip8192) ==="
 echo "NODE=$(hostname)  JOB=$SLURM_JOB_ID  MODEL=$ALPS_MODEL"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
@@ -158,6 +177,13 @@ $PYTHON main.py \
     --gmp_pgd_kl_budget=${PGD_KL_BUDGET:-0.02} \
     --gmp_pgd_interval=${PGD_INTERVAL:-8} \
     --gmp_saliency=${SALIENCY:-fisher} \
+    --gmp_pgd_nm_compensate=${COMPENSATE:-false} \
+    --gmp_pgd_nm_comp_ridge=${COMP_RIDGE:-1e-6} \
+    --gmp_pgd_teacher_gate=${TEACHER_GATE:-false} \
+    --gmp_pgd_teacher_gate_margin=${TG_MARGIN:-0} \
+    --gmp_pgd_teacher_gate_grid=${TG_GRID:-} \
+    --gmp_pgd_kl_calib_size=${KL_CALIB_SIZE:-4} \
+    --gmp_pgd_kl_calib_seqlen=${KL_CALIB_SEQLEN:-512} \
     --gmp_ste=${GMP_STE:-false} \
     --gmp_ste_decay=${STE_DECAY:-0} \
     --gmp_ste_shrink=${STE_SHRINK:-0} \

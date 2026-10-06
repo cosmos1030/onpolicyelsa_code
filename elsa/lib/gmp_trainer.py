@@ -2694,6 +2694,153 @@ def _nm_compensation_delta(param, cur_mask, cand_mask, cov, prune_m, ridge=1e-6)
     out[:, :nm] = delta.reshape(rows, nm)
     return out.to(w.dtype)
 
+@torch.no_grad()
+def _teacher_ref_cache(teacher_model, cal_batch: dict, device: str):
+    """ref_cache for _compute_tr_kl whose reference is the DENSE TEACHER.
+
+    _compute_tr_kl computes KL(ref || cand) and takes `ref` from
+    ref_cache['old_lp'] whenever that key is present, so pre-populating this
+    dict is enough to turn its self-KL gate -- "how far did the function move
+    from the PREVIOUS mask?" -- into a teacher-referenced quality score --
+    "how far is this candidate from dense?" -- with no change to that function
+    at all. Same [B, T-1, V] bf16 log-prob layout and the same chunked
+    log_softmax it would otherwise have produced for itself.
+
+    Why this matters (measured, 1.7B ALPS-2:4 -> SCOUT, run oueiexlt): the
+    self-KL budget is a SPEED LIMIT, not a selection criterion -- it can only
+    say "do not change too much", never "this change is better". With
+    kl_at_k_actual averaging 0.0008 against a 0.0200 budget it never bound at
+    all (254/256 events accepted the entire candidate set), so the mask was
+    the raw diagonal-Fisher argmax every single event and ALPS's layerwise
+    reconstruction solve was simply discarded. Referencing the teacher instead
+    makes the gate directional, so the search can MINIMISE it and keep the
+    incumbent mask whenever no candidate beats it.
+    """
+    input_ids = cal_batch['input_ids'].to(device)
+    attn_mask = cal_batch['attention_mask'].to(device)
+    if 'labels' in cal_batch:
+        valid = (cal_batch['labels'].to(device)[:, 1:] != -100)
+    else:
+        valid = (attn_mask[:, 1:] == 1)
+    with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+        t_logits = teacher_model(input_ids=input_ids, attention_mask=attn_mask).logits.detach()
+    _T0 = t_logits.shape[1] - 1
+    _chunk = 2048
+    if _T0 > _chunk:
+        _parts = []
+        for _st in range(0, _T0, _chunk):
+            _parts.append(F.log_softmax(t_logits[:, _st:min(_st + _chunk, _T0), :], dim=-1))
+        ref_lp = torch.cat(_parts, dim=1)
+        del _parts, t_logits
+    else:
+        ref_lp = F.log_softmax(t_logits[:, :-1, :], dim=-1)
+        del t_logits
+    return {'old_lp': ref_lp, 'valid': valid}
+
+
+_TR_KL_SEC = []   # per-call seconds of the trust-region screen (both paths)
+# _compute_tr_kl is a MODULE-level function; FLAGS only exists inside
+# globalprune_gmp's scope, so the flag has to be published here instead of
+# read with getattr(FLAGS, ...) (that raised NameError and killed job 1084918).
+_TR_KL_USE_HOOK = [False]
+_PGD_EV_T0 = [None]   # wallclock at the start of the current PGD event
+
+
+@torch.no_grad()
+def _tr_kl_forward_and_score(model, input_ids, attn_mask, old_lp, valid,
+                             kl_reduce='mean', kl_quantile=0.95):
+    """Candidate forward + KL(old || cand), with no weight mutation.
+
+    Same chunked bf16 scoring the zero-and-restore path uses; factored out so
+    the forward-hook fast path can share it verbatim rather than duplicating
+    the numerics.
+    """
+    with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+        cand_logits = model(input_ids=input_ids, attention_mask=attn_mask).logits.detach()
+    if not valid.any():
+        return 0.0, None
+    _T = cand_logits.shape[1] - 1
+    _chunk = 2048
+    if _T > _chunk:
+        _kl_chunks = []
+        for _start in range(0, _T, _chunk):
+            _end = min(_start + _chunk, _T)
+            _lp = F.log_softmax(cand_logits[:, _start:_end, :], dim=-1)
+            _kl_chunks.append(F.kl_div(_lp, old_lp[:, _start:_end, :],
+                                       log_target=True, reduction='none').sum(dim=-1))
+            del _lp
+        kl_tok = torch.cat(_kl_chunks, dim=1)
+        del _kl_chunks, cand_logits
+    else:
+        cand_lp = F.log_softmax(cand_logits[:, :-1, :], dim=-1)
+        del cand_logits
+        kl_tok = F.kl_div(cand_lp, old_lp, log_target=True, reduction='none').sum(dim=-1)
+        del cand_lp
+    kl_vals = kl_tok[valid].float()
+    result = (torch.quantile(kl_vals, kl_quantile).item() if kl_reduce == 'quantile'
+              else kl_vals.mean().item())
+    return max(result, 0.0), kl_vals
+
+
+class _MaskedFwd:
+    """Apply a candidate mask in the FORWARD only, for the duration of a `with`.
+
+    The trust-region screen's job is "what would the loss look like under this
+    candidate support", and the obvious way to get that -- zero the weights,
+    forward, put them back -- costs three boolean-mask gather/scatters over
+    every linear weight PER CALL:
+
+        saved[name] = (newly_pruned, param.data[newly_pruned].clone())
+        param.data[newly_pruned] = 0.0
+        ...
+        param.data[mask_idx] = vals
+
+    On a 1.7B model that is irregular indexing over ~1.4B elements, three
+    times, for each of gmp_pgd_kl_bisect_iters iterations, for each of 256 PGD
+    events. Measured end to end, s70 SCOUT took 13.40h against ALPS+training's
+    7.41h on the same step count and the same OPKD cadence -- ~84s per event,
+    where the quantization screen (which only swaps a dict, because its mask
+    lives in a forward hook) costs ~6s.
+
+    So do the same thing here: patch the masked Linears' forward to compute
+    weight*mask, leave param.data alone, and restore the original forwards on
+    exit. Numerically identical -- zeroing W at the mask positions and
+    multiplying W by the mask give the same effective matrix -- but it is one
+    dense elementwise multiply instead of three irregular index ops, and it
+    needs no backup buffer, so it costs no extra VRAM either.
+    """
+
+    def __init__(self, model, named_params, cand_masks):
+        self._model, self._named, self._masks = model, named_params, cand_masks
+        self._saved = {}
+
+    def __enter__(self):
+        name_to_module = dict(self._model.named_modules())
+        for full_name in self._named:
+            if not full_name.endswith('.weight'):
+                continue
+            m = self._masks.get(full_name)
+            if m is None:
+                continue
+            mod = name_to_module.get(full_name[:-len('.weight')])
+            if mod is None:
+                continue
+            self._saved[mod] = mod.forward
+
+            def _mk(mask):
+                def _fwd(self_mod, x):
+                    return F.linear(x, self_mod.weight * mask, self_mod.bias)
+                return _fwd
+            mod.forward = types.MethodType(_mk(m), mod)
+        return self
+
+    def __exit__(self, *exc):
+        for mod, fwd in self._saved.items():
+            mod.forward = fwd
+        self._saved.clear()
+        return False
+
+
 def _compute_tr_kl(model: nn.Module, cal_batch: dict, cand_masks: dict,
                    maskmgr: 'GradualMaskManager', device: str,
                    kl_reduce: str = 'mean', kl_quantile: float = 0.95,
@@ -2768,6 +2915,21 @@ def _compute_tr_kl(model: nn.Module, cal_batch: dict, cand_masks: dict,
     _dbg_on = _os_dbgmem.environ.get('GMP_DBG_MEM')
     if _dbg_on:
         logging.info(f"[DBG mem][tr_kl] before saved-loop alloc={torch.cuda.memory_allocated()/1e9:.2f}GB reserved={torch.cuda.memory_reserved()/1e9:.2f}GB")
+    # Fast path (--gmp_tr_kl_hook): realise the candidate in the FORWARD
+    # instead of writing it into the weights. Verified bit-identical to the
+    # zero-and-restore path below (zeroing W at the mask positions and
+    # multiplying W by the mask give the same matrix), but it replaces three
+    # boolean-mask gather/scatters over every linear weight PER CALL with one
+    # dense elementwise multiply, and needs no backup buffer. See _MaskedFwd
+    # for the measurement that motivated it.
+    _use_fwd_hook = bool(_TR_KL_USE_HOOK[0])
+    _tk0 = time.time()
+    if _use_fwd_hook:
+        with _MaskedFwd(model, maskmgr.named_params, cand_masks):
+            _r = _tr_kl_forward_and_score(model, input_ids, attn_mask, old_lp, valid,
+                                          kl_reduce, kl_quantile)
+        _TR_KL_SEC.append(time.time() - _tk0)
+        return _r
     saved = {}
     for name, param in maskmgr.named_params.items():
         newly_pruned = maskmgr.masks[name] & ~cand_masks[name]
@@ -2843,6 +3005,7 @@ def _compute_tr_kl(model: nn.Module, cal_batch: dict, cand_masks: dict,
         result = torch.quantile(kl_vals, kl_quantile).item()
     else:
         result = kl_vals.mean().item()
+    _TR_KL_SEC.append(time.time() - _tk0)
     return max(result, 0.0), kl_vals  # (scalar, per-token KL tensor)
 
 
@@ -4010,6 +4173,15 @@ def globalprune_gmp(
     teacher_seqkd_max_new = getattr(FLAGS, 'gmp_onpolicy_max_new_tokens', 512)
     pgd_enabled    = getattr(FLAGS, 'gmp_pgd', False)
     pgd_max_swap_frac = getattr(FLAGS, 'gmp_pgd_max_swap_frac', 0.0)  # trust-region cap on PGD mask churn, 0=unlimited (see below)
+    _TR_KL_USE_HOOK[0] = bool(getattr(FLAGS, 'gmp_tr_kl_hook', False))
+    pgd_teacher_gate = getattr(FLAGS, 'gmp_pgd_teacher_gate', False)  # replace the self-KL speed limit with a teacher-referenced accept-if-better test (see _teacher_ref_cache)
+    pgd_tg_margin = getattr(FLAGS, 'gmp_pgd_teacher_gate_margin', 0.0)  # relative improvement a candidate must beat the incumbent by, guards against probe-batch noise
+    try:
+        pgd_tg_grid = [float(x) for x in str(getattr(FLAGS, 'gmp_pgd_teacher_gate_grid', '')).split(',') if x.strip()]
+    except ValueError:
+        pgd_tg_grid = []
+    if not pgd_tg_grid:
+        pgd_tg_grid = [0.0625, 0.125, 0.25, 0.5, 1.0]
     pgd_kl_budget = getattr(FLAGS, 'gmp_pgd_kl_budget', 0.0)  # alternative to pgd_max_swap_frac: self-KL-gated instead of fixed-count (see below)
     pgd_kl_share = getattr(FLAGS, 'gmp_pgd_kl_share', False)  # cheaper alternative to pgd_kl_budget: derive this window's swap_frac from TR-GMP's own measured KL headroom (no extra forward passes) instead of a fresh per-step self-KL measurement
     _pgd_dynamic_swap_frac = 0.0  # set at each mask_interval boundary when pgd_kl_share=true (see near _tr_mask_update call)
@@ -4302,13 +4474,39 @@ def globalprune_gmp(
         #   mask_interval either, so nothing in this mode depends on it.
         # Either way this also still gates the grad-conflict-filter snapshot
         # and the no-pool fallback path, as before.
-        logging.info(f"  On-policy KD: lambda={onpolicy_lambda}, interval={onpolicy_interval} "
-                     f"(mask_interval={mask_interval}; "
-                     + (f"pool refresh fires every min(interval, mask_interval) steps)"
-                        if tr_enabled else
-                        f"pgd2growth mode -- pool refresh fires every {onpolicy_interval} steps, "
-                        f"independent of mask_interval)")
-                     + f", max_new_tokens={onpolicy_max_new}, topk={onpolicy_topk}")
+        # --gmp_onpolicy_kd_interval does NOT always set the rollout refresh
+        # cadence: with tr_enabled=true the refill rides on mask_interval, and
+        # the flag only adds EXTRA mid-window refills when it is strictly
+        # smaller. So a run can carry interval=1 in its config and still
+        # refresh every 32 steps, which is exactly what sy3gdp7h did -- and
+        # reading the flag off wandb led to a wrong wallclock comparison
+        # against it. State the EFFECTIVE cadence here, in one line, and warn
+        # whenever the flag is not what actually governs.
+        if not tr_enabled:
+            _opkd_eff_interval = onpolicy_interval
+            _opkd_eff_why = "pgd2growth: gated purely on gmp_onpolicy_kd_interval"
+        elif 0 < onpolicy_interval < mask_interval:
+            _opkd_eff_interval = onpolicy_interval
+            _opkd_eff_why = (f"TR-GMP: mask_interval={mask_interval} boundaries plus mid-window "
+                             f"refills every {onpolicy_interval}")
+        else:
+            _opkd_eff_interval = mask_interval
+            _opkd_eff_why = (f"TR-GMP: refill rides on mask_interval={mask_interval}; "
+                             f"gmp_onpolicy_kd_interval={onpolicy_interval} has NO effect")
+        logging.info(f"  On-policy KD: lambda={onpolicy_lambda}, max_new_tokens={onpolicy_max_new}, "
+                     f"topk={onpolicy_topk}")
+        logging.info(f"  OPKD EFFECTIVE rollout refresh: every {_opkd_eff_interval} steps "
+                     f"({_opkd_eff_why})")
+        if _opkd_eff_interval != onpolicy_interval:
+            logging.warning(f"  [opkd] gmp_onpolicy_kd_interval={onpolicy_interval} is OVERRIDDEN -- "
+                            f"rollouts actually refresh every {_opkd_eff_interval} steps. Compare "
+                            f"wallclock across runs on the EFFECTIVE value, not the flag.")
+        if use_wandb and is_main_process and wandb.run is not None:
+            # put it in the run config so a harvest/comparison can read the
+            # real cadence without parsing logs or re-deriving the branch
+            wandb.run.config.update({"opkd_effective_refresh_interval": _opkd_eff_interval,
+                                     "opkd_effective_refresh_why": _opkd_eff_why},
+                                    allow_val_change=True)
 
     _opkd_vllm_engine = None
     _opkd_vllm_params = None
@@ -4496,11 +4694,254 @@ def globalprune_gmp(
     # layers / block_size=8 becomes groups [0-7],[8-15],[16-27] (last group
     # absorbs the remaining 4), not [0-7],[8-15],[16-23],[24-27].
     maskmgr._num_decoder_layers = _num_decoder_layers
-    if fixed_mask:
+    # gmp_fixed_mask 는 두 가지를 한꺼번에 제어했다: 체크포인트의 0 패턴에서
+    # 마스크를 읽는 것과, 그 뒤 마스크를 고정하는 것. 그래서 "ALPS 2:4 에서
+    # 출발해 그 배치를 PGD 로 계속 정련" 이 표현 불가능했다 (false 로 두면
+    # 마스크가 전부 1 로 시작해 ALPS 가 만든 2:4 가 통째로 버려진다).
+    if fixed_mask or getattr(FLAGS, 'gmp_init_mask_from_weights', False):
         maskmgr.init_from_weights()
         maskmgr.apply(fsdp_model)
+        logging.info(f"  mask seeded from checkpoint zeros: sparsity="
+                     f"{maskmgr.current_sparsity():.4f} (fixed={fixed_mask})")
     if ste_enabled:
         install_ste_forward_hooks(model, maskmgr)
+    # ── Gradual quantization (opt-in, --gmp_quant_bits > 0) ────────────────
+    # Same gradual-commitment engine as pruning, with the per-coordinate
+    # boolean meaning "already snapped onto the n-bit grid" instead of
+    # "alive", and ASQ's Fisher-weighted score in place of F*w^2 (see
+    # lib/quant_commit.py -- G -> F*w^2 as bits -> inf, verified to 3e-10 at
+    # 16 bits, so this is a strict generalisation of the pruning saliency).
+    # Commitment grows on the PGD cadence under the same self-KL trust region.
+    qmgr = None
+    quant_bits = int(getattr(FLAGS, 'gmp_quant_bits', 0) or 0)
+    if quant_bits > 0:
+        from lib.quant_commit import QuantCommitManager, install_quant_forward_hooks
+        qmgr = QuantCommitManager(named_params, bits=quant_bits,
+                                  group_size=int(getattr(FLAGS, 'gmp_quant_group_size', 0) or 0),
+                                  mse_grid=int(getattr(FLAGS, 'gmp_quant_mse_grid', 0) or 0),
+                                  sym=bool(getattr(FLAGS, 'gmp_quant_sym', False)))
+        install_quant_forward_hooks(model, qmgr)
+        logging.info(f"  QUANT ENABLED: {quant_bits}-bit {'symmetric' if getattr(FLAGS,'gmp_quant_sym',False) else 'ASYMMETRIC'}, group_size="
+                     f"{getattr(FLAGS, 'gmp_quant_group_size', 0)}, mse_grid="
+                     f"{getattr(FLAGS, 'gmp_quant_mse_grid', 0)}, commitment 0 -> "
+                     f"{getattr(FLAGS, 'gmp_quant_target_frac', 1.0)} on the PGD cadence")
+
+    _quant_target_frac = float(getattr(FLAGS, 'gmp_quant_target_frac', 1.0) or 1.0)
+    _quant_end_ratio = float(getattr(FLAGS, 'gmp_quant_end_ratio', 0.75) or 0.75)
+    _quant_kl_budget = float(getattr(FLAGS, 'gmp_quant_kl_budget', 0.0) or 0.0)
+    _quant_scale_every = int(getattr(FLAGS, 'gmp_quant_scale_refresh', 0) or 0)
+    _quant_last_frac = 0.0
+    _last_step_t = [None]
+    _step_secs = []
+
+    _quant_ref_lp = {}      # per-event cache of the incumbent's log-probs (bf16, chunked)
+
+    @torch.no_grad()
+    def _quant_logits(committed_state):
+        """One forward at a given commitment state, returning [B, T-1, V] bf16 logits."""
+        _saved = qmgr.committed
+        try:
+            qmgr.committed = committed_state
+            with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+                return model(input_ids=_quant_ref_lp['ids'],
+                             attention_mask=_quant_ref_lp['am']).logits.detach()[:, :-1, :]
+        finally:
+            qmgr.committed = _saved
+
+    @torch.no_grad()
+    def _quant_tr_kl(cand_committed) -> float:
+        """KL(incumbent || candidate) over the probe batch.
+
+        Two things this must NOT do, both of which the first version did:
+
+        1. Materialise [B, T-1, V] in fp32. At the probe batch's 4x512 and a
+           151936 vocab that is 1.24GB in ONE contiguous block, and the naive
+           expression `(old.exp() * (old - new)).sum(-1)` holds four of them
+           live at once (~5GB). PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:256
+           -- which the launcher sets because the OPKD path runs vLLM in-process
+           and forbids expandable_segments -- cannot split a segment to satisfy
+           a >256MB request, and that is precisely the allocator state
+           project_backward_segfault_flaky blames for the random SIGSEGVs in
+           _kl_loss. The existing _compute_tr_kl chunks for exactly this reason.
+           So: accumulate the KL over sequence chunks, fp32 only inside a chunk.
+
+        2. Re-run the incumbent forward on every probe. The incumbent does not
+           change during a bisection, so its logits are computed once per event
+           and cached (bf16, so 0.62GB rather than 1.24GB), halving the
+           forwards per event from 24 to 13.
+        """
+        if _pgd_kl_cal_batch is None:
+            return 0.0
+        _ref = _quant_ref_lp.get('logits')
+        if _ref is None:
+            return 0.0
+        _cand = _quant_logits(cand_committed)
+        _valid = _quant_ref_lp['valid']
+        _tot = torch.zeros((), dtype=torch.float64, device=_cand.device)
+        _cnt = 0
+        _T = _cand.shape[1]
+        _chunk = max(1, int(getattr(FLAGS, 'gmp_quant_kl_chunk', 64) or 64))
+        for _s0 in range(0, _T, _chunk):
+            _s1 = min(_s0 + _chunk, _T)
+            _vm = _valid[:, _s0:_s1]
+            if not bool(_vm.any()):
+                continue
+            _olp = F.log_softmax(_ref[:, _s0:_s1, :].float(), dim=-1)
+            _clp = F.log_softmax(_cand[:, _s0:_s1, :].float(), dim=-1)
+            _k = (_olp.exp() * (_olp - _clp)).sum(-1)      # [B, chunk]
+            del _olp, _clp
+            _tot += _k[_vm].double().sum()
+            _cnt += int(_vm.sum().item())
+            del _k
+        del _cand
+        return float((_tot / max(1, _cnt)).item())
+
+    def _quant_commit_step(step):
+        """Advance the committed fraction toward its target on the PGD cadence.
+
+        The trust region bisects the FRACTION this event is allowed to reach,
+        between what is already committed and what the cubic schedule asks
+        for. Bisecting the fraction rather than a swap count keeps every
+        intermediate state a well-formed "cheapest rho of all coordinates"
+        set, so reversal stays allowed while the net committed count can only
+        move toward the target.
+
+        Unlike the 2:4 mask case -- where the budget never bound
+        (kl_at_k_actual averaged 0.0008 against 0.0200) because in-group swaps
+        barely move the output -- snapping weights onto a 2/3-bit grid moves
+        the output a lot, so this gate is expected to actually pace things.
+        """
+        nonlocal _quant_last_frac
+        if step <= 0 or (step % max(1, pgd_interval)) != 0:
+            return
+        # Budget-driven, NOT schedule-driven. The target is the final
+        # commitment fraction directly; how fast we get there is whatever the
+        # self-KL budget allows, which is the same shape as
+        # --gmp_pgd_grow_to_target on the mask side ("no separate TR-GMP
+        # growth ... the self-KL-gated bisection alone drives net growth, at
+        # whatever pace the budget allows"). A cubic ramp with the trust
+        # region bolted on as a brake is the OLD TR-GMP shape, and it makes
+        # the budget inert: measured at klb 0.02/0.05/0.1 the schedule asked
+        # for so little per event that kl sat at ~0.0013 and every budget
+        # produced an identical run.
+        _deadline = max(1, int(_quant_end_ratio * total_steps))
+        _tgt = _quant_target_frac
+        _cur = qmgr.committed_frac()
+        if _tgt <= _cur + 1e-6:
+            return
+        _forced = step >= _deadline
+        if _quant_scale_every > 0 and (step % _quant_scale_every) == 0:
+            _t_rs = time.time()
+            qmgr.refresh_scales(fisher)
+            _rs_sec = time.time() - _t_rs
+            if use_wandb and is_main_process:
+                wandb.log({"quant/scale_refresh_sec": _rs_sec}, step=step)
+            # Re-deriving the grid changes every coordinate's snapping cost, so
+            # the SET that realises the current fraction is no longer the set
+            # currently committed -- some coordinates leave, others enter. That
+            # reshuffle is a consequence of the scale change, not a growth
+            # decision, but the bisection below would charge its KL against the
+            # budget: at _lo = _cur the candidate already differs from the live
+            # state, so a budget smaller than the reshuffle cost rejects every
+            # probe and the arm freezes for good. Measured exactly that way --
+            # the 2-bit klb=0.005 and klb=0.02 arms climbed smoothly to 0.5027
+            # and 0.8339 and then sat there from step 128 (= scale_refresh)
+            # onward with kl=0.000000, while klb=0.1 (budget above the
+            # reshuffle cost) kept going. Apply the reshuffle first so the
+            # bisection measures growth from a like-for-like baseline.
+            qmgr.set_commitment(fisher, _cur)
+        # One incumbent forward per EVENT (not per probe) and one cost sample per
+        # EVENT (not per probe). Within a bisection the weights, scales and
+        # committed set are all frozen, so both were being recomputed 12 times
+        # for identical results.
+        # Reviewers will ask what the commitment machinery costs over plain
+        # QAT, in both wallclock and VRAM. Measure it rather than estimate:
+        # reset the peak counter at the event boundary so the delta is exactly
+        # what this event added on top of the steady-state training footprint.
+        _ev_t0 = time.time()
+        _ev_base = torch.cuda.memory_allocated() / 1e9
+        torch.cuda.reset_peak_memory_stats()
+        _quant_ref_lp.clear()
+        if _quant_kl_budget > 0.0 and _pgd_kl_cal_batch is not None and not _forced:
+            _quant_ref_lp['ids'] = _pgd_kl_cal_batch['input_ids'].to(device)
+            _quant_ref_lp['am'] = _pgd_kl_cal_batch['attention_mask'].to(device)
+            _quant_ref_lp['valid'] = (
+                (_pgd_kl_cal_batch['labels'].to(device)[:, 1:] != -100)
+                if 'labels' in _pgd_kl_cal_batch
+                else (_quant_ref_lp['am'][:, 1:] == 1))
+            _quant_ref_lp['logits'] = _quant_logits(qmgr.committed)
+            qmgr.begin_event(fisher)
+        _kl = 0.0
+        _applied = _tgt
+        if _forced:
+            # Past the deadline the budget is overridden: better to spend the
+            # remaining steps recovering at full commitment than to finalize()
+            # a jump the model never trained through.
+            logging.info(f"  [quant] step={step} past deadline {_deadline}: forcing "
+                         f"commitment {_cur:.4f} -> {_tgt:.4f}, budget overridden")
+        elif _quant_kl_budget > 0.0 and _pgd_kl_cal_batch is not None:
+            # Resolution matters here in a way it does not on the mask side.
+            # The bracket starts at [current, target], so N iterations can only
+            # resolve an increment of (target-current)/2**N: with the mask
+            # side's default of 6 that floor is 1/64 = 0.0156, and a budget
+            # whose true step is below it bisects to exactly 0.0 and commits
+            # NOTHING, every event, until the deadline force-commits the whole
+            # model at once. Observed on the klb=0.0005 arms, which sat at
+            # committed=0.0000 through step 48. 12 iterations puts the floor at
+            # 2.4e-4; each extra iteration is one forward over a 4x512 probe
+            # batch, which is nothing next to a training step.
+            # Probe the TARGET first. Without this the bisection can never
+            # return the target itself -- it only ever returns a midpoint, so
+            # it approaches 1.0 asymptotically and the `_hi - _lo < 1e-4`
+            # early exit then fires with _lo still at the current fraction,
+            # committing nothing. Observed on every loose-budget arm: parked
+            # at committed=0.9999 from step 48 onward, logging "admits NO
+            # increment ... bisection floor 2.01e-08" -- the floor was fine,
+            # the exit condition was the bug. One extra forward, and on a
+            # loose budget it finishes the schedule in a single event.
+            _kl_tgt = _quant_tr_kl(qmgr.stage_commitment(fisher, _tgt))
+            if _kl_tgt <= _quant_kl_budget:
+                _applied, _kl = _tgt, _kl_tgt
+            else:
+                _lo, _hi = _cur, _tgt
+                for _ in range(int(getattr(FLAGS, 'gmp_quant_bisect_iters', 12) or 12)):
+                    if _hi - _lo < 1e-6:
+                        break
+                    _mid = 0.5 * (_lo + _hi)
+                    _kl_mid = _quant_tr_kl(qmgr.stage_commitment(fisher, _mid))
+                    if _kl_mid <= _quant_kl_budget:
+                        _lo, _kl = _mid, _kl_mid
+                    else:
+                        _hi = _mid
+                _applied = _lo
+        if _applied <= _cur + 1e-9 and not _forced:
+            logging.warning(f"  [quant] step={step} budget {_quant_kl_budget} admits NO increment "
+                            f"at committed={_cur:.4f} (bisection floor "
+                            f"{(_tgt - _cur) / 2 ** int(getattr(FLAGS, 'gmp_quant_bisect_iters', 12) or 12):.2e}) "
+                            f"-- commitment is stalled, raise the budget or the iteration count")
+        _quant_ref_lp.clear()
+        # stage_commitment overwrites self.committed in place, so after a
+        # bisection the dict holds whatever the LAST probe was -- not the
+        # incumbent and not necessarily the accepted fraction. Always rewrite
+        # it, including when nothing was accepted (_applied == _cur).
+        qmgr.set_commitment(fisher, max(_applied, _cur))
+        qmgr.end_event()
+        _quant_last_frac = _applied
+        logging.info(f"  [quant] step={step} target={_tgt:.4f} applied={_applied:.4f} "
+                     f"committed={qmgr.committed_frac():.4f} kl={_kl:.6f} budget={_quant_kl_budget}")
+        _ev_sec = time.time() - _ev_t0
+        _ev_peak = torch.cuda.max_memory_allocated() / 1e9
+        logging.info(f"  [quant][cost] step={step} event_sec={_ev_sec:.2f} "
+                     f"peak={_ev_peak:.2f}GB base={_ev_base:.2f}GB "
+                     f"delta={_ev_peak - _ev_base:+.2f}GB")
+        if use_wandb and is_main_process:
+            wandb.log({"quant/event_sec": _ev_sec, "quant/peak_gb": _ev_peak,
+                       "quant/base_gb": _ev_base, "quant/peak_delta_gb": _ev_peak - _ev_base,
+                       "quant/committed_frac": qmgr.committed_frac(), "quant/target": _tgt,
+                       "quant/forced": float(_forced),
+                       "quant/applied_frac": _applied, "quant/kl_at_applied": _kl,
+                       "quant/kl_budget": _quant_kl_budget,
+                       "quant/remaining": _tgt - qmgr.committed_frac()}, step=step)
         logging.info("  STE masking ENABLED (--gmp_ste): forward masks weight*mask, "
                      "gradient passes straight through; param.data is never hard-reset.")
     if lr_schedule in ('constant', 'constant_with_warmup'):
@@ -5186,7 +5627,11 @@ def globalprune_gmp(
         # unconditionally on the very first step it's needed, so the self-KL
         # gate is live from step 1 instead of only from the first mask_interval
         # boundary onward.
-        if pgd_enabled and pgd_kl_budget > 0 and _pgd_kl_cal_batch is None:
+        # The quant commitment gate needs the same small calibration batch, and
+        # a pure-quantization run has pgd_enabled=False, so it would never be
+        # built and the gate would silently no-op.
+        if ((pgd_enabled and pgd_kl_budget > 0)
+                or (qmgr is not None and _quant_kl_budget > 0)) and _pgd_kl_cal_batch is None:
             _pgd_kl_cal_batch = _refresh_pgd_kl_cal_batch()
             maskmgr._group_cov = None  # recapture the group covariance against the fresh batch
         # Group covariance for survivor compensation: refreshed on the same
@@ -6228,6 +6673,20 @@ def globalprune_gmp(
                               getattr(FLAGS, 'gmp_ste_decay_warmup', -1))
             optimizer.step()
             # after the Adam update, so the shrink never reaches exp_avg_sq
+            if qmgr is not None:
+                # Baseline for the overhead ratio the rebuttal needs: seconds
+                # per plain training step, measured on steps where no
+                # commitment event fires, so quant/event_sec can be expressed
+                # as a fraction of real training cost rather than guessed.
+                _st_now = time.time()
+                if _last_step_t[0] is not None and (step % max(1, pgd_interval)) != 0:
+                    _step_secs.append(_st_now - _last_step_t[0])
+                    if len(_step_secs) > 64:
+                        _step_secs.pop(0)
+                    if use_wandb and is_main_process and len(_step_secs) % 16 == 0:
+                        wandb.log({"train/step_sec": sum(_step_secs) / len(_step_secs)}, step=step)
+                _last_step_t[0] = _st_now
+                _quant_commit_step(step)
             _ste_shrink_step(maskmgr, step, total_steps, ste_enabled,
                              getattr(FLAGS, 'gmp_ste_shrink', 0.0),
                              getattr(FLAGS, 'gmp_ste_shrink_warmup', -1))
@@ -6311,7 +6770,22 @@ def globalprune_gmp(
             if _pgd_use_fsdp:
                 import torch.distributed as _dist
 
+            # wanda saliency 는 활성값 노름(scaler_row)이 있어야 의미가 있는데,
+            # 그 스냅샷을 잡는 곳은 _tr_mask_update 직전 한 군데뿐이었다. PGD
+            # 경로(tr_enabled=false)는 거기를 지나지 않으므로 _wanda_scaler 가 비어
+            # 있고, importance() 가 조용히 w^2(=magnitude)로 폴백해 "wanda 로 돌렸다"
+            # 는 로그만 남은 채 전혀 다른 실험이 된다. 여기서 직접 잡는다.
+            if getattr(fisher, 'saliency', None) == 'wanda':
+                if _opkd_refilled_pre_mask and _opkd_standalone_pool:
+                    _wanda_b = _opkd_pool_to_batch(_opkd_standalone_pool, str(device))
+                else:
+                    _wanda_b = next(prompt_iter)
+                fisher.capture_wanda_stats(
+                    fsdp_model if fsdp_model is not None else model, _wanda_b, str(device))
+                del _wanda_b
+
             # importance scores (v_t * w^2), skip empty FSDP shards
+            _PGD_EV_T0[0] = time.time()
             _pgd_imps = {}
             _pgd_fast_path = (fisher.saliency == 'fisher')
             for _n, _p in maskmgr.named_params.items():
@@ -6880,7 +7354,9 @@ def globalprune_gmp(
                             _n_swap_cand = int(_n_swap_cand_t.item())
                             _prune_vals, _prune_vlo, _prune_vhi = _pgd_build_topk_vals(
                                 _pgd_imps, _prune_cand, False, _pgd_lo, _pgd_hi, scratch=_pgd_vals_scratch)
-                            _pgd_kl_ref_cache = {}
+                            _pgd_tg_on = (pgd_teacher_gate and teacher_model is not None and not _pgd_use_fsdp)
+                            _pgd_kl_ref_cache = (_teacher_ref_cache(teacher_model, _pgd_kl_cal_batch, str(device))
+                                                 if _pgd_tg_on else {})
 
                             def _pgd_kl_at_nm_post(k):
                                 """Self-KL if the k most-confident (lowest prune-side importance) diff-swaps were applied on top of the CURRENT mask."""
@@ -6901,50 +7377,87 @@ def globalprune_gmp(
                                     _kl = _kl_t.item()
                                 return _kl
 
-                            # Warm-started bisection -- identical shape to
-                            # pre-target's _pgd_kl_at_nm search above.
-                            _pgd_k_lo, _pgd_kl_at_k_lo = 0, 0.0
-                            _pgd_k_hi = _n_swap_cand
-                            _pgd_iters_left = pgd_kl_bisect_iters
-                            _pgd_probe = min(max(_pgd_last_k_actual, 1), _n_swap_cand) if _n_swap_cand > 0 else 0
-                            if _pgd_probe > 0 and _pgd_iters_left > 0:
-                                _pgd_kl_probe = _pgd_kl_at_nm_post(_pgd_probe)
-                                _pgd_iters_left -= 1
-                                if _pgd_kl_probe <= pgd_kl_budget:
-                                    _pgd_k_lo, _pgd_kl_at_k_lo = _pgd_probe, _pgd_kl_probe
-                                    _pgd_step = _pgd_probe
-                                    while _pgd_k_lo < _n_swap_cand and _pgd_iters_left > 0:
-                                        _pgd_step = min(_pgd_step * 2, _n_swap_cand - _pgd_k_lo)
-                                        _pgd_cand = _pgd_k_lo + _pgd_step
-                                        _pgd_kl_cand = _pgd_kl_at_nm_post(_pgd_cand)
-                                        _pgd_iters_left -= 1
-                                        if _pgd_kl_cand <= pgd_kl_budget:
-                                            _pgd_k_lo, _pgd_kl_at_k_lo = _pgd_cand, _pgd_kl_cand
-                                        else:
-                                            _pgd_k_hi = _pgd_cand - 1
-                                            break
-                                    else:
-                                        _pgd_k_hi = _pgd_k_lo
-                                else:
-                                    _pgd_k_hi = _pgd_probe - 1
-                            for _ in range(_pgd_iters_left):
-                                if _pgd_k_hi <= _pgd_k_lo:
-                                    break
-                                _pgd_k_mid = (_pgd_k_lo + _pgd_k_hi + 1) // 2
-                                _pgd_kl_mid = _pgd_kl_at_nm_post(_pgd_k_mid)
-                                if _pgd_kl_mid <= pgd_kl_budget:
-                                    _pgd_k_lo = _pgd_k_mid
-                                    _pgd_kl_at_k_lo = _pgd_kl_mid
-                                else:
-                                    _pgd_k_hi = _pgd_k_mid - 1
-                            _k_actual = _pgd_k_lo
-                            _pgd_last_k_actual = _k_actual
-                            logging.info(f"  [pgd_kl_budget][nm][post_target] n_swap_cand={_n_swap_cand} "
-                                         f"k_actual={_k_actual} kl_at(k_actual)={_pgd_kl_at_k_lo:.6f} "
-                                         f"budget={pgd_kl_budget} pre_sparsity={maskmgr.current_sparsity():.4f} (step={step})")
-                            if use_wandb and is_main_process:
+                            # Teacher-referenced acceptance (--gmp_pgd_teacher_gate): the
+                            # reference distribution in _pgd_kl_ref_cache is the DENSE model,
+                            # so _pgd_kl_at_nm_post now returns KL(dense || cand) -- a quality
+                            # score to MINIMISE, not a drift budget to stay under. k=0 (the
+                            # incumbent mask, i.e. ALPS's own solve on the first event) is one
+                            # of the choices, so a window where no candidate beats the
+                            # incumbent changes nothing instead of applying the full
+                            # diagonal-Fisher argmax the way the uncapped self-KL gate did.
+                            if _pgd_tg_on:
+                                _tg_kl_base, _ = _compute_tr_kl(fsdp_model if fsdp_model is not None else model,
+                                                                _pgd_kl_cal_batch, maskmgr.masks, maskmgr, str(device),
+                                                                kl_reduce=tr_kl_reduce, kl_quantile=tr_kl_quantile,
+                                                                ref_cache=_pgd_kl_ref_cache)
+                                _tg_need = _tg_kl_base * (1.0 - pgd_tg_margin)
+                                _tg_best_k, _tg_best_kl, _tg_probed = 0, _tg_kl_base, []
+                                _tg_seen = set()
+                                for _tg_frac in pgd_tg_grid:
+                                    _tg_k = int(round(_tg_frac * _n_swap_cand))
+                                    if _tg_k <= 0 or _tg_k > _n_swap_cand or _tg_k in _tg_seen:
+                                        continue
+                                    _tg_seen.add(_tg_k)
+                                    _tg_kl = _pgd_kl_at_nm_post(_tg_k)
+                                    _tg_probed.append((_tg_k, round(_tg_kl, 6)))
+                                    if _tg_kl < min(_tg_best_kl, _tg_need):
+                                        _tg_best_k, _tg_best_kl = _tg_k, _tg_kl
+                                _k_actual = _tg_best_k
+                                _pgd_kl_at_k_lo = _tg_best_kl
+                                _pgd_last_k_actual = _k_actual if _k_actual > 0 else _pgd_last_k_actual
+                                logging.info(f"  [pgd_teacher_gate][nm][post_target] n_swap_cand={_n_swap_cand} "
+                                             f"kl_dense(incumbent)={_tg_kl_base:.6f} -> k_actual={_k_actual} "
+                                             f"kl_dense(k)={_tg_best_kl:.6f} probed={_tg_probed} (step={step})")
+                                if use_wandb and is_main_process:
+                                    wandb.log({"pgd/tg_kl_incumbent": _tg_kl_base, "pgd/tg_kl_best": _tg_best_kl,
+                                               "pgd/tg_improve": _tg_kl_base - _tg_best_kl,
+                                               "pgd/tg_accepted": float(_k_actual > 0),
+                                               "pgd/k_actual": _k_actual, "pgd/n_prune_cand": _n_swap_cand}, step=step)
+                            else:
+                              # Warm-started bisection -- identical shape to
+                              # pre-target's _pgd_kl_at_nm search above.
+                              _pgd_k_lo, _pgd_kl_at_k_lo = 0, 0.0
+                              _pgd_k_hi = _n_swap_cand
+                              _pgd_iters_left = pgd_kl_bisect_iters
+                              _pgd_probe = min(max(_pgd_last_k_actual, 1), _n_swap_cand) if _n_swap_cand > 0 else 0
+                              if _pgd_probe > 0 and _pgd_iters_left > 0:
+                                  _pgd_kl_probe = _pgd_kl_at_nm_post(_pgd_probe)
+                                  _pgd_iters_left -= 1
+                                  if _pgd_kl_probe <= pgd_kl_budget:
+                                      _pgd_k_lo, _pgd_kl_at_k_lo = _pgd_probe, _pgd_kl_probe
+                                      _pgd_step = _pgd_probe
+                                      while _pgd_k_lo < _n_swap_cand and _pgd_iters_left > 0:
+                                          _pgd_step = min(_pgd_step * 2, _n_swap_cand - _pgd_k_lo)
+                                          _pgd_cand = _pgd_k_lo + _pgd_step
+                                          _pgd_kl_cand = _pgd_kl_at_nm_post(_pgd_cand)
+                                          _pgd_iters_left -= 1
+                                          if _pgd_kl_cand <= pgd_kl_budget:
+                                              _pgd_k_lo, _pgd_kl_at_k_lo = _pgd_cand, _pgd_kl_cand
+                                          else:
+                                              _pgd_k_hi = _pgd_cand - 1
+                                              break
+                                      else:
+                                          _pgd_k_hi = _pgd_k_lo
+                                  else:
+                                      _pgd_k_hi = _pgd_probe - 1
+                              for _ in range(_pgd_iters_left):
+                                  if _pgd_k_hi <= _pgd_k_lo:
+                                      break
+                                  _pgd_k_mid = (_pgd_k_lo + _pgd_k_hi + 1) // 2
+                                  _pgd_kl_mid = _pgd_kl_at_nm_post(_pgd_k_mid)
+                                  if _pgd_kl_mid <= pgd_kl_budget:
+                                      _pgd_k_lo = _pgd_k_mid
+                                      _pgd_kl_at_k_lo = _pgd_kl_mid
+                                  else:
+                                      _pgd_k_hi = _pgd_k_mid - 1
+                              _k_actual = _pgd_k_lo
+                              _pgd_last_k_actual = _k_actual
+                              logging.info(f"  [pgd_kl_budget][nm][post_target] n_swap_cand={_n_swap_cand} "
+                                           f"k_actual={_k_actual} kl_at(k_actual)={_pgd_kl_at_k_lo:.6f} "
+                                           f"budget={pgd_kl_budget} pre_sparsity={maskmgr.current_sparsity():.4f} (step={step})")
+                              if use_wandb and is_main_process:
                                 wandb.log({"pgd/kl_at_k_actual": _pgd_kl_at_k_lo, "pgd/kl_budget": pgd_kl_budget,
-                                           "pgd/k_actual": _k_actual, "pgd/n_prune_cand": _n_swap_cand}, step=step)
+                                             "pgd/k_actual": _k_actual, "pgd/n_prune_cand": _n_swap_cand}, step=step)
                             _sel_prune = _pgd_topk_mask_from_vals(_prune_vals, _prune_vlo, _prune_vhi, _k_actual, _pgd_dev, _pgd_use_fsdp, False)
                             del _prune_vals
                             _sel_revive = (_pgd_topk_mask(_pgd_imps, _revive_cand, _k_actual, True, _pgd_dev, _pgd_use_fsdp, _pgd_lo, _pgd_hi)
@@ -7400,6 +7913,13 @@ def globalprune_gmp(
                     logging.info(f"  [DBG kl_at_timing] calls={_pgd_kl_at_calls[0]} total_forward_time={_pgd_kl_at_time[0]:.3f}s "
                                  f"avg_per_call={(_pgd_kl_at_time[0]/max(1,_pgd_kl_at_calls[0])):.3f}s "
                                  f"topk_time={_pgd_topk_time[0]:.3f}s fwd_time={_pgd_fwd_time[0]:.3f}s (step={step})")
+                    _ev_tot = time.time() - _PGD_EV_T0[0] if _PGD_EV_T0[0] else -1.0
+                    if _TR_KL_SEC:
+                        logging.info(f"  [pgd][cost] step={step} screen_calls={len(_TR_KL_SEC)} "
+                                     f"screen_sec={sum(_TR_KL_SEC):.2f} "
+                                     f"per_call={sum(_TR_KL_SEC)/len(_TR_KL_SEC):.2f} event_sec={_ev_tot:.2f} "
+                                     f"hook={bool(_TR_KL_USE_HOOK[0])}")
+                        _TR_KL_SEC.clear()
                     logging.info(f"  [pgd_kl_budget] n_prune_cand={_n_prune_cand} n_revive_cand={_n_revive_cand} "
                                  f"k_actual={_k_actual} kl_at(k_actual)={_pgd_kl_at_k_lo:.6f} "
                                  f"kl_at(n_prune_cand)={_pgd_kl_at_full:.6f} budget={pgd_kl_budget} "
@@ -7824,6 +8344,17 @@ def globalprune_gmp(
             for name, param in maskmgr.named_params.items():
                 param.data.mul_(maskmgr.masks[name])
         logging.info("STE finalize: hard-applied final mask into param.data before save/eval.")
+
+    if qmgr is not None:
+        # Commit everything still free, then hard-write grid values into
+        # param.data: the forward hook never touches param.data (that is the
+        # point of STE), so without this the checkpoint on disk is full
+        # precision even though every number the model computed with was not.
+        for _qn in qmgr.committed:
+            qmgr.committed[_qn] = torch.ones_like(qmgr.committed[_qn])
+        qmgr.finalize()
+        logging.info(f"QUANT finalize: committed_frac={qmgr.committed_frac():.4f}, "
+                     f"{qmgr.bits}-bit grid hard-applied into param.data before save/eval.")
 
     if is_main_process:
         # Gradient fine-tuning: ~6*N*tokens (forward+backward+update), vs ~2*N*tokens

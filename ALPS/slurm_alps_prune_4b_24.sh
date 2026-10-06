@@ -75,7 +75,7 @@ $PYTHON qwen3_alps.py \
     --gpu_util 0.9 \
     --tp_size 1 \
     --out_base "$LOCAL_JOB_BASE/eval_out" \
-    --profile quick \
+    --profile long \
     --push_to_hub
 
 EXIT_CODE=$?

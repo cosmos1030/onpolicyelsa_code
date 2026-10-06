@@ -215,6 +215,7 @@ def qwen3_sparsellm(model, dataloader, dev, args):
                     prunem=args.prunem,
                     percdamp=args.percdamp,
                     blocksize=args.blocksize,
+                    groupsize=args.groupsize,
                 )
                 gpts[name].free()
 
@@ -319,6 +320,7 @@ def main():
     parser.add_argument("--blocksize", type=int, default=128)
     parser.add_argument("--gmp", action="store_true")
     parser.add_argument("--wbits", type=int, default=16)
+    parser.add_argument("--groupsize", type=int, default=-1, help="GPTQ group-wise quantization: re-derive scale/zero every N input columns. -1 = per-output-channel (original behaviour). 128 is the standard setting at 2-4 bits.")
     parser.add_argument("--minlayer", type=int, default=-1)
     parser.add_argument("--maxlayer", type=int, default=1000)
     parser.add_argument("--prune_only", type=str, default="")
@@ -356,7 +358,12 @@ def main():
     dataloader, testenc = get_ot_fw(args.nsamples, args.seed, args.seqlen, tokenizer, args.data_path)
 
     dev = torch.device('cuda')
-    if args.sparsity or args.prunen:
+    # --wbits < 16 alone is a valid job (pure GPTQ: sparsity=0, quantize every
+    # column). Without it in this guard, `--sparsity 0 --wbits 3` skipped the
+    # whole pass and saved/evaluated the DENSE model -- jobs 1080193/1080194
+    # produced two "GPTQ" checkpoints with 123 distinct values per 128-column
+    # group and byte-identical IFEval (0.7024, the dense number).
+    if args.sparsity or args.prunen or args.wbits < 16:
         qwen3_sparsellm(model, dataloader, dev, args)
 
     ppl = qwen3_eval(model, testenc, dev, args)

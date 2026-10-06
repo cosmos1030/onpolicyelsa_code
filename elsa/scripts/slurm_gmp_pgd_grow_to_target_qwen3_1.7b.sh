@@ -14,7 +14,7 @@
 # 2026-09-06. Remaining exclusions: internet-blocked (n46,n51,n54,n77,n87,
 # n61,n64), GPU faults (n80,n91,n31,n19), broken (n3,n60), NCCL-slow (n42).
 #SBATCH --exclude=n3,n42,n46,n51,n54,n60,n77,n80,n87,n91,n61,n64,n31,n19
-#SBATCH --output=/home1/doyoonkim/projects/elsa/logs/gmp_pgd_grow_1.7b_%j.out
+#SBATCH --output=/local-data/user-data/%u/job_%j/slurm/%x_%j.out
 exec 2>&1
 
 # PGD-driven growth fork of slurm_gmp_pgd_klgate_qwen3_1.7b.sh: no separate
@@ -94,6 +94,13 @@ OPD_PROMPT_PATH="/home1/doyoonkim/projects/elsa/data/ot3_fineweb_200k_qwen3_opdp
 
 LOCAL_JOB_BASE="/local-data/user-data/${USER}/job_${SLURM_JOB_ID}"
 mkdir -p "$LOCAL_JOB_BASE/wandb"
+mkdir -p "$LOCAL_JOB_BASE/slurm"
+mkdir -p /home1/doyoonkim/projects/elsa/logs
+# stdout now lands node-local: writing it straight to /home1 is what stalled 12
+# jobs on 2026-09-23 when that NFS mount hung. Copy it back to the usual NFS
+# path once at exit so the log is still where everything expects to find it.
+NFS_LOG="/home1/doyoonkim/projects/elsa/logs/${SLURM_JOB_NAME}_${SLURM_JOB_ID}.out"
+trap 'cp "$LOCAL_JOB_BASE/slurm/${SLURM_JOB_NAME}_${SLURM_JOB_ID}.out" "$NFS_LOG" 2>/dev/null || true' EXIT
 mkdir -p /home1/doyoonkim/projects/elsa/logs
 
 export WANDB_DIR="$LOCAL_JOB_BASE/wandb"
@@ -190,6 +197,7 @@ $PYTHON main.py \
     --gmp_pgd_kl_budget=${KL_BUDGET} \
     --gmp_pgd_kl_calib_size=${CALIB_SIZE} \
     --gmp_pgd_interval=${PGD_INTERVAL} \
+    --gmp_tr_kl_hook=${TR_KL_HOOK:-false} \
     --gmp_save_path=/home1/doyoonkim/projects/elsa/models \
     --save_model=true \
     --push_to_hub=true \

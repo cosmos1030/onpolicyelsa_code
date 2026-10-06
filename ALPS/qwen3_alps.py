@@ -477,7 +477,7 @@ if __name__ == '__main__':
                               'not auto-deleted.')
     parser.add_argument('--save', type=str, default='')
     parser.add_argument('--eval_full', action='store_true', help='Run full eval (PPL+zeroshot+lighteval) after pruning')
-    parser.add_argument('--profile', type=str, default='quick', choices=['official', 'quick'],
+    parser.add_argument('--profile', type=str, default='quick', choices=['official', 'long', 'quick'],
                          help="lighteval profile passed through to eval_full.py: 'quick' (default, 8192 budget, "
                               "matches the rest of the dashboard) or 'official' (32768/38912 budget, incl. "
                               "AIME24/25)")

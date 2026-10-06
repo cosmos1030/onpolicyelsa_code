@@ -73,7 +73,12 @@ SEED_OR_SEEDS=${7:-42}
 TP_SIZE=${8:-1}
 SKIP_PPL=${9:-false}
 SKIP_ZEROSHOT=${10:-false}
-PROFILE=${11:-official}
+# long (16384 / LCB 32768) is the dashboard + paper protocol, and it is what
+# main.py's --eval_profile already defaults to. It also matters for fairness,
+# not just comparability: quick's 8192 budget truncated 96-100% of GPTQ-2bit's
+# generations (GSM8K avg output 2045/2048), and compression damage makes models
+# ramble, so quick systematically penalises exactly the arms under test.
+PROFILE=${11:-long}
 # vLLM's share of each card. 0.85 leaves ~12GB idle on an 80GB A100, and the
 # evals are sequence-starved rather than memory-bound (GPU util sits at 52-72%
 # with the full 0.85 reserved), so a higher value buys concurrency directly.
