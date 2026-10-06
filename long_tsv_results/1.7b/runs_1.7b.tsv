@@ -4,6 +4,7 @@ Qwen 3 1.7B s3_1.7b_24_alps24scout_fisher_seed0	nwqa2nfa	s3_1.7b_24_alps24scout_
 Qwen 3 1.7B s3_1.7b_24_alps24scout_fisher_seed1	t9aqjm7w	s3_1.7b_24_alps24scout_fisher_seed1	finished	42	cosmos1030/gmp-kd3e-1-1.7b-n24-s50pct-lr1e-4_20260930_060834	oueiexlt	0.33	0.33	0.33	32	512	False	True	0.02	False	cubic	32	2048	None	8192
 Qwen 3 1.7B s3_1.7b_24_alps24training_seed0	yx2vd5y1	s3_1.7b_24_alps24training_seed0	finished	42	cosmos1030/gmp-kd3e-1-1.7b-n24-s50pct-lr1e-4_20260930_072819	uiyeocv7	0.33	0.33	0.33	32	512	True	False	0.01	False	cubic	32	2048	None	8192
 Qwen 3 1.7B s3_1.7b_24_alps24training_seed1	xp04t4ac	s3_1.7b_24_alps24training_seed1	finished	42	cosmos1030/gmp-kd3e-1-1.7b-n24-s50pct-lr1e-4_20260930_072819	uiyeocv7	0.33	0.33	0.33	32	512	True	False	0.01	False	cubic	32	2048	None	8192
+Qwen 3 1.7B s3_1.7b_24_comp_klb001_math500	4mgmqnhs	s3_1.7b_24_comp_klb001_math500	finished	42	cosmos1030/gmp-kd3e-1-1.7b-n24-s50pct-lr1e-4_20261006_065934	to2tbem5	0.33	0.33	0.33	32	512	False	True	0.01	False	cubic	32	2048	None	8192
 Qwen 3 1.7B s3_1.7b_24_ours_seed0	giw2uxo5	s3_1.7b_24_ours_seed0	finished	42	/home1/doyoonkim/projects/elsa/models/gmp_s50pct_lr0.0001_onpol_lmda0.33_20260902_113337															
 Qwen 3 1.7B s3_1.7b_24_ours_seed1	f0puumhy	s3_1.7b_24_ours_seed1	finished	42	/home1/doyoonkim/projects/elsa/models/gmp_s50pct_lr0.0001_onpol_lmda0.33_20260902_113337															
 Qwen 3 1.7B s3_1.7b_24_ours_seed42	vx1qzndb	s3_1.7b_24_ours_seed42	finished	42	/home1/doyoonkim/projects/elsa/models/gmp_s50pct_lr0.0001_onpol_lmda0.33_20260902_113337															
