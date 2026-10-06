@@ -204,6 +204,7 @@ $PYTHON main.py \
     --gmp_quant_end_ratio=${QUANT_END_RATIO:-0.75} \
     --gmp_quant_kl_budget=${QUANT_KL_BUDGET:-0.02} \
     --gmp_quant_scale_refresh=${QUANT_SCALE_REFRESH:-8} \
+    --gmp_quant_grid_from_levels=${QUANT_GRID_FROM_LEVELS:-false} \
     --gmp_quant_bisect_iters=${QUANT_BISECT_ITERS:-12} \
     --gmp_quant_kl_chunk=${QUANT_KL_CHUNK:-64} \
     --gmp_tr_kl_hook=${TR_KL_HOOK:-true} \

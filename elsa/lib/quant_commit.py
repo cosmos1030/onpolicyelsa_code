@@ -100,6 +100,41 @@ def grid_params(w: torch.Tensor, bits: int, group_size: int = 0, sym: bool = Fal
     return best_s.expand_as(w2).reshape(w.shape), best_z.expand_as(w2).reshape(w.shape)
 
 
+def grid_params_from_levels(w, bits, group_size=0):
+    """Recover the asymmetric grid (scale, zero) of weights that are ALREADY on one,
+    e.g. a GPTQ checkpoint, for the "GPTQ -> training" baseline.
+
+    grid_params() re-derives the grid from each group's min/max, which only
+    matches GPTQ's when the group happens to use both extreme levels. Measured
+    on qwen3_1.7b_gptq_w3_g128: re-deriving moved 51% of the weights (3% rel.
+    error), i.e. it silently re-quantised the init the baseline is meant to
+    start from. Here the step is read off the levels themselves (smallest gap,
+    then refined to (max-min)/n_steps since the stored levels carry fp16
+    rounding noise that biases the smallest gap low), and the zero-point is any
+    integer that maps every present level into [0, maxq] (centred when the
+    group leaves room on both sides). Same check: no weight moves by more than
+    0.05 of a step at 3-bit, 2-bit moves 0.0002%.
+    """
+    maxq = 2 ** bits - 1
+    w2 = (w.reshape(w.shape[0], -1) if group_size <= 0 else w.reshape(-1, group_size)).float()
+    v, _ = torch.sort(w2, dim=1)
+    d = v[:, 1:] - v[:, :-1]
+    tol = 1e-6 * v.abs().amax(dim=1, keepdim=True).clamp(min=1e-12)
+    d = torch.where(d > tol, d, torch.full_like(d, float('inf')))
+    s = d.amin(dim=1, keepdim=True)
+    lo, hi = v[:, :1], v[:, -1:]
+    bad = ~torch.isfinite(s)                       # single distinct value
+    s = torch.where(bad, (hi.abs().clamp(min=1e-8) / maxq), s)
+    span = torch.round((hi - lo) / s)
+    # min gap is biased low by the stored levels' rounding noise; the end-to-end
+    # span averages it out over every step between the extreme levels
+    s = torch.where(span > 0, (hi - lo) / span.clamp(min=1), s)
+    a = torch.round(-lo / s)                       # = zero - q(lo)
+    z_lo = a.clamp(min=0); z_hi = torch.minimum(a + maxq - span, torch.full_like(a, maxq))
+    z = torch.round((z_lo + z_hi) / 2)
+    return s.expand_as(w2).reshape(w.shape), z.expand_as(w2).reshape(w.shape)
+
+
 def fake_quant(w, scale, zero, bits: int, sym: bool = False):
     """Nearest grid value (the zero level is allowed)."""
     maxq = (2 ** bits - 1) if not sym else (2 ** (bits - 1) - 1)
@@ -162,7 +197,7 @@ class QuantCommitManager:
     """Boolean 'committed' state per coordinate + ASQ-ranked gradual commitment."""
 
     def __init__(self, named_params: dict, bits: int, group_size: int = 0,
-                 mse_grid: int = 0, sym: bool = False):
+                 mse_grid: int = 0, sym: bool = False, grid_from_levels: bool = False):
         self.named_params = named_params
         self.bits = int(bits)
         self.group_size = int(group_size)
@@ -171,7 +206,15 @@ class QuantCommitManager:
         self.committed = {n: torch.zeros_like(p, dtype=torch.bool) for n, p in named_params.items()}
         self.scales = {}
         self.zeros = {}
-        self.refresh_scales()
+        if grid_from_levels:
+            if self.sym:
+                raise ValueError("grid_from_levels recovers an asymmetric grid; sym=True is not supported")
+            for n, p in named_params.items():
+                _s, _z = grid_params_from_levels(p.data.float(), self.bits, self.group_size)
+                self.scales[n] = _s.to(p.dtype)
+                self.zeros[n] = _z.to(p.dtype)
+        else:
+            self.refresh_scales()
 
     @torch.no_grad()
     def refresh_scales(self, fisher=None):

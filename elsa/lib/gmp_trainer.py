@@ -4719,7 +4719,8 @@ def globalprune_gmp(
         qmgr = QuantCommitManager(named_params, bits=quant_bits,
                                   group_size=int(getattr(FLAGS, 'gmp_quant_group_size', 0) or 0),
                                   mse_grid=int(getattr(FLAGS, 'gmp_quant_mse_grid', 0) or 0),
-                                  sym=bool(getattr(FLAGS, 'gmp_quant_sym', False)))
+                                  sym=bool(getattr(FLAGS, 'gmp_quant_sym', False)),
+                                  grid_from_levels=bool(getattr(FLAGS, 'gmp_quant_grid_from_levels', False)))
         install_quant_forward_hooks(model, qmgr)
         logging.info(f"  QUANT ENABLED: {quant_bits}-bit {'symmetric' if getattr(FLAGS,'gmp_quant_sym',False) else 'ASYMMETRIC'}, group_size="
                      f"{getattr(FLAGS, 'gmp_quant_group_size', 0)}, mse_grid="

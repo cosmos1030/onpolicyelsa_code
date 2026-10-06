@@ -88,7 +88,10 @@ KD_ONLY=$(python3 -c "print('true' if float('${NTP_LAMBDA}')==0.0 else 'false')"
 SPARSITY_PCT=$(python3 -c "print(int(${SPARSITY}*100))")
 
 PYTHON=/home1/doyoonkim/miniconda3/envs/rac/bin/python
-MODEL="/home1/doyoonkim/.cache/huggingface/hub/models--Qwen--Qwen3-1.7B/snapshots/70d244cc86ccca08cf5af4e1e306ecf908b1ad5e"
+DENSE_MODEL="/home1/doyoonkim/.cache/huggingface/hub/models--Qwen--Qwen3-1.7B/snapshots/70d244cc86ccca08cf5af4e1e306ecf908b1ad5e"
+# INIT_MODEL: start from an already-quantized checkpoint (e.g. GPTQ) for the
+# "GPTQ -> training" baseline. The teacher stays the dense model either way.
+MODEL="${INIT_MODEL:-$DENSE_MODEL}"
 DATA_PATH="$DATA_PATH_ARG"
 OPD_PROMPT_PATH="/home1/doyoonkim/projects/elsa/data/ot3_fineweb_200k_qwen3_opdprompts.jsonl"
 
@@ -158,6 +161,7 @@ cd /home1/doyoonkim/projects/elsa
 # same number at any chunk size; only the peak and the launch count change.
 $PYTHON main.py \
     --model="$MODEL" \
+    --gmp_teacher_model="$DENSE_MODEL" \
     --dataset=mixed_cot \
     --data_path="$DATA_PATH" \
     --sparsity_ratio=${SPARSITY} \
@@ -181,6 +185,7 @@ $PYTHON main.py \
     --gmp_quant_end_ratio=${QUANT_END_RATIO:-0.75} \
     --gmp_quant_kl_budget=${QUANT_KL_BUDGET:-0.02} \
     --gmp_quant_scale_refresh=${QUANT_SCALE_REFRESH:-128} \
+    --gmp_quant_grid_from_levels=${QUANT_GRID_FROM_LEVELS:-false} \
     --gmp_quant_bisect_iters=${QUANT_BISECT_ITERS:-12} \
     --gmp_quant_kl_chunk=${QUANT_KL_CHUNK:-64} \
     --gmp_saliency=${SALIENCY} \
