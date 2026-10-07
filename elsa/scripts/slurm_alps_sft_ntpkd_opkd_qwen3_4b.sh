@@ -56,6 +56,16 @@ export WANDB_API_KEY=$(grep WANDB_API_KEY ~/.bashrc | cut -d'=' -f2 | tail -1)
 # which the OPKD vLLM engine now requires (enable_sleep_mode=True, added in
 # the 2026-08-13 log_cluster pull) -- LLM(...) hard-asserts on this at
 # load_model() time if set. Left unset here.
+SIDECAR=${SIDECAR:-true}
+# Default true since 2026-10-07: the in-process engine forces max_split_size_mb:256,
+# which starves _kl_loss's 1.24GiB contiguous block -> random SIGSEGV in backward
+# (4B roll2048: s50 died at 1946/2048, 2bit at step 10). Shared-GPU sidecar still
+# sleeps between rollouts, so the memory budget is unchanged.
+if [ "$SIDECAR" = "true" ]; then
+    export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+else
+    export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:256
+fi
 export TOKENIZERS_PARALLELISM=false
 export VLLM_USE_V1=0
 export VLLM_HOST_IP=127.0.0.1
@@ -101,6 +111,9 @@ $PYTHON main.py \
     --gmp_warmup_ratio=0.05 \
     --seqlen=${SEQLEN} \
     --gmp_gradient_checkpointing=true \
+    --gmp_opkd_vllm_sidecar=${SIDECAR} \
+    --gmp_ckpt_every_steps=${CKPT_EVERY:-0} \
+    --gmp_resume_from="${RESUME_FROM:-}" \
     --gmp_max_prompt_len=512 \
     --gmp_kd_only=false \
     --gmp_ntp_lambda=0.33 \

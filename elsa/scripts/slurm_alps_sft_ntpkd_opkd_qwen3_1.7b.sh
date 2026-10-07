@@ -100,7 +100,12 @@ export WANDB_API_KEY=$(grep WANDB_API_KEY ~/.bashrc | cut -d'=' -f2 | tail -1)
 # CuMemAllocator가 없으니 expandable_segments를 쓸 수 있고, 그게 _kl_loss의
 # 큰 연속 블록 요구에 맞는 설정이다(max_split_size_mb:256은 분할을 금지해 정반대).
 # 위 주석이 말하는 926634(step 629 SIGSEGV)가 바로 OPD=0 런이었다.
-if [ "${OPKD_LAMBDA}" = "0" ]; then
+SIDECAR=${SIDECAR:-true}
+# Default true since 2026-10-07: the in-process engine forces max_split_size_mb:256,
+# which starves _kl_loss's 1.24GiB contiguous block -> random SIGSEGV in backward
+# (4B roll2048: s50 died at 1946/2048, 2bit at step 10). Shared-GPU sidecar still
+# sleeps between rollouts, so the memory budget is unchanged.
+if [ "${OPKD_LAMBDA}" = "0" ] || [ "$SIDECAR" = "true" ]; then
     export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 else
     export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:256
@@ -141,6 +146,9 @@ $PYTHON main.py \
     --gmp_warmup_ratio=0.05 \
     --seqlen=${SEQLEN} \
     --gmp_gradient_checkpointing=true \
+    --gmp_opkd_vllm_sidecar=${SIDECAR} \
+    --gmp_ckpt_every_steps=${CKPT_EVERY:-0} \
+    --gmp_resume_from="${RESUME_FROM:-}" \
     --gmp_kl_chunk_size=${KL_CHUNK_SIZE} \
     --gmp_max_prompt_len=512 \
     --gmp_kd_only=${KD_ONLY} \

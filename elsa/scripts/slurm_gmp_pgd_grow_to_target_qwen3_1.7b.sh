@@ -80,7 +80,11 @@ CALIB_SIZE=${17:-4}   # gmp_pgd_kl_calib_size
 PGD_INTERVAL=${18:-8}  # gmp_pgd_interval -- also the effective growth cadence in this mode (no separate mask_interval-triggered growth)
 VLLM_GPU_MEM=${19:-0.15}  # gmp_opkd_vllm_gpu_mem -- 0.15 sized for OPD_GEN_LEN=256, raise for 512+
 JUMP_TO_TARGET=${20:-false}  # gmp_pgd_jump_to_target -- one-shot ablation: first PGD projection accepts ALL prune candidates (no self-KL bisection), so sparsity hits final_sparsity at step=PGD_INTERVAL instead of creeping there over hundreds of steps; PGD is pure maintenance from the next projection on. Unstructured only.
-SIDECAR=${21:-false}  # gmp_opkd_vllm_sidecar -- run vLLM in its own OS process sharing this GPU instead of in-process. The in-process engine installs vLLM's CuMemAllocator into the TRAINING process, traced to mid-training SIGSEGV in loss.backward() (6 of 7 sampled runs died at steps 23-235) and to the "Trying to free a pointer not allocated here" teardown abort. Validated on a 0.6B/40-step smoke (job 870390: EXIT 0, 0 segfaults, 6 sleep/5 wake cycles) vs the same smoke on the in-process engine (job 869907: SIGSEGV).
+# Default true since 2026-10-07: the in-process engine forces max_split_size_mb:256,
+# which starves _kl_loss's 1.24GiB contiguous block -> random SIGSEGV in backward
+# (4B roll2048: s50 died at 1946/2048, 2bit at step 10). Shared-GPU sidecar still
+# sleeps between rollouts, so the memory budget is unchanged.
+SIDECAR=${21:-true}  # gmp_opkd_vllm_sidecar -- run vLLM in its own OS process sharing this GPU instead of in-process. The in-process engine installs vLLM's CuMemAllocator into the TRAINING process, traced to mid-training SIGSEGV in loss.backward() (6 of 7 sampled runs died at steps 23-235) and to the "Trying to free a pointer not allocated here" teardown abort. Validated on a 0.6B/40-step smoke (job 870390: EXIT 0, 0 segfaults, 6 sleep/5 wake cycles) vs the same smoke on the in-process engine (job 869907: SIGSEGV).
 NTP_LAMBDA=$(echo "$LOSS_WEIGHTS" | cut -d, -f1)
 KD_LAMBDA=$(echo "$LOSS_WEIGHTS" | cut -d, -f2)
 OPKD_LAMBDA=$(echo "$LOSS_WEIGHTS" | cut -d, -f3)
