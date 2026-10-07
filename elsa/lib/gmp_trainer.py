@@ -8438,9 +8438,12 @@ def globalprune_gmp(
         for _qn in qmgr.committed:
             qmgr.committed[_qn] = torch.ones_like(qmgr.committed[_qn])
         qmgr.finalize()
-        if qmgr.shapes is not None:
-            from lib.quant_commit import remove_quant_forward_hooks
-            remove_quant_forward_hooks(qmgr, _quant_modules)
+        # Single-GPU too, not only FSDP: after finalize every weight already sits
+        # on the grid, so the hook is a no-op numerically -- but left installed it
+        # mixes bf16 scales with the fp16 weights lm_eval casts the model to, and
+        # the 4B quant launcher (eval_zero_shot=true) died there after saving.
+        from lib.quant_commit import remove_quant_forward_hooks
+        remove_quant_forward_hooks(qmgr, _quant_modules)
         logging.info(f"QUANT finalize: committed_frac={qmgr.committed_frac():.4f}, "
                      f"{qmgr.bits}-bit grid hard-applied into param.data before save/eval.")
 
