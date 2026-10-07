@@ -1546,5 +1546,23 @@
   "steps": 2048,
   "lr": null,
   "seqlen": 8192
+ },
+ "20261007_224232": {
+  "train_run": "riuqp40l",
+  "train_name": "gmp_s50pct_onpol_lam0.33_tok2048_lr5e-05_2048steps_alpssft_s50pct_lr5e-5_ot3_fin",
+  "ntp": 0.33,
+  "kd": 0.33,
+  "opd": 0.33,
+  "rollout_interval": 32,
+  "rollout_len": 2048,
+  "fixed_mask": true,
+  "pgd": false,
+  "kl_budget": 0.01,
+  "tr": false,
+  "growth": "cubic",
+  "mask_interval": 32,
+  "steps": 2048,
+  "lr": null,
+  "seqlen": 8192
  }
 }
