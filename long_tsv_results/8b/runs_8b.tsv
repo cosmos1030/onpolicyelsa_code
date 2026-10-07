@@ -14,6 +14,7 @@ Qwen 3 8B s50 ALPS+retrain	re907ejb	s3_8b_alpsretrain_s50	finished	0,1,42	cosmos
 Qwen 3 8B s50 ALPS+retrain	lqfpuzwt	s3_8b_alpsretrain_s50_seeds01	finished	0,1,42	/home/doyoonkim/models/alpsretrain_s50															
 Qwen 3 8B s50 Ours	2ddtwf5t	s3_8b_ours_s50	finished	0,1,42	cosmos1030/gmp-kd3e-1-s50pct-lr5e-5_20260907_210125	roq1vwuw	0.33	0.33	0.33	32	512	False	True	0.01	False	cubic	32	2048	None	8192
 Qwen 3 8B s50 Ours	sf0xyxbz	s3_8b_ours_s50_seeds01	finished	0,1,42	/home/doyoonkim/models/ours_s50															
+Qwen 3 8B s50 gmp_s50pct_onpol_lam0.33_tok2048_lr5e-05_2048steps_prune0pct_pgd_grow2target_klbudget0.01_lr5e-5_pgdi8_globalscope_roll2048_b200fsdp2	zal3q33u	gmp_s50pct_onpol_lam0.33_tok2048_lr5e-05_2048steps_prune0pct_pgd_grow2	finished	42	cosmos1030/gmp-kd3e-1-8b-s50pct-lr5e-5_20261007_093446	zal3q33u	0.33	0.33	0.33	32	2048	False	True	0.01	False	cubic	32	2048	None	8192
 Qwen 3 8B s60 SparseGPT	0jhvupb7	s3_8b_sparsegpt_s60	finished	0,1,42	cosmos1030/qwen3-8b-sgpt-s60pct-ot80fw20															
 Qwen 3 8B s60 SparseGPT	41dgii3b	s3_8b_sparsegpt_s60_seeds01	finished	0,1,42	/home/doyoonkim/models/sparsegpt_s60															
 Qwen 3 8B s60 SparseGPT selfgen	1uf66ape	s3_8b_s60_sgpt_selfgen	finished	0,1,42	/home1/doyoonkim/projects/elsa/models/qwen3_8b_sgpt_s60pct_n128_selfgenv3															
@@ -28,6 +29,7 @@ Qwen 3 8B s60 ALPS+retrain	j074xn67	s3_8b_alpsretrain_s60_seeds01	finished	0,1,4
 Qwen 3 8B s60 Ours	wjj50tts	s3_8b_ours_s60	finished	0,1,42	cosmos1030/gmp-kd3e-1-s60pct-lr5e-5_20260907_142152	mgf2ka9s	0.33	0.33	0.33	32	512	False	True	0.01	False	cubic	32	2048	None	8192
 Qwen 3 8B s60 Ours	osvwfyhk	s3_8b_ours_s60_seeds01	finished	0,1,42	/home/doyoonkim/models/ours_s60															
 Qwen 3 8B s60 Ours (A3 jump)	ikoaz4sk	s3_8b_a3jump_s60	finished	42	/NHNHOME/log-postech/doyoonkim/models/gmp_s60pct_lr5e-05_onpol_lmda0.33_20260914_002323_p2602547															
+Qwen 3 8B s60 gmp_s60pct_onpol_lam0.33_tok2048_lr5e-05_2048steps_prune0pct_pgd_grow2target_klbudget0.01_lr5e-5_pgdi8_globalscope_roll2048_b200fsdp2	9w762d6y	gmp_s60pct_onpol_lam0.33_tok2048_lr5e-05_2048steps_prune0pct_pgd_grow2	finished	42	cosmos1030/gmp-kd3e-1-8b-s60pct-lr5e-5_20261007_094812	9w762d6y	0.33	0.33	0.33	32	2048	False	True	0.01	False	cubic	32	2048	None	8192
 Qwen 3 8B s70 SparseGPT	yrtu7fpf	s3_8b_sparsegpt_s70	finished	0,1,42	cosmos1030/qwen3-8b-sgpt-s70pct-ot80fw20															
 Qwen 3 8B s70 SparseGPT	aumwn31v	s3_8b_sparsegpt_s70_seed0	finished	0,1,42	cosmos1030/qwen3-8b-sgpt-s70pct-ot80fw20															
 Qwen 3 8B s70 SparseGPT	c8v1gapa	s3_8b_sparsegpt_s70_seed1	finished	0,1,42	cosmos1030/qwen3-8b-sgpt-s70pct-ot80fw20															
