@@ -180,6 +180,7 @@ $PYTHON main.py \
     --seqlen=${SEQLEN} \
     --gmp_gradient_checkpointing=${GRAD_CKPT} \
     --gmp_ckpt_every_steps=${CKPT_EVERY:-0} \
+    --gmp_ckpt_dir="${CKPT_DIR:-/home1/doyoonkim/projects/elsa/models/ckpt_${SLURM_JOB_NAME}_${SLURM_JOB_ID}}" \
     --gmp_resume_from="${RESUME_FROM:-}" \
     --gmp_max_prompt_len=512 \
     --gmp_kd_only=${KD_ONLY} \

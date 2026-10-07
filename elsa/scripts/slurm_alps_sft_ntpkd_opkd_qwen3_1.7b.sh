@@ -148,6 +148,7 @@ $PYTHON main.py \
     --gmp_gradient_checkpointing=true \
     --gmp_opkd_vllm_sidecar=${SIDECAR} \
     --gmp_ckpt_every_steps=${CKPT_EVERY:-0} \
+    --gmp_ckpt_dir="${CKPT_DIR:-/home1/doyoonkim/projects/elsa/models/ckpt_${SLURM_JOB_NAME}_${SLURM_JOB_ID}}" \
     --gmp_resume_from="${RESUME_FROM:-}" \
     --gmp_kl_chunk_size=${KL_CHUNK_SIZE} \
     --gmp_max_prompt_len=512 \
