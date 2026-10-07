@@ -5382,8 +5382,9 @@ def globalprune_gmp(
                                    f"(written before quant checkpointing existed); cannot resume this run")
             for _k, _v in _qst['committed'].items():
                 qmgr.committed[_k] = _v.to(device)
-            qmgr.scales = {_k: _v.to(device) for _k, _v in _qst['scales'].items()}
-            qmgr.zeros = {_k: _v.to(device) for _k, _v in _qst['zeros'].items()}
+            # _store() compacts checkpoints written before single-GPU grids were compact
+            qmgr.scales = {_k: qmgr._store(_k, _v.to(device)) for _k, _v in _qst['scales'].items()}
+            qmgr.zeros = {_k: qmgr._store(_k, _v.to(device)) for _k, _v in _qst['zeros'].items()}
         if is_fsdp:
             with _fsdp_sd_ctx():
                 fsdp_model.load_state_dict(_ck['model'])

@@ -265,16 +265,43 @@ class QuantCommitManager:
                 p = self.named_params[n]
                 self._sizes[n] = _gather_sizes(p.numel(), p.device)
                 self._off[n] = sum(self._sizes[n][:_rank])
+        # Single-GPU, grouped grid: keep (scale, zero) COMPACT, one value per
+        # group as [out, in/gs, 1], the same layout the FSDP path already uses.
+        # Stored expanded to the weight's shape they cost 2 x the quantized
+        # weights in param dtype -- tens of GB at 4B, which is what the 4B
+        # rollout-2048 quant runs ran out of (132.65 GiB live at step 801 and
+        # 1705, vs the un-quantized SCOUT run at the same settings finishing).
+        # Values are identical, only the storage changes.
+        self._grouped = {}
+        if self.shapes is None and self.group_size > 0:
+            for n, p in named_params.items():
+                if p.dim() == 2 and p.shape[1] % self.group_size == 0:
+                    self._grouped[n] = (p.shape[0], p.shape[1])
         if grid_from_levels:
             if self.shapes is not None:
                 self._refresh_scales_fsdp(from_levels=True)
             else:
                 for n, p in named_params.items():
                     _s, _z = grid_params_from_levels(p.data.float(), self.bits, self.group_size)
-                    self.scales[n] = _s.to(p.dtype)
-                    self.zeros[n] = _z.to(p.dtype)
+                    self.scales[n] = self._store(n, _s.to(p.dtype))
+                    self.zeros[n] = self._store(n, _z.to(p.dtype))
         else:
             self.refresh_scales()
+
+    def _store(self, name, t):
+        """Full-shape per-coordinate grid tensor -> compact [out, in/gs, 1] if grouped."""
+        if name not in self._grouped or t.dim() == 3:
+            return t
+        o, i = self._grouped[name]
+        gs = self.group_size
+        return t.reshape(o, i // gs, gs)[:, :, :1].contiguous()
+
+    def _gview(self, name, t):
+        """[out, in] tensor -> [out, in/gs, gs] view for a grouped param, else unchanged."""
+        if name not in self._grouped:
+            return t
+        o, i = self._grouped[name]
+        return t.view(o, i // self.group_size, self.group_size)
 
     @torch.no_grad()
     def refresh_scales(self, fisher=None):
@@ -286,8 +313,9 @@ class QuantCommitManager:
                 f = fisher.fisher_factor(p)
             _s, _z = grid_params(p.data.float(), self.bits, self.group_size, self.sym,
                                  fisher=f, mse_grid=self.mse_grid)
-            self.scales[n] = _s.to(p.dtype)
-            self.zeros[n] = _z.to(p.dtype)
+            self.scales[n] = self._store(n, _s.to(p.dtype))
+            self.zeros[n] = self._store(n, _z.to(p.dtype))
+            del _s, _z
 
     @torch.no_grad()
     def _refresh_scales_fsdp(self, fisher=None, from_levels=False):
@@ -342,6 +370,10 @@ class QuantCommitManager:
         if f is None:
             f = torch.ones_like(param, dtype=torch.float32)
         s_, z_ = self._local_grid(name, param)
+        if name in self._grouped:
+            return commit_cost(self._gview(name, param.data.float()),
+                               self._gview(name, f.float().view(param.shape)),
+                               s_.float(), z_.float(), self.bits, self.sym).view(param.shape)
         return commit_cost(param.data.float(), f.float().view(param.shape), s_.float(),
                            z_.float(), self.bits, self.sym)
 
@@ -473,8 +505,8 @@ class QuantCommitManager:
                 q = fake_quant(p.data.float(), s_.float(), z_.float(), self.bits, self.sym).to(p.dtype)
                 p.data.copy_(torch.where(self.committed[n], q, p.data))
                 continue
-            q = fake_quant(p.data.float(), self.scales[n].float(), self.zeros[n].float(),
-                           self.bits, self.sym).to(p.dtype)
+            q = fake_quant(self._gview(n, p.data.float()), self.scales[n].float(), self.zeros[n].float(),
+                           self.bits, self.sym).to(p.dtype).view(p.shape)
             p.data = torch.where(self.committed[n], q, p.data)
 
 
@@ -497,9 +529,15 @@ def install_quant_forward_hooks(model, qmgr: QuantCommitManager, modules: dict =
 
         def _make_forward(pname):
             def _quant_forward(self, x):
-                w = _STEQuantFn.apply(self.weight, qmgr.committed[pname],
-                                      qmgr.scales[pname], qmgr.zeros[pname],
-                                      qmgr.bits, qmgr.sym)
+                if pname in qmgr._grouped:
+                    w = _STEQuantFn.apply(qmgr._gview(pname, self.weight),
+                                          qmgr._gview(pname, qmgr.committed[pname]),
+                                          qmgr.scales[pname], qmgr.zeros[pname],
+                                          qmgr.bits, qmgr.sym).view(self.weight.shape)
+                else:
+                    w = _STEQuantFn.apply(self.weight, qmgr.committed[pname],
+                                          qmgr.scales[pname], qmgr.zeros[pname],
+                                          qmgr.bits, qmgr.sym)
                 return F.linear(x, w, self.bias)
             return _quant_forward
 
