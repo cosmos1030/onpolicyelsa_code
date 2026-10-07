@@ -19,6 +19,7 @@ Qwen 3 4B s60 ALPS+retrain	vbd3dndv	s3_4b_s60_alpsretrain	finished	0,1,42	cosmos
 Qwen 3 4B s60 Ours	x2pcgf19	s3_4b_s60_ours	finished	0,1,42	cosmos1030/gmp-kd3e-1-s60pct-lr5e-5_20260901_075817	02vfcs1b	0.33	0.33	0.33	32	512	False	True	0.02	False	cubic	32	2048	None	8192
 Qwen 3 4B s60 Ours w/o OPD (0.5/0.5/0)	s1pnmvoy	s3_4b_s60_noopd	finished	0,1,42	cosmos1030/gmp-kd5e-1-s60pct-lr5e-5_20260915_181935	de0nllme	0.5	0.5	0	32	512	False	True	0.02	False	cubic	32	2048	None	8192
 Qwen 3 4B s60 Ours, cubic schedule (pace-matched)	dvqrq8zv	s3_4b_s60_cubic_matched	finished	42	cosmos1030/gmp-kd3e-1-s60pct-lr5e-5_20260903_142958	1npg0ri2	0.33	0.33	0.33	32	512	False	True	0.02	False	cubic	32	2048	None	8192
+Qwen 3 4B s60 gmp_s60pct_onpol_lam0.33_tok2048_lr5e-05_2048steps_prune0pct_roll2048_pgd_grow2target_klbudget0.02_lr5e-5_pgdi8_ri32_globalscope_ot3_fineweb_40k_qwen3_nostrip_8192	n85zk0y8	gmp_s60pct_onpol_lam0.33_tok2048_lr5e-05_2048steps_prune0pct_roll2048_	finished	42	cosmos1030/gmp-kd3e-1-4b-s60pct-lr5e-5_20261007_143047	n85zk0y8	0.33	0.33	0.33	32	2048	False	True	0.02	False	cubic	32	2048	None	8192
 Qwen 3 4B s70 SparseGPT	r9alde40	s3_4b_s70_sparsegpt	finished	0,1,42	cosmos1030/sparsegpt-qwen3-4b-s70pct															
 Qwen 3 4B s70 SparseGPT selfgen	wue1cbzo	s3_4b_s70_sgpt_selfgen	finished	0,1,42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_sgpt_s70pct_n128_selfgenv3															
 Qwen 3 4B s70 SparseLLM	xrozbvfm	s3_4b_sparsellm_s70	finished	0,1,42	/home/doyoonkim/models/sparsellm_4b_s70															
