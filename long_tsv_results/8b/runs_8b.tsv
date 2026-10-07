@@ -1,5 +1,6 @@
 block	wandb_id	run_name	state	seeds	checkpoint	train_run	ntp	kd	opd	rollout_interval	rollout_len	fixed_mask	pgd	kl_budget	tr	growth	mask_interval	steps	lr	seqlen
 Qwen 3 8B dense	xp6jch5n	s3_8b_dense	finished	0,1,42	/home1/doyoonkim/.cache/huggingface/hub/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218															
+Qwen 3 8B gmp_s0pct_onpol_lam0.33_tok2048_lr0.0001_2048steps_prune0pct_quant2b_g128_pgd_grow2target_klbudget0.02_lr1e-4_pgdi8_ri32_globalscope_b200fsdp2	yalo5jvc	gmp_s0pct_onpol_lam0.33_tok2048_lr0.0001_2048steps_prune0pct_quant2b_g	finished	42	cosmos1030/gmp-kd3e-1-8b-s0pct-lr1e-4_20261008_013029	yalo5jvc	0.33	0.33	0.33	32	2048	False	True	0.02	False	cubic	32	2048	None	8192
 Qwen 3 8B gmp_s0pct_onpol_lam0.33_tok2048_lr0.0001_2048steps_prune0pct_quant3b_g128_pgd_grow2target_klbudget0.02_lr1e-4_pgdi8_ri32_globalscope_b200fsdp2	61iipz5b	gmp_s0pct_onpol_lam0.33_tok2048_lr0.0001_2048steps_prune0pct_quant3b_g	finished	42	cosmos1030/gmp-kd3e-1-8b-quant3b-g128-roll2048-lr1e-4_20261007	61iipz5b	0.33	0.33	0.33	32	2048	False	True	0.02	False	cubic	32	2048	None	8192
 Qwen 3 8B s50 SparseGPT	zpovcm4b	s3_8b_sparsegpt_s50	finished	0,1,42	cosmos1030/qwen3-8b-sgpt-s50pct-ot80fw20															
 Qwen 3 8B s50 SparseGPT	uubwrjtd	s3_8b_sparsegpt_s50_seeds01	finished	0,1,42	/home/doyoonkim/models/sparsegpt_s50															
