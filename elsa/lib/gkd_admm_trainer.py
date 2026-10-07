@@ -33,9 +33,22 @@ def _tokenizer_identity(tokenizer):
     slow (non-Rust-backed) tokenizers that don't expose backend_tokenizer.
     """
     try:
-        return hashlib.md5(tokenizer.backend_tokenizer.to_str().encode()).hexdigest()
+        backend = tokenizer.backend_tokenizer
     except AttributeError:
         return tokenizer.name_or_path
+    # Hash the tokenizer WITHOUT its truncation/padding state. A call like
+    # tokenizer(..., truncation=True, max_length=N) switches truncation on in
+    # the Rust backend and to_str() serializes it, so a rank that tokenized a
+    # dataset itself (rank 0 on a cache miss) hashed differently from a rank
+    # that only read the cache, and the next dataset's cache path then
+    # differed across ranks (FileNotFoundError on rank 1, first OLMo run).
+    # Resetting both on a copy reproduces a fresh tokenizer's serialization,
+    # so existing cache keys are unchanged.
+    from tokenizers import Tokenizer as _RustTokenizer
+    clean = _RustTokenizer.from_str(backend.to_str())
+    clean.no_truncation()
+    clean.no_padding()
+    return hashlib.md5(clean.to_str().encode()).hexdigest()
 
 
 def _dataset_cache_path(cache_dir, jsonl_path, tokenizer_name, **kwargs):
