@@ -193,11 +193,53 @@ class _STEQuantFn(torch.autograd.Function):
         return grad_output, None, None, None, None, None
 
 
+# ---- FSDP (classic FSDP1, use_orig_params=True) --------------------------
+# Under FSDP each named_params entry is this rank's LOCAL FLAT SHARD of the
+# weight (possibly empty), not the [out, in] matrix -- the same situation the
+# pruning side handles with named_shapes + _fsdp_gather_flat/_fsdp_scatter_flat
+# in gmp_trainer.py. The quant state follows the same layout:
+#   * committed[n] is shard-shaped, like maskmgr.masks[n];
+#   * the grid (scale, zero) is computed on the gathered full [out, in] weight,
+#     so its groups of group_size are the real ones, and kept COMPACT and
+#     replicated (one value per group, ~1/group_size of the weight);
+#   * the forward hook sees the unsharded weight, so it gathers committed[n]
+#     to full shape there.
+# Every collective below is driven off `shapes` (rank-identical order), never
+# off which shards happen to be non-empty on this rank.
+
+def _dist_world():
+    import torch.distributed as dist
+    if dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1:
+        return dist
+    return None
+
+
+def _gather_var(local_flat, sizes):
+    """All-gather a flat tensor whose length differs per rank (sizes known)."""
+    dist = _dist_world()
+    mx = max(sizes)
+    pad = local_flat.new_zeros(mx)
+    if local_flat.numel() > 0:
+        pad[:local_flat.numel()] = local_flat
+    parts = [torch.empty_like(pad) for _ in sizes]
+    dist.all_gather(parts, pad)
+    return torch.cat([parts[r][:sizes[r]] for r in range(len(sizes))])
+
+
+def _gather_sizes(numel, device):
+    dist = _dist_world()
+    t = torch.tensor([numel], device=device, dtype=torch.long)
+    out = [torch.zeros_like(t) for _ in range(dist.get_world_size())]
+    dist.all_gather(out, t)
+    return [int(x.item()) for x in out]
+
+
 class QuantCommitManager:
     """Boolean 'committed' state per coordinate + ASQ-ranked gradual commitment."""
 
     def __init__(self, named_params: dict, bits: int, group_size: int = 0,
-                 mse_grid: int = 0, sym: bool = False, grid_from_levels: bool = False):
+                 mse_grid: int = 0, sym: bool = False, grid_from_levels: bool = False,
+                 shapes: dict = None):
         self.named_params = named_params
         self.bits = int(bits)
         self.group_size = int(group_size)
@@ -206,18 +248,38 @@ class QuantCommitManager:
         self.committed = {n: torch.zeros_like(p, dtype=torch.bool) for n, p in named_params.items()}
         self.scales = {}
         self.zeros = {}
+        if grid_from_levels and self.sym:
+            raise ValueError("grid_from_levels recovers an asymmetric grid; sym=True is not supported")
+        # FSDP mode: shapes = {name: (out_features, in_features)} (the pruning
+        # side's named_shapes). See the FSDP block above.
+        self.shapes = dict(shapes) if (shapes and _dist_world() is not None) else None
+        if self.shapes is not None:
+            if self.group_size <= 0:
+                raise ValueError("FSDP quantization needs --gmp_quant_group_size > 0")
+            for n, (o, i) in self.shapes.items():
+                if i % self.group_size:
+                    raise ValueError(f"{n}: in_features {i} not divisible by group_size {self.group_size}")
+            self._sizes, self._off = {}, {}
+            _rank = _dist_world().get_rank()
+            for n in self.shapes:
+                p = self.named_params[n]
+                self._sizes[n] = _gather_sizes(p.numel(), p.device)
+                self._off[n] = sum(self._sizes[n][:_rank])
         if grid_from_levels:
-            if self.sym:
-                raise ValueError("grid_from_levels recovers an asymmetric grid; sym=True is not supported")
-            for n, p in named_params.items():
-                _s, _z = grid_params_from_levels(p.data.float(), self.bits, self.group_size)
-                self.scales[n] = _s.to(p.dtype)
-                self.zeros[n] = _z.to(p.dtype)
+            if self.shapes is not None:
+                self._refresh_scales_fsdp(from_levels=True)
+            else:
+                for n, p in named_params.items():
+                    _s, _z = grid_params_from_levels(p.data.float(), self.bits, self.group_size)
+                    self.scales[n] = _s.to(p.dtype)
+                    self.zeros[n] = _z.to(p.dtype)
         else:
             self.refresh_scales()
 
     @torch.no_grad()
     def refresh_scales(self, fisher=None):
+        if self.shapes is not None:
+            return self._refresh_scales_fsdp(fisher)
         for n, p in self.named_params.items():
             f = None
             if fisher is not None:
@@ -227,9 +289,51 @@ class QuantCommitManager:
             self.scales[n] = _s.to(p.dtype)
             self.zeros[n] = _z.to(p.dtype)
 
+    @torch.no_grad()
+    def _refresh_scales_fsdp(self, fisher=None, from_levels=False):
+        dist = _dist_world()
+        gs = self.group_size
+        self.scales, self.zeros = {}, {}  # compact, replicated: one value per group
+        for n, (o, i) in self.shapes.items():
+            p = self.named_params[n]
+            sizes = self._sizes[n]
+            w = _gather_var(p.data.reshape(-1), sizes).float().view(o, i)
+            f_full = None
+            if fisher is not None and not from_levels:
+                f = fisher.fisher_factor(p)
+                # an empty local shard has no grad, hence no Adam state: that
+                # rank contributes nothing, it does not mean "no Fisher yet"
+                ok = torch.tensor([1 if (f is not None or p.numel() == 0) else 0],
+                                  device=p.device, dtype=torch.int32)
+                dist.all_reduce(ok, op=dist.ReduceOp.MIN)
+                if int(ok.item()) == 1:
+                    f_loc = f.reshape(-1).float() if f is not None else p.new_zeros(0, dtype=torch.float32)
+                    f_full = _gather_var(f_loc, sizes).view(o, i)
+            if from_levels:
+                s_, z_ = grid_params_from_levels(w, self.bits, gs)
+            else:
+                s_, z_ = grid_params(w, self.bits, gs, self.sym, fisher=f_full, mse_grid=self.mse_grid)
+            self.scales[n] = s_.reshape(-1, gs)[:, 0].contiguous().to(p.dtype)
+            self.zeros[n] = z_.reshape(-1, gs)[:, 0].contiguous().to(p.dtype)
+            del w, f_full, s_, z_
+
+    def _local_grid(self, name, param):
+        """(scale, zero) per coordinate of THIS rank's shard, from the compact grid."""
+        if self.shapes is None:
+            return self.scales[name], self.zeros[name]
+        gidx = (self._off[name] + torch.arange(param.numel(), device=param.device)) // self.group_size
+        return (self.scales[name][gidx].view(param.shape),
+                self.zeros[name][gidx].view(param.shape))
+
     def committed_frac(self) -> float:
         tot = sum(m.numel() for m in self.committed.values())
         com = sum(int(m.sum().item()) for m in self.committed.values())
+        dist = _dist_world() if self.shapes is not None else None
+        if dist is not None:
+            t = torch.tensor([com, tot], dtype=torch.float64,
+                             device=next(iter(self.committed.values())).device)
+            dist.all_reduce(t, op=dist.ReduceOp.SUM)
+            com, tot = float(t[0].item()), float(t[1].item())
         return com / max(1, tot)
 
     @torch.no_grad()
@@ -237,8 +341,9 @@ class QuantCommitManager:
         f = fisher.fisher_factor(param)
         if f is None:
             f = torch.ones_like(param, dtype=torch.float32)
-        return commit_cost(param.data.float(), f.float(), self.scales[name].float(),
-                           self.zeros[name].float(), self.bits, self.sym)
+        s_, z_ = self._local_grid(name, param)
+        return commit_cost(param.data.float(), f.float().view(param.shape), s_.float(),
+                           z_.float(), self.bits, self.sym)
 
     @torch.no_grad()
     def sample_costs(self, fisher, max_samples: int = 2_000_000) -> torch.Tensor:
@@ -256,16 +361,27 @@ class QuantCommitManager:
         the sample unbiased across differently-sized layers, which matters
         because the threshold is global.
         """
-        tot = sum(p.numel() for p in self.named_params.values())
+        if self.shapes is not None:
+            # one GLOBAL threshold: every rank samples its shards at the same
+            # rate, the samples are pooled, so all ranks read the same quantile
+            tot = sum(o * i for o, i in self.shapes.values())
+        else:
+            tot = sum(p.numel() for p in self.named_params.values())
         rate = min(1.0, max_samples / max(1, tot))
         out = []
         for n, p in self.named_params.items():
+            if p.numel() == 0:
+                continue
             c = self._cost_one(n, p, fisher).reshape(-1)
             k = max(1, int(c.numel() * rate))
             idx = torch.randint(0, c.numel(), (k,), device=c.device)
-            out.append(c[idx].float().cpu())
+            out.append(c[idx].float() if self.shapes is not None else c[idx].float().cpu())
             del c
-        return torch.cat(out)
+        if self.shapes is None:
+            return torch.cat(out)
+        dev = next(iter(self.named_params.values())).device
+        loc = torch.cat(out) if out else torch.zeros(0, device=dev)
+        return _gather_var(loc, _gather_sizes(loc.numel(), dev)).cpu()
 
     # ---- per-event cost cache -------------------------------------------
     # Within one PGD event the weights, scales and Fisher are all frozen, so
@@ -348,21 +464,36 @@ class QuantCommitManager:
         alone never touches param.data (that is the point of STE), so without
         this the checkpoint on disk would be full precision."""
         for n, p in self.named_params.items():
+            if self.shapes is not None:
+                # FSDP: p is a view into the flat param -- write in place,
+                # never rebind .data
+                if p.numel() == 0:
+                    continue
+                s_, z_ = self._local_grid(n, p)
+                q = fake_quant(p.data.float(), s_.float(), z_.float(), self.bits, self.sym).to(p.dtype)
+                p.data.copy_(torch.where(self.committed[n], q, p.data))
+                continue
             q = fake_quant(p.data.float(), self.scales[n].float(), self.zeros[n].float(),
                            self.bits, self.sym).to(p.dtype)
             p.data = torch.where(self.committed[n], q, p.data)
 
 
-def install_quant_forward_hooks(model, qmgr: QuantCommitManager):
+def install_quant_forward_hooks(model, qmgr: QuantCommitManager, modules: dict = None):
     """Route each managed nn.Linear's forward through _STEQuantFn, reading
     qmgr.committed/qmgr.scales fresh every call so later commitment updates --
     including a whole-dict swap, which is how the trust-region screen evaluates
     a candidate without mutating any weight -- are picked up with no
     re-registration. Mirrors install_ste_forward_hooks."""
+    # modules: {param name: nn.Linear}, from the same traversal that built
+    # named_params -- under FSDP model.named_modules() carries the wrapper
+    # prefixes and would not match.
     name_to_module = dict(model.named_modules())
     for full_name in qmgr.named_params:
         assert full_name.endswith('.weight')
-        module = name_to_module[full_name[:-len('.weight')]]
+        module = modules[full_name] if modules is not None else name_to_module[full_name[:-len('.weight')]]
+        if qmgr.shapes is not None:
+            module.forward = types.MethodType(_make_fsdp_quant_forward(qmgr, full_name), module)
+            continue
 
         def _make_forward(pname):
             def _quant_forward(self, x):
@@ -373,3 +504,33 @@ def install_quant_forward_hooks(model, qmgr: QuantCommitManager):
             return _quant_forward
 
         module.forward = types.MethodType(_make_forward(full_name), module)
+
+
+def _make_fsdp_quant_forward(qmgr: QuantCommitManager, pname: str):
+    """FSDP forward: self.weight is the unsharded [out, in] weight here, while
+    qmgr.committed[pname] is this rank's flat shard -- gather it (every rank
+    runs the same layers in the same order, so the collective lines up) and
+    apply the compact grid per group."""
+    o, i = qmgr.shapes[pname]
+    gs = qmgr.group_size
+    sizes = qmgr._sizes[pname]
+
+    def _quant_forward(self, x):
+        c = _gather_var(qmgr.committed[pname].reshape(-1).to(torch.uint8), sizes).bool()
+        w3 = self.weight.view(o, i // gs, gs)
+        w = _STEQuantFn.apply(w3, c.view(o, i // gs, gs),
+                              qmgr.scales[pname].view(o, i // gs, 1),
+                              qmgr.zeros[pname].view(o, i // gs, 1),
+                              qmgr.bits, qmgr.sym).view(o, i)
+        return F.linear(x, w, self.bias)
+    return _quant_forward
+
+
+def remove_quant_forward_hooks(qmgr: QuantCommitManager, modules: dict):
+    """Drop the per-instance forward override (back to nn.Linear.forward).
+    Called after finalize() under FSDP: the grid is in param.data by then, and
+    a gathering hook must not survive into a rank-0-only eval/save forward."""
+    for full_name in qmgr.named_params:
+        m = modules[full_name]
+        if 'forward' in m.__dict__:
+            del m.forward

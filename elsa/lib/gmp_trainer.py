@@ -4758,12 +4758,20 @@ def globalprune_gmp(
     quant_bits = int(getattr(FLAGS, 'gmp_quant_bits', 0) or 0)
     if quant_bits > 0:
         from lib.quant_commit import QuantCommitManager, install_quant_forward_hooks
+        # Under FSDP named_params are flat local shards: pass the pruning
+        # side's named_shapes so the grid is built on the real [out, in]
+        # groups, and the Linear modules from the same traversal (FSDP's
+        # wrapper prefixes break a model.named_modules() lookup).
+        _quant_modules = {f"model.layers.{_bi}.{_mn}.weight": _mm
+                          for _bi, _layer in enumerate(_get_decoder_layers(model))
+                          for _mn, _mm in _layer.named_modules() if isinstance(_mm, nn.Linear)}
         qmgr = QuantCommitManager(named_params, bits=quant_bits,
                                   group_size=int(getattr(FLAGS, 'gmp_quant_group_size', 0) or 0),
                                   mse_grid=int(getattr(FLAGS, 'gmp_quant_mse_grid', 0) or 0),
                                   sym=bool(getattr(FLAGS, 'gmp_quant_sym', False)),
-                                  grid_from_levels=bool(getattr(FLAGS, 'gmp_quant_grid_from_levels', False)))
-        install_quant_forward_hooks(model, qmgr)
+                                  grid_from_levels=bool(getattr(FLAGS, 'gmp_quant_grid_from_levels', False)),
+                                  shapes=(named_shapes if fsdp_model is not None else None))
+        install_quant_forward_hooks(model, qmgr, modules=_quant_modules)
         logging.info(f"  QUANT ENABLED: {quant_bits}-bit {'symmetric' if getattr(FLAGS,'gmp_quant_sym',False) else 'ASYMMETRIC'}, group_size="
                      f"{getattr(FLAGS, 'gmp_quant_group_size', 0)}, mse_grid="
                      f"{getattr(FLAGS, 'gmp_quant_mse_grid', 0)}, commitment 0 -> "
@@ -4786,8 +4794,9 @@ def globalprune_gmp(
         try:
             qmgr.committed = committed_state
             with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-                return model(input_ids=_quant_ref_lp['ids'],
-                             attention_mask=_quant_ref_lp['am']).logits.detach()[:, :-1, :]
+                return (fsdp_model if fsdp_model is not None else model)(
+                    input_ids=_quant_ref_lp['ids'],
+                    attention_mask=_quant_ref_lp['am']).logits.detach()[:, :-1, :]
         finally:
             qmgr.committed = _saved
 
@@ -4819,6 +4828,7 @@ def globalprune_gmp(
         if _ref is None:
             return 0.0
         _cand = _quant_logits(cand_committed)
+        _cand_dev = _cand.device
         _valid = _quant_ref_lp['valid']
         _tot = torch.zeros((), dtype=torch.float64, device=_cand.device)
         _cnt = 0
@@ -4837,7 +4847,16 @@ def globalprune_gmp(
             _cnt += int(_vm.sum().item())
             del _k
         del _cand
-        return float((_tot / max(1, _cnt)).item())
+        _kl_v = float((_tot / max(1, _cnt)).item())
+        if fsdp_model is not None and qmgr.shapes is not None:
+            # Same reason as PGD's _pgd_kl_at: the probe forward is an FSDP
+            # collective, so every rank must take the same bisection branch.
+            # Use rank 0's value everywhere.
+            import torch.distributed as _dist
+            _kl_t = torch.tensor([_kl_v], dtype=torch.float64, device=_cand_dev)
+            _dist.broadcast(_kl_t, src=0)
+            _kl_v = float(_kl_t.item())
+        return _kl_v
 
     def _quant_commit_step(step):
         """Advance the committed fraction toward its target on the PGD cadence.
@@ -4970,8 +4989,11 @@ def globalprune_gmp(
         qmgr.set_commitment(fisher, max(_applied, _cur))
         qmgr.end_event()
         _quant_last_frac = _applied
+        # committed_frac() is a collective under FSDP: evaluate it here on every
+        # rank, never inside the rank-0-only wandb block below.
+        _cf = qmgr.committed_frac()
         logging.info(f"  [quant] step={step} target={_tgt:.4f} applied={_applied:.4f} "
-                     f"committed={qmgr.committed_frac():.4f} kl={_kl:.6f} budget={_quant_kl_budget}")
+                     f"committed={_cf:.4f} kl={_kl:.6f} budget={_quant_kl_budget}")
         _ev_sec = time.time() - _ev_t0
         _ev_peak = torch.cuda.max_memory_allocated() / 1e9
         logging.info(f"  [quant][cost] step={step} event_sec={_ev_sec:.2f} "
@@ -4980,11 +5002,11 @@ def globalprune_gmp(
         if use_wandb and is_main_process:
             wandb.log({"quant/event_sec": _ev_sec, "quant/peak_gb": _ev_peak,
                        "quant/base_gb": _ev_base, "quant/peak_delta_gb": _ev_peak - _ev_base,
-                       "quant/committed_frac": qmgr.committed_frac(), "quant/target": _tgt,
+                       "quant/committed_frac": _cf, "quant/target": _tgt,
                        "quant/forced": float(_forced),
                        "quant/applied_frac": _applied, "quant/kl_at_applied": _kl,
                        "quant/kl_budget": _quant_kl_budget,
-                       "quant/remaining": _tgt - qmgr.committed_frac()}, step=step)
+                       "quant/remaining": _tgt - _cf}, step=step)
         logging.info("  STE masking ENABLED (--gmp_ste): forward masks weight*mask, "
                      "gradient passes straight through; param.data is never hard-reset.")
     if lr_schedule in ('constant', 'constant_with_warmup'):
@@ -5304,7 +5326,16 @@ def globalprune_gmp(
             _os_ck.makedirs(_ckpt_dir, exist_ok=True)
         if is_distributed:
             _dist.barrier()
+        # Quant state rides in the rank-local file: committed[] is shard-shaped
+        # under FSDP like the masks; scales/zeros are whatever qmgr holds
+        # (compact + replicated under FSDP, per-coordinate otherwise).
+        _qst = None
+        if qmgr is not None:
+            _qst = {'committed': {k: v.detach().cpu() for k, v in qmgr.committed.items()},
+                    'scales': {k: v.detach().cpu() for k, v in qmgr.scales.items()},
+                    'zeros': {k: v.detach().cpu() for k, v in qmgr.zeros.items()}}
         torch.save({'masks': {k: v.detach().cpu() for k, v in maskmgr.masks.items()},
+                    'quant': _qst,
                     'step': _st, 'world_size': world_size}, _mask_p)
         if is_fsdp:
             with _fsdp_sd_ctx():
@@ -5344,6 +5375,15 @@ def globalprune_gmp(
                                f"(mask shards are rank-local; resume with the same GPU count)")
         for _k, _v in _mk['masks'].items():
             maskmgr.masks[_k] = _v.to(device)
+        if qmgr is not None:
+            _qst = _mk.get('quant')
+            if _qst is None:
+                raise RuntimeError(f"[ckpt] {_mask_p} has no quant state but --gmp_quant_bits>0 "
+                                   f"(written before quant checkpointing existed); cannot resume this run")
+            for _k, _v in _qst['committed'].items():
+                qmgr.committed[_k] = _v.to(device)
+            qmgr.scales = {_k: _v.to(device) for _k, _v in _qst['scales'].items()}
+            qmgr.zeros = {_k: _v.to(device) for _k, _v in _qst['zeros'].items()}
         if is_fsdp:
             with _fsdp_sd_ctx():
                 fsdp_model.load_state_dict(_ck['model'])
@@ -5355,7 +5395,8 @@ def globalprune_gmp(
         maskmgr.apply(fsdp_model if is_fsdp else model)
         _st = int(_ck['step'])
         logging.info(f"[ckpt] resumed from {_main_p} at step={_st} "
-                     f"(sparsity={maskmgr.current_sparsity():.4f}, lr={scheduler.get_last_lr()[0]:.3e})")
+                     f"(sparsity={maskmgr.current_sparsity():.4f}, lr={scheduler.get_last_lr()[0]:.3e}"
+                     + (f", quant committed={qmgr.committed_frac():.4f}" if qmgr is not None else "") + ")")
         return _st
 
     _resume_from = getattr(FLAGS, 'gmp_resume_from', '') or ''
@@ -8396,6 +8437,9 @@ def globalprune_gmp(
         for _qn in qmgr.committed:
             qmgr.committed[_qn] = torch.ones_like(qmgr.committed[_qn])
         qmgr.finalize()
+        if qmgr.shapes is not None:
+            from lib.quant_commit import remove_quant_forward_hooks
+            remove_quant_forward_hooks(qmgr, _quant_modules)
         logging.info(f"QUANT finalize: committed_frac={qmgr.committed_frac():.4f}, "
                      f"{qmgr.bits}-bit grid hard-applied into param.data before save/eval.")
 
