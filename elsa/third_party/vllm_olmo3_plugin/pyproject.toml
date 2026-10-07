@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vllm-olmo3-plugin"
+version = "0.1.0"
+description = "Olmo3ForCausalLM for vLLM 0.10.0 (port of vLLM 0.11.0 olmo2.py changes)"
+requires-python = ">=3.9"
+
+[project.entry-points."vllm.general_plugins"]
+olmo3 = "vllm_olmo3_plugin:register"
+
+[tool.setuptools]
+packages = ["vllm_olmo3_plugin"]
