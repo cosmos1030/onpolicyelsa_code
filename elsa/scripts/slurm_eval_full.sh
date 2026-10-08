@@ -7,7 +7,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=80G
-#SBATCH --time=12:00:00
+#SBATCH --time=2-00:00:00
 #SBATCH --exclude=n3,n42,n46,n51,n54,n60,n77,n80,n87,n91
 # 잡 표준출력은 노드 로컬에 쓴다. NFS(/home1)에 직접 쓰던 2026-09-23,
 # /home1이 11:34~14:45 멈추자 돌던 eval 12개가 uninterruptible I/O에 박혀
