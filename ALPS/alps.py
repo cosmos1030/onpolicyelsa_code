@@ -99,10 +99,17 @@ class ALPS_prune:
         self.XtY_raw += out_p.matmul(inp_q.t())
 
     def ALPS_admm(self, sp, nm_n = 0, nm_m = 0, rho=0.1, max_iter = 300, update_iter = 3, switch_iter = 30,
-                  corrected_target = False):
-        
+                  corrected_target = False, W_target = None, W_init = None):
+        # W_target: reconstruction target weight (default: the layer's current
+        #   weight, i.e. dense on a first pass). A second ("refine") pass over an
+        #   already-pruned layer must pass the DENSE weight here, or it would
+        #   reconstruct the pruned layer instead of the dense one.
+        # W_init: where ADMM starts (default: the target). The refine pass starts
+        #   from the first pass's pruned weight, and the "restart" branch below
+        #   falls back to it instead of to the dense weight.
+
         # get dense weight
-        W = self.layer.weight.data.clone()
+        W = (W_target if W_target is not None else self.layer.weight.data).clone()
         W = W.float()
         W = W.to('cuda:0')
         self.XtX = self.XtX.cpu()
@@ -145,6 +152,13 @@ class ALPS_prune:
         B = (W * X_norm.to(dev)).t().clone()
         W = None
         B_orig = B.cpu().clone()
+        if W_init is not None:
+            _Wi = W_init.clone().float().to(dev)
+            if isinstance(self.layer, transformers.Conv1D):
+                _Wi = _Wi.t()
+            B = (_Wi * X_norm.to(dev)).t().clone()
+            del _Wi
+        B_start = B.cpu().clone()
         V = torch.zeros_like(B)
         D = torch.zeros_like(B)
         D_suppp = torch.zeros_like(B)
@@ -227,7 +241,7 @@ class ALPS_prune:
                             rho *= 1.1
                         else:
                             rho /= 5
-                            B = B_orig.clone().to(dev)
+                            B = B_start.clone().to(dev)
                             D = D_init.clone().to(dev)
                             V = torch.zeros_like(B).to(dev)     
                     else:

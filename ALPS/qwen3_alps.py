@@ -1,4 +1,5 @@
 import argparse
+import json
 import random
 import subprocess
 import sys
@@ -228,6 +229,115 @@ def cache_dense_layer_inputs(model, dataloader, dev, nsamples, cache_dir):
     return cache['attention_mask'], cache['position_ids'], cache['position_embeddings']
 
 
+# ── Rollout-refined ALPS (--rollout_refine) ─────────────────────────────────
+#
+# Per layer i: (1) ALPS on the fixed calibration data, as usual; (2) roll out
+# the CURRENT model (layers 0..i pruned, the rest still dense) on OPD prompts;
+# (3) pack those rollouts into nsamples x seqlen windows and push them through
+# the pruned prefix (embed + layers 0..i-1) to get layer i's inputs on the
+# model's own trajectory; (4) re-run ALPS on layer i starting from the pass-1
+# result, still reconstructing the DENSE layer (its H is accumulated with the
+# dense weights restored, exactly like pass 1). Only rollouts feed pass 2.
+
+def _vllm_sync_layer(llm, layer, i):
+    """Push decoder layer i's current weights into the in-process vLLM engine.
+    load_weights() takes HF names and fills vLLM's merged qkv_proj /
+    gate_up_proj itself -- a name-matching copy would silently skip those."""
+    vm = llm.llm_engine.model_executor.driver_worker.model_runner.model
+    vm.load_weights([(f'model.layers.{i}.{n}', t.data) for n, t in layer.named_parameters()])
+
+
+def _load_rollout_prompts(path, tokenizer, max_prompt_len):
+    marker = '<|im_start|>assistant\n'
+    prompts = []
+    with open(path) as f:
+        for line in f:
+            text = json.loads(line).get('text', '')
+            if marker not in text:
+                continue
+            ids = tokenizer(text.split(marker, 1)[0] + marker).input_ids
+            if 0 < len(ids) <= max_prompt_len:
+                prompts.append(ids)
+    return prompts
+
+
+def _rollout_windows(llm, prompts, rng, nsamples, seqlen, args):
+    """Generate with the current model until nsamples*seqlen tokens of
+    (prompt + completion) are collected, then pack them into windows."""
+    from vllm import SamplingParams
+    from vllm.inputs import TokensPrompt
+    sp = SamplingParams(max_tokens=args.rollout_max_new, temperature=args.rollout_temp,
+                        top_p=args.rollout_top_p, seed=rng.randrange(1 << 30))
+    need = nsamples * seqlen
+    stream, lens, examples = [], [], []
+    while len(stream) < need:
+        batch = rng.sample(prompts, args.rollout_batch)
+        outs = llm.generate([TokensPrompt(prompt_token_ids=p) for p in batch], sp, use_tqdm=False)
+        for p, o in zip(batch, outs):
+            g = list(o.outputs[0].token_ids)
+            stream.extend(p + g)
+            lens.append(len(g))
+            if len(examples) < 2:
+                examples.append(o.outputs[0].text[:600])
+    windows = torch.tensor(stream[:need], dtype=torch.long).view(nsamples, seqlen)
+    stats = {'n_rollouts': len(lens), 'avg_gen_tokens': float(np.mean(lens)),
+             'trunc_rate': float(np.mean([l >= args.rollout_max_new for l in lens])),
+             'examples': examples}
+    return windows, stats
+
+
+def _rel_err(W, Wd, H):
+    """ALPS objective at W, relative to the dense layer's output energy:
+    tr((W-Wd) H (W-Wd)^T) / tr(Wd H Wd^T), H = X^T X (raw, undamped)."""
+    W, Wd, H = W.float().cuda(), Wd.float().cuda(), H.float().cuda()
+    D = W - Wd
+    return float(((D @ H) * D).sum() / ((Wd @ H) * Wd).sum().clamp(min=1e-30))
+
+
+def _h_shift(H1, H2):
+    """Relative Frobenius distance between trace-normalized input second
+    moments: how differently the fixed data and the rollouts excite this input."""
+    a = H1.float().cuda() / torch.trace(H1.float().cuda())
+    b = H2.float().cuda() / torch.trace(H2.float().cuda())
+    return float(torch.linalg.norm(a - b) / torch.linalg.norm(a))
+
+
+@torch.no_grad()
+def _capture_layer_inputs(model, windows, upto, dev):
+    """Inputs of decoder layer `upto` for `windows`, via embed + layers[0:upto]
+    (already pruned). Leaves every layer where it found it."""
+    layers = model.model.layers
+    nsamples = windows.shape[0]
+    dtype = next(iter(model.parameters())).dtype
+    inps = torch.zeros((nsamples, model.seqlen, model.config.hidden_size), dtype=dtype, device=dev)
+    cache = {'i': 0, 'attention_mask': None, 'position_ids': None, 'position_embeddings': None}
+    l0_dev = next(layers[0].parameters()).device
+    model.model.embed_tokens = model.model.embed_tokens.to(dev)
+    if hasattr(model.model, 'rotary_emb'):
+        model.model.rotary_emb = model.model.rotary_emb.to(dev)
+    layers[0] = _make_catcher(inps, cache, nsamples)(layers[0])
+    for j in range(nsamples):
+        try:
+            model(windows[j:j + 1].to(dev))
+        except ValueError:
+            pass
+    layers[0] = layers[0].module
+    model.model.embed_tokens = model.model.embed_tokens.cpu()
+    if hasattr(model.model, 'rotary_emb'):
+        model.model.rotary_emb = model.model.rotary_emb.cpu()
+    outs = torch.zeros_like(inps)
+    for k in range(upto):
+        lk = layers[k].to(dev)
+        for j in range(nsamples):
+            outs[j] = _layer_fwd(lk, inps[j].unsqueeze(0), cache)
+        layers[k] = lk.cpu()
+        inps, outs = outs, inps
+    layers[0] = layers[0].to(l0_dev)
+    del outs
+    torch.cuda.empty_cache()
+    return inps
+
+
 # ── Pruning ───────────────────────────────────────────────────────────────────
 
 @torch.no_grad()
@@ -292,6 +402,9 @@ def qwen3_sequential(model, dataloader, dev, args):
         Xp = None
         if corrected_target:
             Xp = torch.load(os.path.join(dense_cache_dir, f'layer_{i}_X.pt')).to(dev)
+        refine = getattr(args, 'rollout_refine', False)
+        if refine:
+            Wd = {n: full[n].weight.data.detach().cpu().clone() for n in full}
 
         scd = {}
         for names in sequential:
@@ -330,17 +443,80 @@ def qwen3_sequential(model, dataloader, dev, args):
             for h in handles:
                 h.remove()
 
+            if refine:
+                H1 = {name: scd[name].XtX.detach().cpu().clone() for name in subset}
             for name in subset:
                 print(f'  Layer {i} {name}')
                 scd[name].ALPS_admm(sp=args.sp, nm_n=args.nm_n, nm_m=args.nm_m, rho=args.rho,
                                      corrected_target=corrected_target)
-                d1, d2 = scd[name].layer.weight.data.shape
-                nnz = (scd[name].layer.weight.data.abs() > 0).sum().item()
-                tot_params += d1 * d2
-                tot_nnz += nnz
+                if not refine:
+                    d1, d2 = scd[name].layer.weight.data.shape
+                    nnz = (scd[name].layer.weight.data.abs() > 0).sum().item()
+                    tot_params += d1 * d2
+                    tot_nnz += nnz
                 scd[name].free()
 
         del Xp
+        if refine:
+            llm = args._rollout_llm
+            _vllm_sync_layer(llm, layer, i)
+            t0 = time.time()
+            rng = random.Random(args.seed * 100003 + i)
+            windows, rstats = _rollout_windows(llm, args._rollout_prompts, rng, nsamples, model.seqlen, args)
+            t_roll = time.time() - t0
+            Xr = _capture_layer_inputs(model, windows, i, dev)
+            W1 = {n: full[n].weight.data.detach().clone() for n in full}
+            for n in full:                      # H on the dense layer, as in pass 1
+                full[n].weight.data.copy_(Wd[n].to(full[n].weight.device))
+            scd2 = {n: ALPS_prune(full[n], nsamples=nsamples, seqlen=model.seqlen) for n in full}
+
+            def make_hook2(name):
+                def tmp(_, inp, out):
+                    scd2[name].add_batch(inp[0].data, out.data)
+                return tmp
+            handles = [full[n].register_forward_hook(make_hook2(n)) for n in full]
+            for j in range(nsamples):
+                _layer_fwd(layer, Xr[j].unsqueeze(0), cache)
+            del Xr
+            H2 = {n: scd2[n].XtX.detach().cpu().clone() for n in full}   # rollout-only H, for the analysis
+            if getattr(args, 'rollout_mix_fixed', False):
+                # --rollout_mix_fixed: the refine pass also sees the fixed
+                # calibration windows (this layer's current inputs, `inps`),
+                # token for token as many as the rollouts.
+                for j in range(nsamples):
+                    _layer_fwd(layer, inps[j].unsqueeze(0), cache)
+            for h in handles:
+                h.remove()
+            sub = {}
+            for n in full:
+                print(f'  Layer {i} {n} (refine)')
+                scd2[n].ALPS_admm(sp=args.sp, nm_n=args.nm_n, nm_m=args.nm_m, rho=args.rho,
+                                  W_target=Wd[n], W_init=W1[n])
+                W2 = full[n].weight.data
+                d1, d2 = W2.shape
+                tot_params += d1 * d2
+                tot_nnz += (W2.abs() > 0).sum().item()
+                m1, m2 = (W1[n] != 0), (W2 != 0)
+                sub[n] = {
+                    'mask_change': float((m1 ^ m2).sum() / m1.sum().clamp(min=1)),
+                    'weight_change': float(torch.linalg.norm((W2 - W1[n]).float()) / torch.linalg.norm(W1[n].float())),
+                    'err_p1_fixed': _rel_err(W1[n], Wd[n], H1[n]), 'err_p2_fixed': _rel_err(W2, Wd[n], H1[n]),
+                    'err_p1_roll': _rel_err(W1[n], Wd[n], H2[n]), 'err_p2_roll': _rel_err(W2, Wd[n], H2[n]),
+                    'h_shift': _h_shift(H1[n], H2[n]),
+                }
+                scd2[n].free()
+            del scd2, W1, Wd, H1, H2
+            _vllm_sync_layer(llm, layer, i)
+            rec = {'layer': i, 'rollout_sec': round(t_roll, 1), 'layer_sec': round(time.time() - t0, 1),
+                   **{k: v for k, v in rstats.items() if k != 'examples'}, 'sub': sub,
+                   'examples': rstats['examples']}
+            with open(args._analysis_path, 'a') as _f:
+                _f.write(json.dumps(rec) + '\n')
+            _mc = np.mean([v['mask_change'] for v in sub.values()])
+            _e = {k: np.mean([v[k] for v in sub.values()]) for k in ('err_p1_fixed', 'err_p2_fixed', 'err_p1_roll', 'err_p2_roll')}
+            print(f'  [rollout_refine] layer {i}: {rstats["n_rollouts"]} rollouts, avg {rstats["avg_gen_tokens"]:.0f} gen tok, '
+                  f'trunc {rstats["trunc_rate"]:.2f} | mask change {_mc:.3f} | err fixed {_e["err_p1_fixed"]:.4f}->{_e["err_p2_fixed"]:.4f} '
+                  f'roll {_e["err_p1_roll"]:.4f}->{_e["err_p2_roll"]:.4f} | rollout {t_roll:.0f}s, layer {time.time() - t0:.0f}s', flush=True)
         for j in range(nsamples):
             outs[j] = _layer_fwd(layer, inps[j].unsqueeze(0), cache)
 
@@ -488,6 +664,20 @@ if __name__ == '__main__':
     parser.add_argument('--out_base', type=str, default='')
     parser.add_argument('--push_to_hub', action='store_true', help='Upload pruned model to HuggingFace Hub after saving')
     parser.add_argument('--hub_model_id', type=str, default=None, help='HF Hub repo id (e.g. username/model-name); auto-generated if not given')
+    parser.add_argument('--rollout_refine', action='store_true',
+                         help='After each layer\'s ALPS on the fixed data, roll out the partially pruned model and '
+                              're-run ALPS on that layer from the pass-1 result using only the rollouts.')
+    parser.add_argument('--rollout_prompt_path', type=str,
+                         default='/home1/doyoonkim/projects/elsa/data/ot3_fineweb_200k_qwen3_opdprompts.jsonl')
+    parser.add_argument('--rollout_max_new', type=int, default=2048)
+    parser.add_argument('--rollout_temp', type=float, default=0.6)
+    parser.add_argument('--rollout_top_p', type=float, default=0.95)
+    parser.add_argument('--rollout_batch', type=int, default=192)
+    parser.add_argument('--rollout_max_prompt', type=int, default=512)
+    parser.add_argument('--rollout_vllm_mem', type=float, default=0.3)
+    parser.add_argument('--rollout_analysis_out', type=str, default='')
+    parser.add_argument('--rollout_mix_fixed', action='store_true',
+                         help='Refine pass uses fixed calibration windows + rollouts (equal tokens) instead of rollouts only.')
     args = parser.parse_args()
 
     tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
@@ -515,6 +705,19 @@ if __name__ == '__main__':
     if args.corrected_target and not args.dense_cache_dir:
         script_dir = os.path.dirname(os.path.abspath(__file__))
         args.dense_cache_dir = os.path.join(script_dir, 'dense_cache_tmp', f'pid{os.getpid()}')
+
+    if args.rollout_refine:
+        from vllm import LLM
+        args._rollout_prompts = _load_rollout_prompts(args.rollout_prompt_path, tokenizer, args.rollout_max_prompt)
+        print(f'[rollout_refine] {len(args._rollout_prompts)} prompts from {args.rollout_prompt_path}')
+        args._analysis_path = args.rollout_analysis_out or (
+            os.path.join(args.save, 'rollout_refine_analysis.jsonl') if args.save else 'rollout_refine_analysis.jsonl')
+        os.makedirs(os.path.dirname(os.path.abspath(args._analysis_path)), exist_ok=True)
+        open(args._analysis_path, 'w').close()
+        print(f'[rollout_refine] per-layer analysis -> {args._analysis_path}')
+        args._rollout_llm = LLM(model=args.model, gpu_memory_utilization=args.rollout_vllm_mem,
+                                max_model_len=args.rollout_max_prompt + args.rollout_max_new + 16,
+                                seed=args.seed, dtype='bfloat16')
 
     tick = time.time()
     qwen3_sequential(model, dataloader, DEV, args)
