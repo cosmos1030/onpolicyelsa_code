@@ -64,6 +64,10 @@ METHOD = {'dense': 'dense', 'sparsegpt': 'SparseGPT', 'sgpt_selfgen': 'SparseGPT
           # August ELSA (ADMM, NTP only) checkpoint re-evaluated at the long profile
           # for the rebuttal; its own in-run eval was the quick profile.
           'elsa_ntp': 'ELSA (NTP)',
+          # ALPS whose every layer gets a second ALPS pass on the partially pruned
+          # model's own 2048-token rollouts (mix: + the fixed calibration windows).
+          'alps_rollout2048mix': 'ALPS rollout-refine (fixed+rollout)',
+          'alps_rollout2048rollonly': 'ALPS rollout-refine (rollout only)',
           'alps': 'ALPS', 'alps_selfgen': 'ALPS selfgen', 'alpsretrain': 'ALPS+retrain',
           'ours': 'Ours',
           # Extra-seed batches run as s3_8b_<arm>_seed{0,1} / _seeds01; the suffix
