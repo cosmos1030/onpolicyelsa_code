@@ -105,7 +105,10 @@ KD_ONLY=$(python3 -c "print('true' if float('${NTP_LAMBDA}')==0.0 else 'false')"
 SPARSITY_PCT=$(python3 -c "print(int(${SPARSITY}*100))")
 
 PYTHON=/home1/doyoonkim/miniconda3/envs/rac/bin/python
-MODEL="/home1/doyoonkim/.cache/huggingface/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c"
+DENSE_MODEL="/home1/doyoonkim/.cache/huggingface/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c"
+# INIT_MODEL: start from an already-quantized checkpoint (e.g. GPTQ) for the
+# "GPTQ -> training" baseline. The teacher stays the dense model either way.
+MODEL="${INIT_MODEL:-$DENSE_MODEL}"
 DATA_PATH="$DATA_PATH_ARG"
 OPD_PROMPT_PATH="/home1/doyoonkim/projects/elsa/data/ot3_fineweb_200k_qwen3_opdprompts.jsonl"
 
@@ -161,6 +164,7 @@ cd /home1/doyoonkim/projects/elsa
 
 $PYTHON main.py \
     --model="$MODEL" \
+    --gmp_teacher_model="$DENSE_MODEL" \
     --dataset=mixed_cot \
     --data_path="$DATA_PATH" \
     --sparsity_ratio=${SPARSITY} \
