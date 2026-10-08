@@ -1,5 +1,6 @@
 block	wandb_id	run_name	state	seeds	checkpoint	train_run	ntp	kd	opd	rollout_interval	rollout_len	fixed_mask	pgd	kl_budget	tr	growth	mask_interval	steps	lr	seqlen
 Qwen 3 4B dense	b2rdczje	s3_4b_dense	finished	0,1,42	/home1/doyoonkim/.cache/huggingface/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c															
+Qwen 3 4B quant_4b_3bit_roll2048	aeooconf	quant_4b_3bit_roll2048	finished	42	/home1/doyoonkim/projects/elsa/models/gmp_4b_s0pct_lr0.0001_onpol_lmda0.33_20261008_042227_p1065587															
 Qwen 3 4B s50 SparseGPT	flex5m8x	s3_4b_s50_sparsegpt	finished	0,1,42	cosmos1030/sparsegpt-qwen3-4b-s50pct															
 Qwen 3 4B s50 SparseGPT selfgen	pho3cqwf	s3_4b_s50_sgpt_selfgen	finished	0,1,42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_sgpt_s50pct_n128_selfgenv3															
 Qwen 3 4B s50 SparseLLM	diarqepu	s3_4b_sparsellm_s50	finished	0,1,42	/home/doyoonkim/models/sparsellm_4b_s50															
