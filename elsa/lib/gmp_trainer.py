@@ -2572,10 +2572,15 @@ def _sync_opkd_weights_to_vllm(model: nn.Module, vllm_engine) -> None:
     # vLLM 0.10+ V1 engine: model_executor lives under engine_core
     executor = engine.engine_core.model_executor if hasattr(engine, 'engine_core') else engine.model_executor
     vllm_model = executor.driver_worker.model_runner.model
-    vllm_state = {k: v for k, v in vllm_model.named_parameters()}
-    for name, param in model.named_parameters():
-        if name in vllm_state:
-            vllm_state[name].data.copy_(param.data.to(vllm_state[name].dtype))
+    # load_weights(), not a name-matching copy: vLLM's Qwen3 keeps q/k/v as one
+    # qkv_proj and gate/up as one gate_up_proj, so copying by HF name matched
+    # only 170 of 310 parameters and those five projections were NEVER synced --
+    # every in-process OPKD rollout before 2026-10-09 came from a model whose
+    # q/k/v/gate/up were frozen at their load-time values (dense for SCOUT),
+    # with only o_proj/down_proj/norms/embeddings tracking training. Verified on
+    # 1.7B: after zeroing layer 0 in HF, qkv_proj and gate_up_proj were
+    # unchanged in vLLM. The sidecar/FSDP paths already used load_weights().
+    vllm_model.load_weights([(name, param.data) for name, param in model.named_parameters()])
 
 
 def _opkd_flatten_pool_batches(pool_batches: list) -> tuple:
