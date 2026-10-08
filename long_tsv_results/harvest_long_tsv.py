@@ -61,6 +61,9 @@ LABELS = {
     # seeds 0/1 arrive as s3_8b_a3jump003_s70_seed{0,1}.
     'iuwf08pf': 'Ours w/o TR (one-step, delta=0.03)',}
 METHOD = {'dense': 'dense', 'sparsegpt': 'SparseGPT', 'sgpt_selfgen': 'SparseGPT selfgen',
+          # August ELSA (ADMM, NTP only) checkpoint re-evaluated at the long profile
+          # for the rebuttal; its own in-run eval was the quick profile.
+          'elsa_ntp': 'ELSA (NTP)',
           'alps': 'ALPS', 'alps_selfgen': 'ALPS selfgen', 'alpsretrain': 'ALPS+retrain',
           'ours': 'Ours',
           # Extra-seed batches run as s3_8b_<arm>_seed{0,1} / _seeds01; the suffix
