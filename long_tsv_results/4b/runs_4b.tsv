@@ -15,6 +15,7 @@ Qwen 3 4B s50 SparseGPT	flex5m8x	s3_4b_s50_sparsegpt	finished	0,1,42	cosmos1030/
 Qwen 3 4B s50 SparseGPT selfgen	pho3cqwf	s3_4b_s50_sgpt_selfgen	finished	0,1,42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_sgpt_s50pct_n128_selfgenv3															
 Qwen 3 4B s50 SparseLLM	diarqepu	s3_4b_sparsellm_s50	finished	0,1,42	/home/doyoonkim/models/sparsellm_4b_s50															
 Qwen 3 4B s50 ALPS	kdimp4bo	s3_4b_s50_alps	finished	0,1,42	cosmos1030/alps-qwen3-4b-s50pct															
+Qwen 3 4B s50 ALPS (fixed 128 + dense self-gen 128)	en75uys6	s3_4b_s50_alps_n128sg128	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_n128sg128_s50pct															
 Qwen 3 4B s50 ALPS (n=256 calibration)	eawiyj8p	s3_4b_s50_alps_n256	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_n256_s50pct															
 Qwen 3 4B s50 ALPS (n=512 calibration)	fkutao63	s3_4b_s50_alps_n512	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_n512_s50pct															
 Qwen 3 4B s50 ALPS rollout-refine (fixed+rollout)	b9asqjfu	s3_4b_s50_alps_rollout2048mix	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_rollout2048mix_s50pct															
