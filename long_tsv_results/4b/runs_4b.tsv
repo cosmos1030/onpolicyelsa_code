@@ -9,6 +9,7 @@ Qwen 3 4B gptq_4b_w2_g128	djv3njfm	gptq_4b_w2_g128	finished	42	/home1/doyoonkim/
 Qwen 3 4B gptq_4b_w3_g128	ogdonjbt	gptq_4b_w3_g128	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_gptq_w3_g128_s0pct															
 Qwen 3 4B quant_4b_2bit_roll2048_gsm8k	io88ox1o	quant_4b_2bit_roll2048_gsm8k	finished	42	/home1/doyoonkim/projects/elsa/models/gmp_4b_s0pct_lr0.0001_onpol_lmda0.33_20261008_032809_p1675546															
 Qwen 3 4B quant_4b_3bit_roll2048	aeooconf	quant_4b_3bit_roll2048	finished	42	/home1/doyoonkim/projects/elsa/models/gmp_4b_s0pct_lr0.0001_onpol_lmda0.33_20261008_042227_p1065587															
+Qwen 3 4B rtn_4b_w3_g128	ldez78hy	rtn_4b_w3_g128	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_rtn_w3_g128															
 Qwen 3 4B s50 SparseGPT	flex5m8x	s3_4b_s50_sparsegpt	finished	0,1,42	cosmos1030/sparsegpt-qwen3-4b-s50pct															
 Qwen 3 4B s50 SparseGPT selfgen	pho3cqwf	s3_4b_s50_sgpt_selfgen	finished	0,1,42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_sgpt_s50pct_n128_selfgenv3															
 Qwen 3 4B s50 SparseLLM	diarqepu	s3_4b_sparsellm_s50	finished	0,1,42	/home/doyoonkim/models/sparsellm_4b_s50															
@@ -28,6 +29,7 @@ Qwen 3 4B s60 SparseGPT	rp0bi9rd	s3_4b_s60_sparsegpt	finished	0,1,42	cosmos1030/
 Qwen 3 4B s60 SparseGPT selfgen	8fdustqf	s3_4b_s60_sgpt_selfgen	finished	0,1,42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_sgpt_s60pct_n128_selfgenv3															
 Qwen 3 4B s60 SparseLLM	xtprmhgu	s3_4b_sparsellm_s60	finished	0,1,42	/home/doyoonkim/models/sparsellm_4b_s60															
 Qwen 3 4B s60 ALPS	lesvnnsg	s3_4b_s60_alps	finished	0,1,42	cosmos1030/alps-qwen3-4b-s60pct															
+Qwen 3 4B s60 ALPS (n=256 calibration)	ig6cetlq	s3_4b_s60_alps_n256	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_n256_s60pct															
 Qwen 3 4B s60 ALPS rollout-refine (fixed+rollout)	4140l1cu	s3_4b_s60_alps_rollout2048mix	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_rollout2048mix_s60pct															
 Qwen 3 4B s60 ALPS selfgen	sqpjj6gu	s3_4b_s60_alps_selfgen	finished	0,1,42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_selfgen_v3_s60pct															
 Qwen 3 4B s60 ALPS+retrain	vbd3dndv	s3_4b_s60_alpsretrain	finished	0,1,42	cosmos1030/gmp-kd3e-1-s60pct-lr1e-4_20260814_193400	dqocd3f8	0.33	0.33	0.33	1	512	True	False	None	False	None	32	2048	None	8192
