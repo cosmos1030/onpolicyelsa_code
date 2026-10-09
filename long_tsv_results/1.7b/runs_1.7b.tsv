@@ -56,6 +56,8 @@ Qwen 3 1.7B s60 SparseGPT selfgen	0gjczpqk	s3_1.7b_s60_sgpt_selfgen	crashed	0,1,
 Qwen 3 1.7B s60 SparseGPT selfgen	nwqk6e7z	s3_1.7b_s60_sgpt_selfgen_seed42	finished	0,1,42	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_sgpt_s60pct_n128_selfgenv3															
 Qwen 3 1.7B s60 SparseLLM	umxtkeom	s3_1.7b_sparsellm_s60	finished	0,1,42	/home/doyoonkim/models/sparsellm_17b_s60															
 Qwen 3 1.7B s60 ALPS	fb772nlt	s3_1.7b_s60_alps	finished	0,1,42	cosmos1030/alps-qwen3-1.7b-s60pct															
+Qwen 3 1.7B s60 ALPS (n=256 calibration)	w64vtj75	s3_1.7b_s60_alps_n256	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_alps_n256_s60pct															
+Qwen 3 1.7B s60 ALPS (n=512 calibration)	4x3l38w0	s3_1.7b_s60_alps_n512	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_alps_n512_s60pct															
 Qwen 3 1.7B s60 ALPS rollout-refine (fixed+rollout)	ed53djzc	s3_1.7b_s60_alps_rollout2048mix	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_alps_rollout2048mix_s60pct															
 Qwen 3 1.7B s60 ALPS selfgen	f3xn45oa	s3_1.7b_s60_alps_selfgen	finished	0,1,42	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_alps_selfgen_v3_s60pct															
 Qwen 3 1.7B s60 ALPS+retrain	hzxoxhy6	s3_1.7b_s60_alpsretrain	finished	0,1,42	cosmos1030/gmp-kd3e-1-s60pct-lr1e-4_20260811_213610	53uwdeop	0.33	0.33	0.33	1	512	True	False	None	False	None	32	2048	None	8192
@@ -75,6 +77,7 @@ Qwen 3 1.7B s70 SparseLLM	fd8bhrdh	s3_1.7b_s70_sparsellm_seed42	finished	0,1,42	
 Qwen 3 1.7B s70 ALPS	0751lhxv	s3_1.7b_s70_alps	finished	0,1,42	cosmos1030/alps-qwen3-1.7b-s70pct															
 Qwen 3 1.7B s70 ALPS (fixed 128 + dense self-gen 128)	1jq1fkx5	s3_1.7b_s70_alps_n128sg128	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_alps_n128sg128_s70pct															
 Qwen 3 1.7B s70 ALPS (fixed 128 + dense self-gen 128)	z891zxwm	s3_1.7b_s70_alps_n128sg128_seed0	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_alps_n128sg128_s70pct															
+Qwen 3 1.7B s70 ALPS (fixed 128 + dense self-gen 128)	w3xkhwc3	s3_1.7b_s70_alps_n128sg128_seed1	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_alps_n128sg128_s70pct															
 Qwen 3 1.7B s70 ALPS (n=256 calibration)	xh8d4ns0	s3_1.7b_s70_alps_n256	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_alps_n256_s70pct															
 Qwen 3 1.7B s70 ALPS (n=512 calibration)	0d4twi5u	s3_1.7b_s70_alps_n512	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_alps_n512_s70pct															
 Qwen 3 1.7B s70 ALPS rollout-refine (fixed+rollout)	j1ltfu76	s3_1.7b_s70_alps_rollout2048mix	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_alps_rollout2048mix_s70pct															
