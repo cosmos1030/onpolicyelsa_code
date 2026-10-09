@@ -67,6 +67,7 @@ METHOD = {'dense': 'dense', 'sparsegpt': 'SparseGPT', 'sgpt_selfgen': 'SparseGPT
           # ALPS whose every layer gets a second ALPS pass on the partially pruned
           # model's own 2048-token rollouts (mix: + the fixed calibration windows).
           'alps_rollout2048mix': 'ALPS rollout-refine (fixed+rollout)',
+          'alps_rollout2048mix3': 'ALPS rollout-refine x2 (fixed+rollout)',
           'alps_rollout2048rollonly256': 'ALPS rollout-refine (rollout only, 256)',
           'alps_rollout2048rollonly': 'ALPS rollout-refine (rollout only)',
           # Standard ALPS with 2x the fixed calibration (256 windows): the
