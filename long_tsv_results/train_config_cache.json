@@ -1762,5 +1762,23 @@
   "steps": 2048,
   "lr": null,
   "seqlen": 8192
+ },
+ "20260814_094802": {
+  "train_run": "fv4daupw",
+  "train_name": "ntp_admm_s0.7_lr0.0001_lmda0.005_steps2048_elsaplain_s70pct_lr1e-4_lmda5e-3_nost",
+  "ntp": 1,
+  "kd": 0,
+  "opd": 0,
+  "rollout_interval": 1,
+  "rollout_len": 256,
+  "fixed_mask": false,
+  "pgd": false,
+  "kl_budget": null,
+  "tr": false,
+  "growth": null,
+  "mask_interval": 32,
+  "steps": 2048,
+  "lr": 0.0001,
+  "seqlen": 8192
  }
 }
