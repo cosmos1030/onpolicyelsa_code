@@ -71,6 +71,7 @@ METHOD = {'dense': 'dense', 'sparsegpt': 'SparseGPT', 'sgpt_selfgen': 'SparseGPT
           # Standard ALPS with 2x the fixed calibration (256 windows): the
           # more-data control for the rollout-refine (mix) arm.
           'alps_n256': 'ALPS (n=256 calibration)',
+          'alps_n512': 'ALPS (n=512 calibration)',
           'alps': 'ALPS', 'alps_selfgen': 'ALPS selfgen', 'alpsretrain': 'ALPS+retrain',
           'ours': 'Ours',
           # Extra-seed batches run as s3_8b_<arm>_seed{0,1} / _seeds01; the suffix
