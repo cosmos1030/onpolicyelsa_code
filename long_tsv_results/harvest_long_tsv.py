@@ -74,6 +74,9 @@ METHOD = {'dense': 'dense', 'sparsegpt': 'SparseGPT', 'sgpt_selfgen': 'SparseGPT
           # more-data control for the rollout-refine (mix) arm.
           'alps_n256': 'ALPS (n=256 calibration)',
           'alps_n512': 'ALPS (n=512 calibration)',
+          # One ALPS pass on 128 fixed + 128 windows rolled out once from the dense
+          # model (same recipe as rollout-refine): the dense-self-gen control.
+          'alps_n128sg128': 'ALPS (fixed 128 + dense self-gen 128)',
           'alps': 'ALPS', 'alps_selfgen': 'ALPS selfgen', 'alpsretrain': 'ALPS+retrain',
           'ours': 'Ours',
           # Extra-seed batches run as s3_8b_<arm>_seed{0,1} / _seeds01; the suffix

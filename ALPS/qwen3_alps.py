@@ -698,6 +698,9 @@ if __name__ == '__main__':
     parser.add_argument('--rollout_nsamples', type=int, default=0,
                          help='Rollout windows in the refine pass (default: --nsamples). Set to 2x for a rollout-only run that '
                               'sees as many refine tokens as --rollout_mix_fixed (fixed + rollouts).')
+    parser.add_argument('--dense_selfgen_windows', type=int, default=0,
+                         help='Add this many calibration windows rolled out once from the DENSE model (same recipe as '
+                              '--rollout_refine) to the fixed windows, then run standard single-pass ALPS.')
     parser.add_argument('--rollout_refine_passes', type=int, default=1,
                          help='Refine passes per layer after the fixed-data pass; each draws fresh rollouts from the '
                               'model at its latest refine result and starts ADMM from that result.')
@@ -730,6 +733,27 @@ if __name__ == '__main__':
     if args.corrected_target and not args.dense_cache_dir:
         script_dir = os.path.dirname(os.path.abspath(__file__))
         args.dense_cache_dir = os.path.join(script_dir, 'dense_cache_tmp', f'pid{os.getpid()}')
+
+    if args.dense_selfgen_windows > 0:
+        # Control for --rollout_refine: one ALPS pass on the fixed windows plus
+        # windows rolled out ONCE from the dense model, with the same generation
+        # recipe (OPD prompts, temperature/top_p, max_new) as the refine passes.
+        from vllm import LLM
+        import gc
+        _sg_prompts = _load_rollout_prompts(args.rollout_prompt_path, tokenizer, args.rollout_max_prompt)
+        _sg_llm = LLM(model=args.model, gpu_memory_utilization=args.rollout_vllm_mem,
+                      max_model_len=args.rollout_max_prompt + args.rollout_max_new + 16,
+                      seed=args.seed, dtype='bfloat16')
+        _sg_win, _sg_stats = _rollout_windows(_sg_llm, _sg_prompts, random.Random(args.seed * 7 + 1),
+                                              args.dense_selfgen_windows, model.seqlen, args)
+        print(f"[dense_selfgen] {_sg_stats['n_rollouts']} dense rollouts, avg {_sg_stats['avg_gen_tokens']:.0f} gen tok, "
+              f"trunc {_sg_stats['trunc_rate']:.2f} -> {args.dense_selfgen_windows} windows", flush=True)
+        del _sg_llm
+        gc.collect()
+        torch.cuda.empty_cache()
+        dataloader = list(dataloader) + [(w.unsqueeze(0), None) for w in _sg_win]
+        args.nsamples = len(dataloader)
+        print(f'[dense_selfgen] calibration windows: {args.nsamples} (fixed + dense self-gen)', flush=True)
 
     if args.rollout_refine:
         from vllm import LLM
