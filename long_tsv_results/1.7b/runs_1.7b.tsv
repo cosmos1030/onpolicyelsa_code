@@ -31,6 +31,7 @@ Qwen 3 1.7B s50 ALPS (n=512 calibration)	90crqbf0	s3_1.7b_s50_alps_n512	finished
 Qwen 3 1.7B s50 ALPS rollout-refine (fixed+rollout)	nwgbj0eq	s3_1.7b_s50_alps_rollout2048mix	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_alps_rollout2048mix_s50pct															
 Qwen 3 1.7B s50 ALPS rollout-refine (fixed+rollout)	t2tw8n2o	s3_1.7b_s50_alps_rollout2048mix_seed0	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_alps_rollout2048mix_s50pct															
 Qwen 3 1.7B s50 ALPS rollout-refine (fixed+rollout)	dym8p9et	s3_1.7b_s50_alps_rollout2048mix_seed1	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_alps_rollout2048mix_s50pct															
+Qwen 3 1.7B s50 ALPS rollout-refine x2 (fixed+rollout)	u6v0q5zf	s3_1.7b_s50_alps_rollout2048mix3	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_alps_rollout2048mix3_s50pct															
 Qwen 3 1.7B s50 ALPS selfgen	hosevc69	s3_1.7b_s50_alps_selfgen	finished	0,1,42	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_alps_selfgen_v3_s50pct															
 Qwen 3 1.7B s50 ALPS+retrain	cwz9tepg	s3_1.7b_s50_alpsretrain	crashed	0,1,42	cosmos1030/gmp-kd3e-1-s50pct-lr1e-4_20260811_191146	16gmeadr	0.33	0.33	0.33	1	512	True	False	None	False	None	32	2048	None	8192
 Qwen 3 1.7B s50 ALPS+retrain	cbjuilvr	s3_1.7b_s50_alpsretrain	finished	0,1,42	cosmos1030/gmp-kd3e-1-s50pct-lr1e-4_20260811_191146	16gmeadr	0.33	0.33	0.33	1	512	True	False	None	False	None	32	2048	None	8192
