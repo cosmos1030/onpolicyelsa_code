@@ -459,64 +459,83 @@ def qwen3_sequential(model, dataloader, dev, args):
         del Xp
         if refine:
             llm = args._rollout_llm
-            _vllm_sync_layer(llm, layer, i)
-            t0 = time.time()
-            rng = random.Random(args.seed * 100003 + i)
-            windows, rstats = _rollout_windows(llm, args._rollout_prompts, rng, nsamples, model.seqlen, args)
-            t_roll = time.time() - t0
-            Xr = _capture_layer_inputs(model, windows, i, dev)
-            W1 = {n: full[n].weight.data.detach().clone() for n in full}
-            for n in full:                      # H on the dense layer, as in pass 1
-                full[n].weight.data.copy_(Wd[n].to(full[n].weight.device))
-            scd2 = {n: ALPS_prune(full[n], nsamples=nsamples, seqlen=model.seqlen) for n in full}
+            n_roll = args.rollout_nsamples or nsamples
+            n_pass = max(1, args.rollout_refine_passes)
+            W0 = {n: full[n].weight.data.detach().clone() for n in full}   # fixed-data pass result
+            for rp in range(n_pass):
+                # Each refine pass: fresh rollouts from the model as it is NOW
+                # (this layer at its latest refine result), H on the dense
+                # layer, ADMM from the latest result toward the dense target.
+                # rp=0 uses the same rollout seed as before, so passes=1
+                # reproduces the original single-refine runs exactly.
+                last = rp == n_pass - 1
+                _vllm_sync_layer(llm, layer, i)
+                t0 = time.time()
+                rng = random.Random(args.seed * 100003 + i + 7919 * rp)
+                windows, rstats = _rollout_windows(llm, args._rollout_prompts, rng, n_roll, model.seqlen, args)
+                t_roll = time.time() - t0
+                Xr = _capture_layer_inputs(model, windows, i, dev)
+                W1 = {n: full[n].weight.data.detach().clone() for n in full}
+                for n in full:                      # H on the dense layer, as in pass 1
+                    full[n].weight.data.copy_(Wd[n].to(full[n].weight.device))
+                scd2 = {n: ALPS_prune(full[n], nsamples=nsamples, seqlen=model.seqlen) for n in full}
 
-            def make_hook2(name):
-                def tmp(_, inp, out):
-                    scd2[name].add_batch(inp[0].data, out.data)
-                return tmp
-            handles = [full[n].register_forward_hook(make_hook2(n)) for n in full]
-            for j in range(nsamples):
-                _layer_fwd(layer, Xr[j].unsqueeze(0), cache)
-            del Xr
-            H2 = {n: scd2[n].XtX.detach().cpu().clone() for n in full}   # rollout-only H, for the analysis
-            if getattr(args, 'rollout_mix_fixed', False):
-                # --rollout_mix_fixed: the refine pass also sees the fixed
-                # calibration windows (this layer's current inputs, `inps`),
-                # token for token as many as the rollouts.
-                for j in range(nsamples):
-                    _layer_fwd(layer, inps[j].unsqueeze(0), cache)
-            for h in handles:
-                h.remove()
-            sub = {}
-            for n in full:
-                print(f'  Layer {i} {n} (refine)')
-                scd2[n].ALPS_admm(sp=args.sp, nm_n=args.nm_n, nm_m=args.nm_m, rho=args.rho,
-                                  W_target=Wd[n], W_init=W1[n])
-                W2 = full[n].weight.data
-                d1, d2 = W2.shape
-                tot_params += d1 * d2
-                tot_nnz += (W2.abs() > 0).sum().item()
-                m1, m2 = (W1[n] != 0), (W2 != 0)
-                sub[n] = {
-                    'mask_change': float((m1 ^ m2).sum() / m1.sum().clamp(min=1)),
-                    'weight_change': float(torch.linalg.norm((W2 - W1[n]).float()) / torch.linalg.norm(W1[n].float())),
-                    'err_p1_fixed': _rel_err(W1[n], Wd[n], H1[n]), 'err_p2_fixed': _rel_err(W2, Wd[n], H1[n]),
-                    'err_p1_roll': _rel_err(W1[n], Wd[n], H2[n]), 'err_p2_roll': _rel_err(W2, Wd[n], H2[n]),
-                    'h_shift': _h_shift(H1[n], H2[n]),
-                }
-                scd2[n].free()
-            del scd2, W1, Wd, H1, H2
-            _vllm_sync_layer(llm, layer, i)
-            rec = {'layer': i, 'rollout_sec': round(t_roll, 1), 'layer_sec': round(time.time() - t0, 1),
-                   **{k: v for k, v in rstats.items() if k != 'examples'}, 'sub': sub,
-                   'examples': rstats['examples']}
-            with open(args._analysis_path, 'a') as _f:
-                _f.write(json.dumps(rec) + '\n')
-            _mc = np.mean([v['mask_change'] for v in sub.values()])
-            _e = {k: np.mean([v[k] for v in sub.values()]) for k in ('err_p1_fixed', 'err_p2_fixed', 'err_p1_roll', 'err_p2_roll')}
-            print(f'  [rollout_refine] layer {i}: {rstats["n_rollouts"]} rollouts, avg {rstats["avg_gen_tokens"]:.0f} gen tok, '
-                  f'trunc {rstats["trunc_rate"]:.2f} | mask change {_mc:.3f} | err fixed {_e["err_p1_fixed"]:.4f}->{_e["err_p2_fixed"]:.4f} '
-                  f'roll {_e["err_p1_roll"]:.4f}->{_e["err_p2_roll"]:.4f} | rollout {t_roll:.0f}s, layer {time.time() - t0:.0f}s', flush=True)
+                def make_hook2(name):
+                    def tmp(_, inp, out):
+                        scd2[name].add_batch(inp[0].data, out.data)
+                    return tmp
+                handles = [full[n].register_forward_hook(make_hook2(n)) for n in full]
+                for j in range(n_roll):
+                    _layer_fwd(layer, Xr[j].unsqueeze(0), cache)
+                del Xr
+                H2 = {n: scd2[n].XtX.detach().cpu().clone() for n in full}   # rollout-only H, for the analysis
+                if getattr(args, 'rollout_mix_fixed', False):
+                    # --rollout_mix_fixed: the refine pass also sees the fixed
+                    # calibration windows (this layer's current inputs, `inps`),
+                    # token for token as many as the rollouts.
+                    for j in range(nsamples):
+                        _layer_fwd(layer, inps[j].unsqueeze(0), cache)
+                for h in handles:
+                    h.remove()
+                sub = {}
+                for n in full:
+                    print(f'  Layer {i} {n} (refine {rp + 1}/{n_pass})')
+                    scd2[n].ALPS_admm(sp=args.sp, nm_n=args.nm_n, nm_m=args.nm_m, rho=args.rho,
+                                      W_target=Wd[n], W_init=W1[n])
+                    W2 = full[n].weight.data
+                    if last:
+                        d1, d2 = W2.shape
+                        tot_params += d1 * d2
+                        tot_nnz += (W2.abs() > 0).sum().item()
+                    m1, m2 = (W1[n] != 0), (W2 != 0)
+                    # p1 = before this refine pass, p2 = after it
+                    sub[n] = {
+                        'mask_change': float((m1 ^ m2).sum() / m1.sum().clamp(min=1)),
+                        'weight_change': float(torch.linalg.norm((W2 - W1[n]).float()) / torch.linalg.norm(W1[n].float())),
+                        'err_p1_fixed': _rel_err(W1[n], Wd[n], H1[n]), 'err_p2_fixed': _rel_err(W2, Wd[n], H1[n]),
+                        'err_p1_roll': _rel_err(W1[n], Wd[n], H2[n]), 'err_p2_roll': _rel_err(W2, Wd[n], H2[n]),
+                        'h_shift': _h_shift(H1[n], H2[n]),
+                        # cumulative drift from the fixed-data pass, and that pass's
+                        # weights scored on THIS pass's rollouts (same yardstick for
+                        # fixed pass -> previous pass -> this pass)
+                        'mask_change_vs_fixedpass': float(((W0[n] != 0) ^ m2).sum() / (W0[n] != 0).sum().clamp(min=1)),
+                        'err_fixedpass_roll': _rel_err(W0[n], Wd[n], H2[n]),
+                    }
+                    scd2[n].free()
+                del scd2, W1, H2
+                _vllm_sync_layer(llm, layer, i)
+                rec = {'layer': i, 'refine_pass': rp + 1, 'rollout_sec': round(t_roll, 1),
+                       'layer_sec': round(time.time() - t0, 1),
+                       **{k: v for k, v in rstats.items() if k != 'examples'}, 'sub': sub,
+                       'examples': rstats['examples']}
+                with open(args._analysis_path, 'a') as _f:
+                    _f.write(json.dumps(rec) + '\n')
+                _mc = np.mean([v['mask_change'] for v in sub.values()])
+                _e = {k: np.mean([v[k] for v in sub.values()]) for k in ('err_p1_fixed', 'err_p2_fixed', 'err_p1_roll', 'err_p2_roll')}
+                print(f'  [rollout_refine] layer {i} pass {rp + 1}/{n_pass}: {rstats["n_rollouts"]} rollouts, avg {rstats["avg_gen_tokens"]:.0f} gen tok, '
+                      f'trunc {rstats["trunc_rate"]:.2f} | mask change {_mc:.3f} | err fixed {_e["err_p1_fixed"]:.4f}->{_e["err_p2_fixed"]:.4f} '
+                      f'roll {_e["err_p1_roll"]:.4f}->{_e["err_p2_roll"]:.4f} | rollout {t_roll:.0f}s, pass {time.time() - t0:.0f}s', flush=True)
+            del Wd, H1, W0
         for j in range(nsamples):
             outs[j] = _layer_fwd(layer, inps[j].unsqueeze(0), cache)
 
@@ -676,6 +695,12 @@ if __name__ == '__main__':
     parser.add_argument('--rollout_max_prompt', type=int, default=512)
     parser.add_argument('--rollout_vllm_mem', type=float, default=0.3)
     parser.add_argument('--rollout_analysis_out', type=str, default='')
+    parser.add_argument('--rollout_nsamples', type=int, default=0,
+                         help='Rollout windows in the refine pass (default: --nsamples). Set to 2x for a rollout-only run that '
+                              'sees as many refine tokens as --rollout_mix_fixed (fixed + rollouts).')
+    parser.add_argument('--rollout_refine_passes', type=int, default=1,
+                         help='Refine passes per layer after the fixed-data pass; each draws fresh rollouts from the '
+                              'model at its latest refine result and starts ADMM from that result.')
     parser.add_argument('--rollout_mix_fixed', action='store_true',
                          help='Refine pass uses fixed calibration windows + rollouts (equal tokens) instead of rollouts only.')
     args = parser.parse_args()

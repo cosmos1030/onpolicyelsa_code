@@ -16,12 +16,14 @@ exec 2>&1
 # ALPS on that layer from the pass-1 result using only the rollouts.
 # Usage: sbatch slurm_alps_rollout_refine.sh <1.7b|4b> <SPARSITY> <mix|rollonly> [ROLLOUT_MAX_NEW]
 #   mix      = refine pass on fixed calibration + rollouts (equal tokens)
-#   rollonly = refine pass on rollouts only
+#   rollonly = refine pass on rollouts only (128 windows)
+#   rollonly256 = refine pass on 256 rollout windows: same refine tokens as mix
+#   mix3     = two mix refine passes per layer (fresh rollouts each): 3 ALPS passes in total
 SIZE=${1:?"Usage: sbatch slurm_alps_rollout_refine.sh <1.7b|4b> <SPARSITY> [ROLLOUT_MAX_NEW]"}
 SPARSITY=${2:?"Usage: sbatch slurm_alps_rollout_refine.sh <1.7b|4b> <SPARSITY> <mix|rollonly> [ROLLOUT_MAX_NEW]"}
 MIX=${3:?"third arg: mix|rollonly"}
 ROLLOUT_MAX_NEW=${4:-2048}
-case "$MIX" in mix) MIX_FLAG=--rollout_mix_fixed ;; rollonly) MIX_FLAG="" ;; *) echo "bad MIX $MIX"; exit 1 ;; esac
+case "$MIX" in mix) MIX_FLAG=--rollout_mix_fixed ;; rollonly) MIX_FLAG="" ;; rollonly256) MIX_FLAG="--rollout_nsamples 256" ;; mix3) MIX_FLAG="--rollout_mix_fixed --rollout_refine_passes 2" ;; *) echo "bad MIX $MIX"; exit 1 ;; esac
 SPARSITY_PCT=$(python3 -c "print(int(${SPARSITY}*100))")
 
 PYTHON=/home1/doyoonkim/miniconda3/envs/rac/bin/python
