@@ -14,7 +14,7 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=120G
 #SBATCH --time=3-00:00:00
-#SBATCH --exclude=n3,n42,n46,n51,n54,n60,n77,n80,n87,n91,n61,n64,n31,n19
+#SBATCH --exclude=n3,n19,n31,n42,n46,n51,n52,n54,n55,n58,n60,n61,n64,n76,n77,n80,n84,n87,n90,n91
 #SBATCH --output=/home1/doyoonkim/projects/elsa/logs/gmp_pgd_grow_4b_fsdp2_%j.out
 exec 2>&1
 
