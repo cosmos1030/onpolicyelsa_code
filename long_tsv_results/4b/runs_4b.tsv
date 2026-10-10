@@ -16,8 +16,12 @@ Qwen 3 4B s50 SparseGPT selfgen	pho3cqwf	s3_4b_s50_sgpt_selfgen	finished	0,1,42	
 Qwen 3 4B s50 SparseLLM	diarqepu	s3_4b_sparsellm_s50	finished	0,1,42	/home/doyoonkim/models/sparsellm_4b_s50															
 Qwen 3 4B s50 ALPS	kdimp4bo	s3_4b_s50_alps	finished	0,1,42	cosmos1030/alps-qwen3-4b-s50pct															
 Qwen 3 4B s50 ALPS (fixed 128 + dense self-gen 128)	en75uys6	s3_4b_s50_alps_n128sg128	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_n128sg128_s50pct															
+Qwen 3 4B s50 ALPS (fixed 128 + dense self-gen 128)	pdjxjgzn	s3_4b_s50_alps_n128sg128_seed0	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_n128sg128_s50pct															
+Qwen 3 4B s50 ALPS (fixed 128 + dense self-gen 128)	2nrcgyl0	s3_4b_s50_alps_n128sg128_seed1	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_n128sg128_s50pct															
 Qwen 3 4B s50 ALPS (n=256 calibration)	eawiyj8p	s3_4b_s50_alps_n256	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_n256_s50pct															
+Qwen 3 4B s50 ALPS (n=256 calibration)	vyehqak1	s3_4b_s50_alps_n256_seed0	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_n256_s50pct															
 Qwen 3 4B s50 ALPS (n=512 calibration)	fkutao63	s3_4b_s50_alps_n512	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_n512_s50pct															
+Qwen 3 4B s50 ALPS (n=512 calibration)	uvogvxu7	s3_4b_s50_alps_n512_seed0	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_n512_s50pct															
 Qwen 3 4B s50 ALPS rollout-refine (fixed+rollout)	b9asqjfu	s3_4b_s50_alps_rollout2048mix	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_rollout2048mix_s50pct															
 Qwen 3 4B s50 ALPS selfgen	8yyyu8ow	s3_4b_s50_alps_selfgen	finished	0,1,42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_selfgen_v3_s50pct															
 Qwen 3 4B s50 ALPS+retrain	kkpyvjam	s3_4b_s50_alpsretrain	finished	0,1,42	cosmos1030/gmp-kd3e-1-s50pct-lr5e-5_20260812_132642	miysnxlq	0.33	0.33	0.33	1	512	True	False	None	False	None	32	2048	None	8192
