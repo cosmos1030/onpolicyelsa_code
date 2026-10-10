@@ -69,7 +69,9 @@ Qwen 3 1.7B s60 ALPS (fixed 128 + dense self-gen 128)	qin2azi0	s3_1.7b_s60_alps_
 Qwen 3 1.7B s60 ALPS (fixed 128 + dense self-gen 128)	rv5evlod	s3_1.7b_s60_alps_n128sg128_seed0	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_alps_n128sg128_s60pct															
 Qwen 3 1.7B s60 ALPS (fixed 128 + dense self-gen 128)	9r7cm4dt	s3_1.7b_s60_alps_n128sg128_seed1	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_alps_n128sg128_s60pct															
 Qwen 3 1.7B s60 ALPS (n=256 calibration)	w64vtj75	s3_1.7b_s60_alps_n256	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_alps_n256_s60pct															
+Qwen 3 1.7B s60 ALPS (n=256 calibration)	edyapnhr	s3_1.7b_s60_alps_n256_seed0	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_alps_n256_s60pct															
 Qwen 3 1.7B s60 ALPS (n=512 calibration)	4x3l38w0	s3_1.7b_s60_alps_n512	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_alps_n512_s60pct															
+Qwen 3 1.7B s60 ALPS (n=512 calibration)	0f7ap54n	s3_1.7b_s60_alps_n512_seed0	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_alps_n512_s60pct															
 Qwen 3 1.7B s60 ALPS rollout-refine (fixed+rollout)	ed53djzc	s3_1.7b_s60_alps_rollout2048mix	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_alps_rollout2048mix_s60pct															
 Qwen 3 1.7B s60 ALPS rollout-refine (fixed+rollout)	kphccgfr	s3_1.7b_s60_alps_rollout2048mix_seed0	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_alps_rollout2048mix_s60pct															
 Qwen 3 1.7B s60 ALPS rollout-refine (fixed+rollout)	bv2jnk0f	s3_1.7b_s60_alps_rollout2048mix_seed1	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_alps_rollout2048mix_s60pct															
