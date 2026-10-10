@@ -25,6 +25,9 @@ TAG="n${NSAMPLES}"; SG_FLAG=""
 if [ "$SELFGEN" -gt 0 ]; then TAG="n${NSAMPLES}sg${SELFGEN}"; SG_FLAG="--dense_selfgen_windows ${SELFGEN}"; fi
 export VLLM_USE_V1=0 VLLM_HOST_IP=127.0.0.1
 SPARSITY_PCT=$(python3 -c "print(int(${SPARSITY}*100))")
+# NM=24 env -> 2:4 semi-structured (sparsity arg must be 0.5); names use s24 instead of s50pct
+NM_FLAG=""; SP_TAG="s${SPARSITY_PCT}pct"; SP_LOG="s${SPARSITY_PCT}"
+if [ "${NM:-}" = "24" ]; then NM_FLAG="--nm_n 2 --nm_m 4"; SP_TAG="s24"; SP_LOG="s24"; fi
 
 PYTHON=/home1/doyoonkim/miniconda3/envs/rac/bin/python
 case "$SIZE" in
@@ -33,11 +36,11 @@ case "$SIZE" in
     *) echo "unknown size $SIZE"; exit 1 ;;
 esac
 DATA="/home1/doyoonkim/projects/elsa/data/ot3_fineweb_40k_qwen3_nostrip_8192.jsonl"
-SAVED_MODEL="/home1/doyoonkim/projects/elsa/models/qwen3_${SIZE}_alps_${TAG}_s${SPARSITY_PCT}pct"
+SAVED_MODEL="/home1/doyoonkim/projects/elsa/models/qwen3_${SIZE}_alps_${TAG}_${SP_TAG}"
 
 LOCAL_JOB_BASE="/local-data/user-data/${USER}/alps_ncalib_${SLURM_JOB_ID}"
 mkdir -p "$LOCAL_JOB_BASE"
-DEBUG_COPY_DIR="/home1/doyoonkim/projects/elsa/logs/alps_${TAG}_${SIZE}_s${SPARSITY_PCT}_${SLURM_JOB_ID}"
+DEBUG_COPY_DIR="/home1/doyoonkim/projects/elsa/logs/alps_${TAG}_${SIZE}_${SP_LOG}_${SLURM_JOB_ID}"
 mkdir -p "$DEBUG_COPY_DIR"
 copy_log_on_exit() {
     cp "$LOCAL_JOB_BASE/slurm_${SLURM_JOB_ID}.out" "$DEBUG_COPY_DIR/" 2>/dev/null || true
@@ -66,11 +69,12 @@ $PYTHON qwen3_alps.py \
     --data_path "$DATA" \
     --nsamples ${NSAMPLES} \
     ${SG_FLAG} \
+    ${NM_FLAG} \
     --rho 300.0 \
     --seed 42 \
     --save "$SAVED_MODEL" \
     --push_to_hub \
-    --hub_model_id "cosmos1030/alps-${TAG}-qwen3-${SIZE}-s${SPARSITY_PCT}pct"
+    --hub_model_id "cosmos1030/alps-${TAG}-qwen3-${SIZE}-${SP_TAG}"
 EXIT_CODE=$?
 echo "=== Exit code: $EXIT_CODE ==="
 echo "##### END #####"

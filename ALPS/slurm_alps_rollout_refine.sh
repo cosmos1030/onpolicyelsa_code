@@ -25,6 +25,9 @@ MIX=${3:?"third arg: mix|rollonly"}
 ROLLOUT_MAX_NEW=${4:-2048}
 case "$MIX" in mix) MIX_FLAG=--rollout_mix_fixed ;; rollonly) MIX_FLAG="" ;; rollonly256) MIX_FLAG="--rollout_nsamples 256" ;; mix3) MIX_FLAG="--rollout_mix_fixed --rollout_refine_passes 2" ;; *) echo "bad MIX $MIX"; exit 1 ;; esac
 SPARSITY_PCT=$(python3 -c "print(int(${SPARSITY}*100))")
+# NM=24 env -> 2:4 semi-structured (sparsity arg must be 0.5); names use s24 instead of s50pct
+NM_FLAG=""; SP_TAG="s${SPARSITY_PCT}pct"; SP_LOG="s${SPARSITY_PCT}"
+if [ "${NM:-}" = "24" ]; then NM_FLAG="--nm_n 2 --nm_m 4"; SP_TAG="s24"; SP_LOG="s24"; fi
 
 PYTHON=/home1/doyoonkim/miniconda3/envs/rac/bin/python
 case "$SIZE" in
@@ -33,11 +36,11 @@ case "$SIZE" in
     *) echo "unknown size $SIZE"; exit 1 ;;
 esac
 DATA="/home1/doyoonkim/projects/elsa/data/ot3_fineweb_40k_qwen3_nostrip_8192.jsonl"
-SAVED_MODEL="/home1/doyoonkim/projects/elsa/models/qwen3_${SIZE}_alps_rollout${ROLLOUT_MAX_NEW}${MIX}_s${SPARSITY_PCT}pct"
+SAVED_MODEL="/home1/doyoonkim/projects/elsa/models/qwen3_${SIZE}_alps_rollout${ROLLOUT_MAX_NEW}${MIX}_${SP_TAG}"
 
 LOCAL_JOB_BASE="/local-data/user-data/${USER}/alps_rollout_${SLURM_JOB_ID}"
 mkdir -p "$LOCAL_JOB_BASE"
-DEBUG_COPY_DIR="/home1/doyoonkim/projects/elsa/logs/alps_rollout_${MIX}_${SIZE}_s${SPARSITY_PCT}_${SLURM_JOB_ID}"
+DEBUG_COPY_DIR="/home1/doyoonkim/projects/elsa/logs/alps_rollout_${MIX}_${SIZE}_${SP_LOG}_${SLURM_JOB_ID}"
 mkdir -p "$DEBUG_COPY_DIR"
 copy_log_on_exit() {
     cp "$LOCAL_JOB_BASE/slurm_${SLURM_JOB_ID}.out" "$DEBUG_COPY_DIR/" 2>/dev/null || true
@@ -65,6 +68,7 @@ $PYTHON qwen3_alps.py \
     ${SPARSITY} \
     --data_path "$DATA" \
     --nsamples 128 \
+    ${NM_FLAG} \
     --rho 300.0 \
     --seed 42 \
     --rollout_refine \
@@ -72,7 +76,7 @@ $PYTHON qwen3_alps.py \
     ${MIX_FLAG} \
     --save "$SAVED_MODEL" \
     --push_to_hub \
-    --hub_model_id "cosmos1030/alps-rollout${ROLLOUT_MAX_NEW}${MIX}-qwen3-${SIZE}-s${SPARSITY_PCT}pct"
+    --hub_model_id "cosmos1030/alps-rollout${ROLLOUT_MAX_NEW}${MIX}-qwen3-${SIZE}-${SP_TAG}"
 EXIT_CODE=$?
 echo "=== Exit code: $EXIT_CODE ==="
 echo "##### END #####"
