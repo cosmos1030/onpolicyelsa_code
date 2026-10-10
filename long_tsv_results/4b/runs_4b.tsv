@@ -27,6 +27,8 @@ Qwen 3 4B s50 ALPS (n=512 calibration)	h62sp227	s3_4b_s50_alps_n512_seed1	finish
 Qwen 3 4B s50 ALPS rollout-refine (fixed+rollout)	b9asqjfu	s3_4b_s50_alps_rollout2048mix	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_rollout2048mix_s50pct															
 Qwen 3 4B s50 ALPS rollout-refine (fixed+rollout)	kgluvtyg	s3_4b_s50_alps_rollout2048mix_seed0	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_rollout2048mix_s50pct															
 Qwen 3 4B s50 ALPS rollout-refine (fixed+rollout)	lf4ay4r6	s3_4b_s50_alps_rollout2048mix_seed1	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_rollout2048mix_s50pct															
+Qwen 3 4B s50 ALPS rollout-refine x2 (fixed+rollout)	jd6ssxoe	s3_4b_s50_alps_rollout2048mix3	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_rollout2048mix3_s50pct															
+Qwen 3 4B s50 ALPS rollout-refine x2 (fixed+rollout)	6yzy0xdv	s3_4b_s50_alps_rollout2048mix3_seed0	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_rollout2048mix3_s50pct															
 Qwen 3 4B s50 ALPS rollout-refine x2 (fixed+rollout)	ar02pgio	s3_4b_s50_alps_rollout2048mix3_seed1	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_rollout2048mix3_s50pct															
 Qwen 3 4B s50 ALPS selfgen	8yyyu8ow	s3_4b_s50_alps_selfgen	finished	0,1,42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_selfgen_v3_s50pct															
 Qwen 3 4B s50 ALPS+retrain	kkpyvjam	s3_4b_s50_alpsretrain	finished	0,1,42	cosmos1030/gmp-kd3e-1-s50pct-lr5e-5_20260812_132642	miysnxlq	0.33	0.33	0.33	1	512	True	False	None	False	None	32	2048	None	8192
@@ -44,10 +46,14 @@ Qwen 3 4B s60 ALPS (fixed 128 + dense self-gen 128)	m1988gfn	s3_4b_s60_alps_n128
 Qwen 3 4B s60 ALPS (fixed 128 + dense self-gen 128)	yk37fwrp	s3_4b_s60_alps_n128sg128_seed0	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_n128sg128_s60pct															
 Qwen 3 4B s60 ALPS (fixed 128 + dense self-gen 128)	cubjtpca	s3_4b_s60_alps_n128sg128_seed1	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_n128sg128_s60pct															
 Qwen 3 4B s60 ALPS (n=256 calibration)	ig6cetlq	s3_4b_s60_alps_n256	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_n256_s60pct															
+Qwen 3 4B s60 ALPS (n=256 calibration)	sx30yymm	s3_4b_s60_alps_n256_seed0	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_n256_s60pct															
+Qwen 3 4B s60 ALPS (n=256 calibration)	b2c14ffp	s3_4b_s60_alps_n256_seed1	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_n256_s60pct															
 Qwen 3 4B s60 ALPS (n=512 calibration)	tnz216hi	s3_4b_s60_alps_n512	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_n512_s60pct															
 Qwen 3 4B s60 ALPS (n=512 calibration)	74n3104y	s3_4b_s60_alps_n512_seed0	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_n512_s60pct															
+Qwen 3 4B s60 ALPS (n=512 calibration)	432ahr1w	s3_4b_s60_alps_n512_seed1	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_n512_s60pct															
 Qwen 3 4B s60 ALPS rollout-refine (fixed+rollout)	4140l1cu	s3_4b_s60_alps_rollout2048mix	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_rollout2048mix_s60pct															
 Qwen 3 4B s60 ALPS rollout-refine (fixed+rollout)	dl7me18s	s3_4b_s60_alps_rollout2048mix_seed1	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_rollout2048mix_s60pct															
+Qwen 3 4B s60 ALPS rollout-refine (fixed+rollout)	pp5agzdh	s3_4b_s60_alps_rollout2048mix_seed0	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_rollout2048mix_s60pct															
 Qwen 3 4B s60 ALPS selfgen	sqpjj6gu	s3_4b_s60_alps_selfgen	finished	0,1,42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_selfgen_v3_s60pct															
 Qwen 3 4B s60 ALPS+retrain	vbd3dndv	s3_4b_s60_alpsretrain	finished	0,1,42	cosmos1030/gmp-kd3e-1-s60pct-lr1e-4_20260814_193400	dqocd3f8	0.33	0.33	0.33	1	512	True	False	None	False	None	32	2048	None	8192
 Qwen 3 4B s60 Ours	x2pcgf19	s3_4b_s60_ours	finished	0,1,42	cosmos1030/gmp-kd3e-1-s60pct-lr5e-5_20260901_075817	02vfcs1b	0.33	0.33	0.33	32	512	False	True	0.02	False	cubic	32	2048	None	8192
