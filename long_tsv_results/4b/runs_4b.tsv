@@ -20,9 +20,13 @@ Qwen 3 4B s50 ALPS (fixed 128 + dense self-gen 128)	pdjxjgzn	s3_4b_s50_alps_n128
 Qwen 3 4B s50 ALPS (fixed 128 + dense self-gen 128)	2nrcgyl0	s3_4b_s50_alps_n128sg128_seed1	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_n128sg128_s50pct															
 Qwen 3 4B s50 ALPS (n=256 calibration)	eawiyj8p	s3_4b_s50_alps_n256	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_n256_s50pct															
 Qwen 3 4B s50 ALPS (n=256 calibration)	vyehqak1	s3_4b_s50_alps_n256_seed0	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_n256_s50pct															
+Qwen 3 4B s50 ALPS (n=256 calibration)	61sdxtjw	s3_4b_s50_alps_n256_seed1	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_n256_s50pct															
 Qwen 3 4B s50 ALPS (n=512 calibration)	fkutao63	s3_4b_s50_alps_n512	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_n512_s50pct															
 Qwen 3 4B s50 ALPS (n=512 calibration)	uvogvxu7	s3_4b_s50_alps_n512_seed0	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_n512_s50pct															
+Qwen 3 4B s50 ALPS (n=512 calibration)	h62sp227	s3_4b_s50_alps_n512_seed1	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_n512_s50pct															
 Qwen 3 4B s50 ALPS rollout-refine (fixed+rollout)	b9asqjfu	s3_4b_s50_alps_rollout2048mix	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_rollout2048mix_s50pct															
+Qwen 3 4B s50 ALPS rollout-refine (fixed+rollout)	kgluvtyg	s3_4b_s50_alps_rollout2048mix_seed0	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_rollout2048mix_s50pct															
+Qwen 3 4B s50 ALPS rollout-refine (fixed+rollout)	lf4ay4r6	s3_4b_s50_alps_rollout2048mix_seed1	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_rollout2048mix_s50pct															
 Qwen 3 4B s50 ALPS selfgen	8yyyu8ow	s3_4b_s50_alps_selfgen	finished	0,1,42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_selfgen_v3_s50pct															
 Qwen 3 4B s50 ALPS+retrain	kkpyvjam	s3_4b_s50_alpsretrain	finished	0,1,42	cosmos1030/gmp-kd3e-1-s50pct-lr5e-5_20260812_132642	miysnxlq	0.33	0.33	0.33	1	512	True	False	None	False	None	32	2048	None	8192
 Qwen 3 4B s50 Ours	s6b09k8f	s3_4b_s50_ours	finished	0,1,42	cosmos1030/gmp-kd3e-1-s50pct-lr5e-5_20260901_060006	544kemgd	0.33	0.33	0.33	32	512	False	True	0.01	False	cubic	32	2048	None	8192
