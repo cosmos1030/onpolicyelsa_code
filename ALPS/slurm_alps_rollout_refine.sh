@@ -19,11 +19,13 @@ exec 2>&1
 #   rollonly = refine pass on rollouts only (128 windows)
 #   rollonly256 = refine pass on 256 rollout windows: same refine tokens as mix
 #   mix3     = two mix refine passes per layer (fresh rollouts each): 3 ALPS passes in total
+#   freshfix / freshfix3 = mix / mix3 but the refine data is FRESH fixed-corpus windows per layer (diversity control, no rollouts)
+#   mixsep / mix3sep     = mix / mix3 with one window per rollout (no packing across rollouts)
 SIZE=${1:?"Usage: sbatch slurm_alps_rollout_refine.sh <1.7b|4b> <SPARSITY> [ROLLOUT_MAX_NEW]"}
 SPARSITY=${2:?"Usage: sbatch slurm_alps_rollout_refine.sh <1.7b|4b> <SPARSITY> <mix|rollonly> [ROLLOUT_MAX_NEW]"}
 MIX=${3:?"third arg: mix|rollonly"}
 ROLLOUT_MAX_NEW=${4:-2048}
-case "$MIX" in mix) MIX_FLAG=--rollout_mix_fixed ;; rollonly) MIX_FLAG="" ;; rollonly256) MIX_FLAG="--rollout_nsamples 256" ;; mix3) MIX_FLAG="--rollout_mix_fixed --rollout_refine_passes 2" ;; *) echo "bad MIX $MIX"; exit 1 ;; esac
+case "$MIX" in mix) MIX_FLAG=--rollout_mix_fixed ;; rollonly) MIX_FLAG="" ;; rollonly256) MIX_FLAG="--rollout_nsamples 256" ;; mix3) MIX_FLAG="--rollout_mix_fixed --rollout_refine_passes 2" ;; freshfix) MIX_FLAG="--rollout_mix_fixed --refine_source fixed" ;; freshfix3) MIX_FLAG="--rollout_mix_fixed --refine_source fixed --rollout_refine_passes 2" ;; mixsep) MIX_FLAG="--rollout_mix_fixed --rollout_per_doc" ;; mix3sep) MIX_FLAG="--rollout_mix_fixed --rollout_per_doc --rollout_refine_passes 2" ;; *) echo "bad MIX $MIX"; exit 1 ;; esac
 SPARSITY_PCT=$(python3 -c "print(int(${SPARSITY}*100))")
 # NM=24 env -> 2:4 semi-structured (sparsity arg must be 0.5); names use s24 instead of s50pct
 NM_FLAG=""; SP_TAG="s${SPARSITY_PCT}pct"; SP_LOG="s${SPARSITY_PCT}"

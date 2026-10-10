@@ -86,6 +86,8 @@ def get_ot_fw(nsamples, seed, seqlen, tokenizer, data_path, pack_short_docs=Fals
             if len(ids) >= seqlen:
                 all_tokens.append(torch.tensor(ids, dtype=torch.long).unsqueeze(0))
         assert len(all_tokens) > 0, "No samples longer than seqlen"
+        global _CALIB_DOCS
+        _CALIB_DOCS = all_tokens
 
         trainloader = []
         for _ in range(nsamples):
@@ -270,6 +272,24 @@ def _rollout_windows(llm, prompts, rng, nsamples, seqlen, args):
                         top_p=args.rollout_top_p, seed=rng.randrange(1 << 30))
     need = nsamples * seqlen
     stream, lens, examples = [], [], []
+    if getattr(args, 'rollout_per_doc', False):
+        # One window per rollout (its first seqlen tokens of prompt+completion), so no
+        # window spans two unrelated rollouts; rollouts shorter than seqlen are dropped.
+        wins = []
+        while len(wins) < nsamples:
+            batch = rng.sample(prompts, args.rollout_batch)
+            outs = llm.generate([TokensPrompt(prompt_token_ids=p) for p in batch], sp, use_tqdm=False)
+            for p, o in zip(batch, outs):
+                g = list(o.outputs[0].token_ids)
+                lens.append(len(g))
+                if len(examples) < 2:
+                    examples.append(o.outputs[0].text[:600])
+                if len(p) + len(g) >= seqlen and len(wins) < nsamples:
+                    wins.append((p + g)[:seqlen])
+        stats = {'n_rollouts': len(lens), 'avg_gen_tokens': float(np.mean(lens)),
+                 'trunc_rate': float(np.mean([l >= args.rollout_max_new for l in lens])),
+                 'examples': examples}
+        return torch.tensor(wins, dtype=torch.long), stats
     while len(stream) < need:
         batch = rng.sample(prompts, args.rollout_batch)
         outs = llm.generate([TokensPrompt(prompt_token_ids=p) for p in batch], sp, use_tqdm=False)
@@ -284,6 +304,21 @@ def _rollout_windows(llm, prompts, rng, nsamples, seqlen, args):
              'trunc_rate': float(np.mean([l >= args.rollout_max_new for l in lens])),
              'examples': examples}
     return windows, stats
+
+
+_CALIB_DOCS = None
+
+
+def _fixed_windows(rng, nsamples, seqlen):
+    """Fresh fixed-corpus windows (same sampling as get_ot_fw) for --refine_source fixed:
+    the diversity control for rollout refinement -- new documents every layer/pass, but
+    off-policy text instead of the pruned model's own rollouts."""
+    out = []
+    for _ in range(nsamples):
+        src = rng.choice(_CALIB_DOCS)
+        k = rng.randint(0, src.shape[1] - seqlen)
+        out.append(src[0, k:k + seqlen])
+    return torch.stack(out), {'n_rollouts': nsamples, 'avg_gen_tokens': 0.0, 'trunc_rate': 0.0, 'examples': []}
 
 
 def _rel_err(W, Wd, H):
@@ -458,7 +493,7 @@ def qwen3_sequential(model, dataloader, dev, args):
 
         del Xp
         if refine:
-            llm = args._rollout_llm
+            llm = getattr(args, '_rollout_llm', None)
             n_roll = args.rollout_nsamples or nsamples
             n_pass = max(1, args.rollout_refine_passes)
             W0 = {n: full[n].weight.data.detach().clone() for n in full}   # fixed-data pass result
@@ -469,10 +504,14 @@ def qwen3_sequential(model, dataloader, dev, args):
                 # rp=0 uses the same rollout seed as before, so passes=1
                 # reproduces the original single-refine runs exactly.
                 last = rp == n_pass - 1
-                _vllm_sync_layer(llm, layer, i)
+                if llm is not None:
+                    _vllm_sync_layer(llm, layer, i)
                 t0 = time.time()
                 rng = random.Random(args.seed * 100003 + i + 7919 * rp)
-                windows, rstats = _rollout_windows(llm, args._rollout_prompts, rng, n_roll, model.seqlen, args)
+                if args.refine_source == 'fixed':
+                    windows, rstats = _fixed_windows(rng, n_roll, model.seqlen)
+                else:
+                    windows, rstats = _rollout_windows(llm, args._rollout_prompts, rng, n_roll, model.seqlen, args)
                 t_roll = time.time() - t0
                 Xr = _capture_layer_inputs(model, windows, i, dev)
                 W1 = {n: full[n].weight.data.detach().clone() for n in full}
@@ -523,7 +562,8 @@ def qwen3_sequential(model, dataloader, dev, args):
                     }
                     scd2[n].free()
                 del scd2, W1, H2
-                _vllm_sync_layer(llm, layer, i)
+                if llm is not None:
+                    _vllm_sync_layer(llm, layer, i)
                 rec = {'layer': i, 'refine_pass': rp + 1, 'rollout_sec': round(t_roll, 1),
                        'layer_sec': round(time.time() - t0, 1),
                        **{k: v for k, v in rstats.items() if k != 'examples'}, 'sub': sub,
@@ -706,6 +746,11 @@ if __name__ == '__main__':
                               'model at its latest refine result and starts ADMM from that result.')
     parser.add_argument('--rollout_mix_fixed', action='store_true',
                          help='Refine pass uses fixed calibration windows + rollouts (equal tokens) instead of rollouts only.')
+    parser.add_argument('--refine_source', type=str, default='rollout', choices=['rollout', 'fixed'],
+                         help="'fixed': refine passes draw FRESH fixed-corpus windows each layer/pass instead of "
+                              "rollouts (diversity control: new data per layer, but not on-policy).")
+    parser.add_argument('--rollout_per_doc', action='store_true',
+                         help='One window per rollout instead of packing rollouts back-to-back into windows.')
     args = parser.parse_args()
 
     tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
@@ -764,6 +809,8 @@ if __name__ == '__main__':
         os.makedirs(os.path.dirname(os.path.abspath(args._analysis_path)), exist_ok=True)
         open(args._analysis_path, 'w').close()
         print(f'[rollout_refine] per-layer analysis -> {args._analysis_path}')
+        print(f'[rollout_refine] refine_source={args.refine_source} rollout_per_doc={args.rollout_per_doc}')
+    if args.rollout_refine and args.refine_source == 'rollout':
         args._rollout_llm = LLM(model=args.model, gpu_memory_utilization=args.rollout_vllm_mem,
                                 max_model_len=args.rollout_max_prompt + args.rollout_max_new + 16,
                                 seed=args.seed, dtype='bfloat16')
