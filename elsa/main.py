@@ -278,7 +278,7 @@ def main(argv):
                 enforce_eager=True,
                 default_max_new=_vllm_max_new,
                 default_temp=_vllm_temp,
-                startup_timeout=480,
+                startup_timeout=int(os.environ.get("VLLM_STARTUP_TIMEOUT", "1500")),
                 tensor_parallel_size=_vllm_tp_size,
             )
             _prebuilt_vllm_params = None
@@ -315,7 +315,7 @@ def main(argv):
             enforce_eager=_sc_eager,
             default_max_new=_sc_max_new,
             default_temp=_sc_temp,
-            startup_timeout=480,
+            startup_timeout=int(os.environ.get("VLLM_STARTUP_TIMEOUT", "1500")),
             tensor_parallel_size=1,
             # Shares the trainer's GPU, so its footprint MUST be releasable
             # between rollout batches -- unlike the FSDP sidecar above.
@@ -345,7 +345,7 @@ def main(argv):
                 enforce_eager=True,
                 default_max_new=_opd_max_new,
                 default_temp=0.6,
-                startup_timeout=300,
+                startup_timeout=int(os.environ.get("VLLM_STARTUP_TIMEOUT", "1500")),
             )
             logging.info("[rank 0] OPD vLLM subprocess ready"
                          + (" — signaling via dist.barrier" if is_distributed else ""))
