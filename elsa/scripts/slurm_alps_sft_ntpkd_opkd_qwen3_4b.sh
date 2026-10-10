@@ -117,9 +117,9 @@ $PYTHON main.py \
     --gmp_resume_from="${RESUME_FROM:-}" \
     --gmp_max_prompt_len=512 \
     --gmp_kd_only=false \
-    --gmp_ntp_lambda=0.33 \
-    --gmp_kd_lambda=0.33 \
-    --gmp_onpolicy_kd_lambda=0.33 \
+    --gmp_ntp_lambda=${NTP_LAMBDA:-0.33} \
+    --gmp_kd_lambda=${KD_LAMBDA:-0.33} \
+    --gmp_onpolicy_kd_lambda=${OPKD_LAMBDA:-0.33} \
     --gmp_onpolicy_max_new_tokens=${OPD_GEN_LEN} \
     --gmp_opkd_prev_mask_teacher=false \
     --gmp_opkd_vllm_gpu_mem=0.15 \
@@ -133,7 +133,7 @@ $PYTHON main.py \
     --eval_zero_shot=true \
     --wandb=true \
     --wandb_project=${WANDB_PROJECT} \
-    --run_name_suffix="alpssft_${SPARSITY_TAG}_lr${LR}_$(basename "$DATA_PATH" .jsonl)" \
+    --run_name_suffix="alpssft_${SPARSITY_TAG}_lr${LR}${TAG_SUFFIX:-}_$(basename "$DATA_PATH" .jsonl)" \
     --seed=42
 
 echo "##### END #####"

@@ -211,6 +211,7 @@ $PYTHON main.py \
     --eval_zero_shot=true \
     --wandb=true \
     --wandb_project=${WANDB_PROJECT} \
+    ${EXTRA_FLAGS:-} \
     --run_name_suffix="${RUN_TAG:+${RUN_TAG}_}pgd_grow2target_klbudget${KL_BUDGET}_lr${LR}_pgdi${PGD_INTERVAL}_ri${ROLLOUT_INTERVAL}$([ "$JUMP_TO_TARGET" = "true" ] && echo "_jump")$([ "$SIDECAR" = "true" ] && echo "_sidecar")_${PRUNING_SCOPE}scope_$(basename "$DATA_PATH" .jsonl)" \
     --seed=42
 
