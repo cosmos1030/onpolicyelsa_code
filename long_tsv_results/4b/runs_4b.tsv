@@ -72,6 +72,7 @@ Qwen 3 4B s70 ALPS (n=256 calibration)	4v2sxovx	s3_4b_s70_alps_n256	finished	42	
 Qwen 3 4B s70 ALPS (n=256 calibration)	lr8t6x4e	s3_4b_s70_alps_n256_seed1	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_n256_s70pct															
 Qwen 3 4B s70 ALPS (n=512 calibration)	zxhuwk5e	s3_4b_s70_alps_n512	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_n512_s70pct															
 Qwen 3 4B s70 ALPS rollout-refine (fixed+rollout)	gnrptwg6	s3_4b_s70_alps_rollout2048mix	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_rollout2048mix_s70pct															
+Qwen 3 4B s70 ALPS rollout-refine (fixed+rollout)	p4bdy9ae	s3_4b_s70_alps_rollout2048mix_seed1	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_rollout2048mix_s70pct															
 Qwen 3 4B s70 ALPS selfgen	qztmuivj	s3_4b_s70_alps_selfgen	finished	0,1,42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_selfgen_v3_s70pct															
 Qwen 3 4B s70 ALPS+retrain	vfjcx821	s3_4b_s70_alpsretrain	finished	0,1,42	cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260814_035030	5x4prktp	0.33	0.33	0.33	1	512	True	False	None	False	None	32	2048	None	8192
 Qwen 3 4B s70 ALPS+retrain w/o OPD (0.5/0.5/0)	6hizpc1g	s3_4b_s70_alpsretrain_2term	finished	0,1,42	cosmos1030/gmp-kd5e-1-s70pct-lr1e-4_20260913_193547	4n7itrc2	0.5	0.5	0	32	512	True	False	0.01	False	cubic	32	2048	None	8192
