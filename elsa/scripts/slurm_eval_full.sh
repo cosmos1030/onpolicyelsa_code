@@ -97,7 +97,10 @@ LOCAL_JOB_BASE="/local-data/user-data/${USER}/job_${SLURM_JOB_ID}"
 # else's job. Copy just the parquet out at exit; a trap rather than a line at
 # the bottom, so a job killed at its time limit still leaves what it had.
 DETAILS_NFS="/home1/doyoonkim/projects/elsa/logs/eval_details/${RUN_NAME}_${SLURM_JOB_ID}"
+# Off by default (2026-10-11): ~3.5GB per eval, nothing reads them, and a day of
+# sweeps filled the 5TB quota. SAVE_EVAL_DETAILS=1 turns the copy back on.
 save_details () {
+    [ "${SAVE_EVAL_DETAILS:-0}" = "1" ] || return 0
     local src="$LOCAL_JOB_BASE/eval_${RUN_NAME}"
     [ -d "$src" ] || return 0
     mkdir -p "$DETAILS_NFS"
