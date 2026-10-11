@@ -146,4 +146,5 @@ Qwen 3 1.7B s70 s3_1.7b_s70_alps_rollout2048freshfix_seed1	yxhs681v	s3_1.7b_s70_
 Qwen 3 1.7B s70 s3_1.7b_s70_alps_rollout2048mix3sep	dyzr2zpn	s3_1.7b_s70_alps_rollout2048mix3sep	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_alps_rollout2048mix3sep_s70pct															
 Qwen 3 1.7B s70 s3_1.7b_s70_alps_rollout2048mix3sep_seed0	xt7tnwjj	s3_1.7b_s70_alps_rollout2048mix3sep_seed0	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_alps_rollout2048mix3sep_s70pct															
 Qwen 3 1.7B s70 s3_1.7b_s70_alps_rollout2048mix3sep_seed1	asdw6kas	s3_1.7b_s70_alps_rollout2048mix3sep_seed1	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_alps_rollout2048mix3sep_s70pct															
+Qwen 3 1.7B s70 s3_1.7b_s70_alps_rollout2048mixsep_seed1	h2rxnwq6	s3_1.7b_s70_alps_rollout2048mixsep_seed1	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_alps_rollout2048mixsep_s70pct															
 Qwen 3 1.7B s80 Ours	8nqwbomy	s3_1.7b_s80_ours	finished	0,1,42	cosmos1030/gmp-kd3e-1-s80pct-lr1e-4_20260916_044553	hz4kw1sr	0.33	0.33	0.33	32	512	False	True	0.02	False	cubic	32	2048	None	8192

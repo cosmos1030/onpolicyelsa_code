@@ -484,6 +484,16 @@ Qwen 3 4B s70 s3_4b_s70_alps_rollout2048mix3_h200  [1/3 seeds complete]									
 seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy
 42	-	0.4	99.6	99.07	16335	-	-	-	-	0.0	100	100	16384	0	100	-	32768	0.38	99.55	99.34	8168	0.19
 																						
+Qwen 3 4B s70 s3_4b_s70_ours_roll2048_seed0  [1/3 seeds complete]																						wandb dag0ttur	/home1/doyoonkim/projects/elsa/models/gmp_4b_s70pct_lr0.0001_onpol_lmda0.33_20261007_213705_p1015076	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_4b_nostrip8192/runs/dag0ttur
+	avg5	math500				GPQA				IFEval				LCB				GSM8K				avg4 (no GPQA)
+seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy
+42	47.97	80.8	14.6	2.42	6259	26.77	36.87	22.06	11827	32.9	33.83	19.46	7587	13.81	48.13	0	23221	85.6	6.29	1.66	3006	53.28
+																						
+Qwen 3 4B s70 s3_4b_s70_ours_roll2048_seed1  [1/3 seeds complete]																						wandb jkhazok0	/home1/doyoonkim/projects/elsa/models/gmp_4b_s70pct_lr0.0001_onpol_lmda0.33_20261007_213705_p1015076	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_4b_nostrip8192/runs/jkhazok0
+	avg5	math500				GPQA				IFEval				LCB				GSM8K				avg4 (no GPQA)
+seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy
+42	48.12	81.2	13.8	3.33	6310	26.77	34.34	20.9	11570	33.83	32.9	19.03	7435	13.43	53.73	0	24187	85.37	5.99	1.23	2883	53.46
+																						
 Qwen 3 4B s70 s3_4b_s70_wontp																						wandb punbic84	cosmos1030/gmp-kd5e-1-s70pct-lr1e-4_20260916_215106	https://wandb.ai/dyk6208-gwangju-institute-of-science-and-technology/reasoning_qwen3_4b_nostrip8192/runs/punbic84
 	avg5	math500				GPQA				IFEval				LCB				GSM8K				avg4 (no GPQA)
 seed	accuracy	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy	truncation rate	correct truncation rate	avg tokens	accuracy
