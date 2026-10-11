@@ -22,7 +22,11 @@ Qwen 3 1.7B s3_1.7b_24_ours_seed1	f0puumhy	s3_1.7b_24_ours_seed1	finished	42	/ho
 Qwen 3 1.7B s3_1.7b_24_ours_seed42	vx1qzndb	s3_1.7b_24_ours_seed42	finished	42	/home1/doyoonkim/projects/elsa/models/gmp_s50pct_lr0.0001_onpol_lmda0.33_20260902_113337															
 Qwen 3 1.7B s3_1.7b_gptq_w3_g128_long	ngiwe4r9	s3_1.7b_gptq_w3_g128_long	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_gptq_w3_g128_s0pct															
 Qwen 3 1.7B s24 ALPS	ly0tnbw1	s3_1.7b_s24_alps_seed1	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_alps_s24															
+Qwen 3 1.7B s24 ALPS (fixed 128 + dense self-gen 128)	mb5qt9lb	s3_1.7b_s24_alps_n128sg128	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_alps_n128sg128_s24															
 Qwen 3 1.7B s24 ALPS (fixed 128 + dense self-gen 128)	090m835e	s3_1.7b_s24_alps_n128sg128_seed1	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_alps_n128sg128_s24															
+Qwen 3 1.7B s24 ALPS (fixed 128 + dense self-gen 128)	8hhbc1s9	s3_1.7b_s24_alps_n128sg128_seed0	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_alps_n128sg128_s24															
+Qwen 3 1.7B s24 ALPS (n=256 calibration)	i2xy0yxb	s3_1.7b_s24_alps_n256_seed0	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_alps_n256_s24															
+Qwen 3 1.7B s24 ALPS (n=256 calibration)	ml6w40p8	s3_1.7b_s24_alps_n256	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_alps_n256_s24															
 Qwen 3 1.7B s50 SparseGPT	o0k35icm	s3_1.7b_s50_sparsegpt	finished	0,1,42	cosmos1030/sparsegpt-qwen3-1.7b-s50pct															
 Qwen 3 1.7B s50 SparseGPT selfgen	b4jxvxcf	s3_1.7b_s50_sgpt_selfgen	finished	0,1,42	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_sgpt_s50pct_n128_selfgenv3															
 Qwen 3 1.7B s50 SparseLLM	tmbmbjwb	s3_1.7b_sparsellm_s50	finished	0,1,42	/home/doyoonkim/models/sparsellm_17b_s50															

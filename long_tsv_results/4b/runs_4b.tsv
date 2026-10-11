@@ -68,9 +68,13 @@ Qwen 3 4B s70 SparseGPT	r9alde40	s3_4b_s70_sparsegpt	finished	0,1,42	cosmos1030/
 Qwen 3 4B s70 SparseGPT selfgen	wue1cbzo	s3_4b_s70_sgpt_selfgen	finished	0,1,42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_sgpt_s70pct_n128_selfgenv3															
 Qwen 3 4B s70 SparseLLM	xrozbvfm	s3_4b_sparsellm_s70	finished	0,1,42	/home/doyoonkim/models/sparsellm_4b_s70															
 Qwen 3 4B s70 ALPS	tn8f17g1	s3_4b_s70_alps	finished	0,1,42	cosmos1030/alps-qwen3-4b-s70pct															
+Qwen 3 4B s70 ALPS (fixed 128 + dense self-gen 128)	f0l78nn0	s3_4b_s70_alps_n128sg128	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_n128sg128_s70pct															
+Qwen 3 4B s70 ALPS (fixed 128 + dense self-gen 128)	ego2ni3z	s3_4b_s70_alps_n128sg128_seed0	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_n128sg128_s70pct															
+Qwen 3 4B s70 ALPS (fixed 128 + dense self-gen 128)	78p7ri3p	s3_4b_s70_alps_n128sg128_seed1	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_n128sg128_s70pct															
 Qwen 3 4B s70 ALPS (n=256 calibration)	4v2sxovx	s3_4b_s70_alps_n256	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_n256_s70pct															
 Qwen 3 4B s70 ALPS (n=256 calibration)	lr8t6x4e	s3_4b_s70_alps_n256_seed1	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_n256_s70pct															
 Qwen 3 4B s70 ALPS (n=512 calibration)	zxhuwk5e	s3_4b_s70_alps_n512	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_n512_s70pct															
+Qwen 3 4B s70 ALPS (n=512 calibration)	x3i2pdaz	s3_4b_s70_alps_n512_seed0	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_n512_s70pct															
 Qwen 3 4B s70 ALPS rollout-refine (fixed+rollout)	gnrptwg6	s3_4b_s70_alps_rollout2048mix	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_rollout2048mix_s70pct															
 Qwen 3 4B s70 ALPS rollout-refine (fixed+rollout)	p4bdy9ae	s3_4b_s70_alps_rollout2048mix_seed1	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_rollout2048mix_s70pct															
 Qwen 3 4B s70 ALPS selfgen	qztmuivj	s3_4b_s70_alps_selfgen	finished	0,1,42	/home1/doyoonkim/projects/elsa/models/qwen3_4b_alps_selfgen_v3_s70pct															
