@@ -698,3 +698,118 @@ wandb 학습 런·ALPS 로그와 자동으로 연결되지 않은 리포 (주로
 - 2026-07-01 `gmp-kd1e0-s70pct-lr1e-4_20260701_124550`
 - 2026-07-01 `gmp-kd1e0-s60pct-lr1e-4_20260701_125332`
 - 2026-07-01 `gmp-kd1e0-s50pct-lr1e-4_20260701_130140`
+
+## 5. 로컬 사본을 지운 모델 (HF에만 있음)
+
+정리일: 2026-10-12. 디스크 쿼터 확보를 위해, HF 리포의 safetensors 총 크기가 로컬과 정확히 같고 마지막 수정이 3일 넘은 로컬 폴더만 삭제했습니다. ALPS 기준 모델(qwen3_*_alps_s*pct, *_s24)과 체크포인트 폴더는 대상에서 뺐습니다. 필요하면 `huggingface-cli download <리포> --local-dir elsa/models/<로컬 폴더>`로 복원합니다. 각 리포의 방법·설정·sync 상태는 위 1·2절에서 리포 이름으로 찾으면 됩니다.
+
+| 로컬 폴더 (elsa/models) | HF 리포 | 크기 GB | 런 (wandb 이름 또는 로그 헤더) | 로그 |
+|---|---|---|---|---|
+| `gmp_1.7b_n24_s50pct_lr0.0001_onpol_lmda0.33_20260929_220212_p1287040` | `cosmos1030/gmp-kd3e-1-1.7b-n24-s50pct-lr1e-4_20260930_033246` | 3.4 | pending | alps24_scout_wanda_1.7b_1030947.out |
+| `gmp_1.7b_n24_s50pct_lr0.0001_onpol_lmda0.33_20260929_220655_p3299667` | `cosmos1030/gmp-kd3e-1-1.7b-n24-s50pct-lr1e-4_20260930_060834` | 3.4 | pending | alps24_scout_fisher_1.7b_1030946.out |
+| `gmp_1.7b_n24_s50pct_lr0.0001_onpol_lmda0.33_20260929_232731_p1089940` | `cosmos1030/gmp-kd3e-1-1.7b-n24-s50pct-lr1e-4_20260930_072819` | 3.4 | pending | alps24_training_1.7b_1031704.out |
+| `gmp_1.7b_n24_s50pct_lr0.0001_onpol_lmda0.33_20261001_030945_p3878065` | `cosmos1030/gmp-kd3e-1-1.7b-n24-s50pct-lr1e-4_20261001_111255` | 3.4 | pending | alps24scout_ste_d1e3_klb002_n24_1.7b_1038486.out |
+| `gmp_1.7b_n24_s50pct_lr0.0001_onpol_lmda0.33_20261001_031649_p3573175` | `cosmos1030/gmp-kd3e-1-1.7b-n24-s50pct-lr1e-4_20261001_095927` | 3.4 | pending | alps24scout_ste_d1e3_klb001_n24_1.7b_1038485.out |
+| `gmp_1.7b_n24_s50pct_lr0.0001_onpol_lmda0.33_20261001_031741_p1322283` | `cosmos1030/gmp-kd3e-1-1.7b-n24-s50pct-lr1e-4_20261001_111538` | 3.4 | pending | alps24scout_ste_d0_klb002_n24_1.7b_1038488.out |
+| `gmp_1.7b_n24_s50pct_lr0.0001_onpol_lmda0.33_20261001_033100_p3575874` | `cosmos1030/gmp-kd3e-1-1.7b-n24-s50pct-lr1e-4_20261001_102449` | 3.4 | pending | alps24scout_ste_d0_klb001_n24_1.7b_1038487.out |
+| `gmp_1.7b_n24_s50pct_lr0.0001_onpol_lmda0.33_20261002_073442_p1580146` | `cosmos1030/gmp-kd3e-1-1.7b-n24-s50pct-lr1e-4_20261002_153016` | 3.4 | pending | alps24scout_tgate_m0_c8_n24_1.7b_1048667.out |
+| `gmp_1.7b_n24_s50pct_lr0.0001_onpol_lmda0.33_20261002_074429_p2173971` | `cosmos1030/gmp-kd3e-1-1.7b-n24-s50pct-lr1e-4_20261002_160223` | 3.4 | pending | alps24scout_tgate_m0_c16_n24_1.7b_1048669.out |
+| `gmp_1.7b_n24_s50pct_lr0.0001_onpol_lmda0.33_20261005_230331_p2524277` | `cosmos1030/gmp-kd3e-1-1.7b-n24-s50pct-lr1e-4_20261006_071136` | 3.4 | pending | alps24scout_comp_klb002_n24_1.7b_1078267.out |
+| `gmp_1.7b_n24_s50pct_lr0.0001_onpol_lmda0.33_20261005_232718_p1578318` | `cosmos1030/gmp-kd3e-1-1.7b-n24-s50pct-lr1e-4_20261006_065934` | 3.4 | pending | alps24scout_comp_klb001_n24_1.7b_1078268.out |
+| `gmp_1.7b_n24_s50pct_lr0.0001_onpol_lmda0.33_20261005_234019_p2546564` | `cosmos1030/gmp-kd3e-1-1.7b-n24-s50pct-lr1e-4_20261006_055538` | 3.4 | pending | alps24scout_comp_tgate_n24_1.7b_1078266.out |
+| `gmp_1.7b_s0pct_lr0.0001_onpol_lmda0.33_20261006_065604_p3544763` | `cosmos1030/gmp-kd3e-1-1.7b-s0pct-lr1e-4_20261006_105401` | 3.4 | pending | quant_1.7b_3bit_notr_1080791.out |
+| `gmp_1.7b_s0pct_lr0.0001_onpol_lmda0.33_20261006_070128_p2305192` | `cosmos1030/gmp-kd3e-1-1.7b-s0pct-lr1e-4_20261006_131408` | 3.4 | pending | quant_1.7b_3bit_01_1080790.out |
+| `gmp_1.7b_s0pct_lr0.0001_onpol_lmda0.33_20261006_072146_p1265318` | `cosmos1030/gmp-kd3e-1-1.7b-s0pct-lr1e-4_20261006_160442` | 3.4 | pending | quant_1.7b_2bit_01_1080786.out |
+| `gmp_1.7b_s0pct_lr0.0001_onpol_lmda0.33_20261006_072319_p1265307` | `cosmos1030/gmp-kd3e-1-1.7b-s0pct-lr1e-4_20261006_174408` | 3.4 | pending | quant_1.7b_2bit_002_1080785.out |
+| `gmp_1.7b_s0pct_lr0.0001_onpol_lmda0.33_20261006_072748_p1630678` | `cosmos1030/gmp-kd3e-1-1.7b-s0pct-lr1e-4_20261006_135840` | 3.4 | pending | quant_1.7b_2bit_notr_1080787.out |
+| `gmp_1.7b_s0pct_lr0.0001_onpol_lmda0.33_20261006_073707_p2447102` | `cosmos1030/gmp-kd3e-1-1.7b-s0pct-lr1e-4_20261006_191852` | 3.4 | pending | quant_1.7b_2bit_0005_1080784.out |
+| `gmp_1.7b_s0pct_lr0.0001_onpol_lmda0.33_20261006_073724_p1630679` | `cosmos1030/gmp-kd3e-1-1.7b-s0pct-lr1e-4_20261006_122929` | 3.4 | pending | quant_1.7b_3bit_0005_1080788.out |
+| `gmp_1.7b_s0pct_lr0.0001_onpol_lmda0.33_20261006_081629_p3058928` | `cosmos1030/gmp-kd3e-1-1.7b-s0pct-lr1e-4_20261006_151503` | 3.4 | pending | quant_1.7b_3bit_notr_fixedgrid_1081111.out |
+| `gmp_1.7b_s0pct_lr0.0001_onpol_lmda0.33_20261006_202928_p499895` | `cosmos1030/gmp-kd3e-1-1.7b-s0pct-lr1e-4_20261007_025825` | 3.4 | pending | quant_1.7b_3bit_002_1084751.out |
+| `gmp_1.7b_s0pct_lr0.0001_onpol_lmda0.33_20261007_084716_p3307628` | `cosmos1030/gmp-kd3e-1-1.7b-s0pct-lr1e-4_20261007_163721` | 3.4 | pending | quant_1.7b_2bit_notr_fixedgrid_1088171.out |
+| `gmp_1.7b_s0pct_lr0.0001_onpol_lmda0.33_20261007_192701_p3371813` | `cosmos1030/gmp-kd3e-1-1.7b-s0pct-lr1e-4_20261007_232355` | 3.4 | pending | gptq_train_1.7b_3bit_1090727.out |
+| `gmp_1.7b_s0pct_lr0.0001_onpol_lmda0.33_20261007_193305_p3371812` | `cosmos1030/gmp-kd3e-1-1.7b-s0pct-lr1e-4_20261008_035937` | 3.4 | pending | gptq_train_1.7b_2bit_1090728.out |
+| `gmp_1.7b_s50pct_lr0.0001_onpol_lmda0.33_20261007_223216_p3373423` | `cosmos1030/gmp-kd3e-1-1.7b-s50pct-lr1e-4_20261008_035636` | 3.4 | pending | alpstrain_1.7b_s50_lr1e-4_roll2048_1090751.out |
+| `gmp_1.7b_s50pct_lr5e-05_onpol_lmda0.33_20261007_115015_p2669171` | `cosmos1030/gmp-kd3e-1-1.7b-s50pct-lr5e-5_20261007_150922` | 3.4 | pending | ours_1.7b_s50_klb002_pgdi8_lr5e-5_roll2048_1088189.out |
+| `gmp_1.7b_s60pct_lr0.0001_onpol_lmda0.33_20261007_215158_p2924548` | `cosmos1030/gmp-kd3e-1-1.7b-s60pct-lr1e-4_20261008_043037` | 3.4 | pending | alpstrain_1.7b_s60_lr1e-4_roll2048_1090752.out |
+| `gmp_1.7b_s60pct_lr5e-05_onpol_lmda0.33_20261007_114751_p85593` | `cosmos1030/gmp-kd3e-1-1.7b-s60pct-lr5e-5_20261007_154206` | 3.4 | pending | ours_1.7b_s60_klb001_pgdi16_lr5e-5_roll2048_1088190.out |
+| `gmp_1.7b_s70pct_lr0.0001_onpol_lmda0.33_20260923_011001_p3316810` | `cosmos1030/gmp-kd3e-1-1.7b-s70pct-lr1e-4_20260923_033301` | 3.4 | pending | alps_pgd_1.7b_984411.out |
+| `gmp_1.7b_s70pct_lr0.0001_onpol_lmda0.33_20260923_011723_p663887` | `cosmos1030/gmp-kd3e-1-1.7b-s70pct-lr1e-4_20260923_033414` | 3.4 | pending | alps_pgd_1.7b_984412.out |
+| `gmp_1.7b_s70pct_lr0.0001_onpol_lmda0.33_20260923_041708_p2558591` | `cosmos1030/gmp-kd3e-1-1.7b-s70pct-lr1e-4_20260923_062543` | 3.4 | pending | gmp_pgd_grow_1.7b_984413.out |
+| `gmp_1.7b_s70pct_lr0.0001_onpol_lmda0.33_20261006_044623_p2427664` | `cosmos1030/gmp-kd3e-1-1.7b-s70pct-lr1e-4_20261006_140940` | 3.4 | pending | gmp_pgd_grow_1.7b_s70_roll1024_1079836.out |
+| `gmp_1.7b_s70pct_lr0.0001_onpol_lmda0.33_20261006_064818_p4032810` | `cosmos1030/gmp-kd3e-1-1.7b-s70pct-lr1e-4_20261006_125005` | 3.4 | pending | gmp_pgd_grow_1.7b_s70_roll2048_1079837.out |
+| `gmp_1.7b_s70pct_lr0.0001_onpol_lmda0.33_20261007_033733_p2510172` | `cosmos1030/gmp-kd3e-1-1.7b-s70pct-lr1e-4_20261007_141017` | 3.4 | pending | wallclock_B_alpstrain_s70_1087287.out |
+| `gmp_1.7b_s70pct_lr0.0001_onpol_lmda0.33_20261007_042125_p1826726` | `cosmos1030/gmp-kd3e-1-1.7b-s70pct-lr1e-4_20261007_104809` | 3.4 | pending | wallclock_A_ours_s70_1087286.out |
+| `gmp_1.7b_s70pct_lr5e-05_20260926_034710_p3335307` | `cosmos1030/gmp-kd5e-1-1.7b-s70pct-lr5e-5_20260926_153440` | 3.4 | pending | alps_sft_1.7b_2term_1003077.out |
+| `gmp_4b_s0pct_lr0.0001_onpol_lmda0.33_20261009_014811_p258219` | `cosmos1030/gmp-kd3e-1-4b-s0pct-lr1e-4_20261009_052708` | 8.0 | pending | gmp_pgd_grow_4b_1100203.out |
+| `gmp_4b_s0pct_lr0.0001_onpol_lmda0.33_20261009_015438_p258220` | `cosmos1030/gmp-kd3e-1-4b-s0pct-lr1e-4_20261009_053427` | 8.0 | pending | gmp_pgd_grow_4b_1100204.out |
+| `gmp_4b_s0pct_lr0.0001_onpol_lmda0.33_20261009_061148_p11285` | `cosmos1030/gmp-kd3e-1-4b-s0pct-lr1e-4_20261009_133459` | 8.0 | pending | gmp_pgd_grow_4b_1100256.out |
+| `gmp_4b_s0pct_lr0.0001_onpol_lmda0.33_20261009_061621_p11289` | `cosmos1030/gmp-kd3e-1-4b-s0pct-lr1e-4_20261009_145513` | 8.0 | pending | gmp_pgd_grow_4b_1100257.out |
+| `gmp_4b_s50pct_lr5e-05_onpol_lmda0.33_20261007_193302_p1421715` | `cosmos1030/gmp-kd3e-1-4b-s50pct-lr5e-5_20261007_224232` | 8.0 | pending | alps_sft_ntpkd_opkd_4b_1091208.out |
+| `gmp_4b_s50pct_lr5e-05_onpol_lmda0.33_20261007_213041_p79349` | `cosmos1030/gmp-kd3e-1-4b-s50pct-lr5e-5_20261008_010124` | 8.0 | pending | gmp_pgd_grow_4b_1091254.out |
+| `gmp_4b_s60pct_lr0.0001_onpol_lmda0.33_20261007_205426_p1006017` | `cosmos1030/gmp-kd3e-1-4b-s60pct-lr1e-4_20261008_011535` | 8.0 | pending | alps_sft_ntpkd_opkd_4b_1091209.out |
+| `gmp_4b_s60pct_lr5e-05_onpol_lmda0.33_20261007_101002_p12534` | `cosmos1030/gmp-kd3e-1-4b-s60pct-lr5e-5_20261007_143047` | 8.0 | pending | gmp_pgd_grow_4b_1088478.out |
+| `gmp_4b_s70pct_lr0.0001_onpol_lmda0.33_20261007_204839_p1006019` | `cosmos1030/gmp-kd3e-1-4b-s70pct-lr1e-4_20261008_015739` | 8.0 | pending | alps_sft_ntpkd_opkd_4b_1091210.out |
+| `gmp_4b_s70pct_lr0.0001_onpol_lmda0.33_20261007_213705_p1015076` | `cosmos1030/gmp-kd3e-1-4b-s70pct-lr1e-4_20261008_023855` | 8.0 | pending | gmp_pgd_grow_4b_1091256.out |
+| `gmp_8b_s70pct_lr0.0001_onpol_lmda1.0_20260919_015431_p476020` | `cosmos1030/gmp-8b-s70pct-lr1e-4_20260919_041114` | 8.0 | pending | gmp_pgd_grow_4b_fsdp2_961503.out |
+| `gmp_s50pct_lr5e-05_20260915_115020_p3476415` | `cosmos1030/gmp-kd5e-1-s50pct-lr5e-5_20260915_130503` | 8.0 | pending | gmp_pgd_grow_4b_fsdp4_927233.out |
+| `gmp_s50pct_lr5e-05_20260916_191943_p3732968` | `cosmos1030/gmp-kd5e-1-s50pct-lr5e-5_20260916_221150` | 3.4 | pending | gmp_pgd_grow_1.7b_938290.out |
+| `gmp_s50pct_lr5e-05_onpol_lmda0.33_20260901_045703` | `cosmos1030/gmp-kd3e-1-s50pct-lr5e-5_20260901_071337` | 3.4 | pending | gmp_pgd_grow_1.7b_823372.out |
+| `gmp_s60pct_lr5e-05_20260915_165740_p3530899` | `cosmos1030/gmp-kd5e-1-s60pct-lr5e-5_20260915_181935` | 8.0 | pending | gmp_pgd_grow_4b_fsdp4_927234.out |
+| `gmp_s60pct_lr5e-05_20260916_192621_p1310166` | `cosmos1030/gmp-kd5e-1-s60pct-lr5e-5_20260916_225506` | 3.4 | pending | gmp_pgd_grow_1.7b_938291.out |
+| `gmp_s60pct_lr5e-05_onpol_lmda0.33_20260901_043855` | `cosmos1030/gmp-kd3e-1-s60pct-lr5e-5_20260901_071402` | 3.4 | pending | gmp_pgd_grow_1.7b_823373.out |
+| `gmp_s60pct_lr5e-05_onpol_lmda0.33_20260901_094041` | `cosmos1030/gmp-kd3e-1-s60pct-lr5e-5_20260901_121104` | 3.4 | pending | gmp_pgd_grow_1.7b_823379.out |
+| `gmp_s60pct_lr5e-05_onpol_lmda0.33_20260902_150611` | `cosmos1030/gmp-kd3e-1-s60pct-lr5e-5_20260902_173413` | 3.4 | pending | gmp_pgd_grow_1.7b_830941.out |
+| `gmp_s70pct_lr0.0001_20260915_104210_p470883` | `cosmos1030/gmp-kd5e-1-s70pct-lr1e-4_20260915_124804` | 3.4 | pending | gmp_pgd_grow_1.7b_927227.out |
+| `gmp_s70pct_lr0.0001_20260915_114445_p3610577` | `cosmos1030/gmp-kd5e-1-s70pct-lr1e-4_20260915_140636` | 3.4 | pending | alps17_s70_2term_w55_lr1e4_928072.out |
+| `gmp_s70pct_lr0.0001_20260915_173630_p908241` | `cosmos1030/gmp-kd5e-1-s70pct-lr1e-4_20260915_192606` | 8.0 | pending | gmp_pgd_grow_4b_fsdp4_927235.out |
+| `gmp_s70pct_lr0.0001_onpol_lmda0.33_20260901_055527` | `cosmos1030/gmp-kd3e-1-s70pct-lr1e-4_20260901_084730` | 3.4 | pending | gmp_pgd_grow_1.7b_823374.out |
+| `gmp_s70pct_lr0.0001_onpol_lmda0.5_20260829_022919` | `cosmos1030/gmp-kd5e-1-s70pct-lr1e-4_20260829_053846` | 3.4 | pending | gmp_pgd_klgate_1.7b_805475.out |
+| `gmp_s70pct_lr0.0001_onpol_lmda0.5_20260916_140558_p3630227` | `cosmos1030/gmp-kd5e-1-s70pct-lr1e-4_20260916_183517` | 3.4 | pending | gmp_pgd_grow_1.7b_935954.out |
+| `gmp_s70pct_lr0.0001_onpol_lmda1.0_20260915_014615_p571857` | `cosmos1030/gmp-s70pct-lr1e-4_20260915_051006` | 3.4 | pending | gmp_pgd_grow_1.7b_925055.out |
+| `gmp_s70pct_lr5e-05_20260915_114518_p852066` | `cosmos1030/gmp-kd5e-1-s70pct-lr5e-5_20260915_140911` | 3.4 | pending | alps17_s70_2term_w55_lr5e5_928073.out |
+| `gmp_s70pct_lr5e-05_onpol_lmda0.33_20260915_134705_p3610576` | `cosmos1030/gmp-kd3e-1-s70pct-lr5e-5_20260915_160528` | 3.4 | pending | alps17_s70_3term_lr5e5_928074.out |
+| `gmp_s70pct_lr5e-05_onpol_lmda0.5_20260829_001532` | `cosmos1030/gmp-kd5e-1-s70pct-lr5e-5_20260829_033354` | 3.4 | pending | alps_sft_ntpkd_opkd_1.7b_805476.out |
+| `gmp_s80pct_lr0.0001_onpol_lmda0.33_20260916_020553_p441981` | `cosmos1030/gmp-kd3e-1-s80pct-lr1e-4_20260916_044553` | 3.4 | pending | gmp_pgd_grow_1.7b_930596.out |
+| `qwen3_1.7b_alps_rollout2048mix_s50pct` | `cosmos1030/alps-rollout2048mix-qwen3-1.7b-s50pct` | 3.4 | ALPS rollout-refine Qwen3-1.7b s50% mode=mix rollout_max_new=2048 | slurm_1104723.out |
+| `qwen3_1.7b_alps_rollout2048mix_s60pct` | `cosmos1030/alps-rollout2048mix-qwen3-1.7b-s60pct` | 3.4 | ALPS rollout-refine Qwen3-1.7b s60% mode=mix rollout_max_new=2048 | slurm_1104724.out |
+| `qwen3_1.7b_alps_rollout2048mix_s70pct` | `cosmos1030/alps-rollout2048mix-qwen3-1.7b-s70pct` | 3.4 | ALPS rollout-refine Qwen3-1.7b s70% mode=mix rollout_max_new=2048 | slurm_1104725.out |
+| `qwen3_1.7b_alps_rollout2048rollonly_s70pct` | `cosmos1030/alps-rollout2048rollonly-qwen3-1.7b-s70pct` | 3.4 | ALPS rollout-refine Qwen3-1.7b s70% mode=rollonly rollout_max_new=2048 | slurm_1104729.out |
+| `qwen3_1.7b_alps_selfgen_v3_s50pct` | `cosmos1030/alps-s50pct_20260826_223028` | 3.4 | alps_selfgen_v3_s50pct | slurm_794294.out |
+| `qwen3_1.7b_alps_selfgen_v3_s60pct` | `cosmos1030/alps-s60pct_20260826_223415` | 3.4 | alps_selfgen_v3_s60pct | slurm_794295.out |
+| `qwen3_1.7b_alps_selfgen_v3_s70pct` | `cosmos1030/alps-s70pct_20260826_223323` | 3.4 | alps_selfgen_v3_s70pct | slurm_794296.out |
+| `qwen3_1.7b_alps_seqlenabl_fixed_seq2048_s50pct` | `cosmos1030/alps-s50pct_20260827_131618` | 3.4 | alps_seqlenabl_fixed_seq2048_s50pct | slurm_795375.out |
+| `qwen3_1.7b_alps_seqlenabl_fixed_seq4096_s50pct` | `cosmos1030/alps-s50pct_20260827_131723` | 3.4 | alps_seqlenabl_fixed_seq4096_s50pct | slurm_795376.out |
+| `qwen3_1.7b_alps_seqlenabl_fixed_seq8192_s50pct` | `cosmos1030/alps-s50pct_20260827_154700` | 3.4 | alps_seqlenabl_fixed_seq8192_s50pct | slurm_795778.out |
+| `qwen3_1.7b_alps_seqlenabl_selfgen_seq2048_s50pct` | `cosmos1030/alps-s50pct_20260827_131320` | 3.4 | alps_seqlenabl_selfgen_seq2048_s50pct | slurm_795372.out |
+| `qwen3_1.7b_alps_seqlenabl_selfgen_seq4096_s50pct` | `cosmos1030/alps-s50pct_20260827_131415` | 3.4 | alps_seqlenabl_selfgen_seq4096_s50pct | slurm_795373.out |
+| `qwen3_1.7b_alps_seqlenabl_selfgen_seq8192_s50pct` | `cosmos1030/alps-s50pct_20260827_153718` | 3.4 | alps_seqlenabl_selfgen_seq8192_s50pct | slurm_795777.out |
+| `qwen3_1.7b_sparsellm_s24` | `cosmos1030/sparsellm-s50pct_20260831_204119` | 3.4 | sparsellm_s24 | slurm_825469.out |
+| `qwen3_1.7b_sparsellm_s50pct` | `cosmos1030/sparsellm-s50pct_20260831_162611` | 3.4 | sparsellm_s50pct | slurm_823386.out |
+| `qwen3_1.7b_sparsellm_s60pct` | `cosmos1030/sparsellm-s60pct_20260831_204149` | 3.4 | sparsellm_s60pct | slurm_825467.out |
+| `qwen3_1.7b_sparsellm_s70pct` | `cosmos1030/sparsellm-s70pct_20260831_204148` | 3.4 | sparsellm_s70pct | slurm_825468.out |
+| `qwen3_4b_alps_rollout2048mix_s50pct` | `cosmos1030/alps-rollout2048mix-qwen3-4b-s50pct` | 8.0 | ALPS rollout-refine Qwen3-4b s50% mode=mix rollout_max_new=2048 | slurm_1104726.out |
+| `qwen3_4b_alps_rollout2048mix_s60pct` | `cosmos1030/alps-rollout2048mix-qwen3-4b-s60pct` | 8.0 | ALPS rollout-refine Qwen3-4b s60% mode=mix rollout_max_new=2048 | slurm_1104727.out |
+| `qwen3_4b_alps_rollout2048mix_s70pct` | `cosmos1030/alps-rollout2048mix-qwen3-4b-s70pct` | 8.0 | ALPS rollout-refine Qwen3-4b s70% mode=mix rollout_max_new=2048 | slurm_1104728.out |
+| `qwen3_4b_alps_selfgen_v3_s50pct` | `cosmos1030/alps-s50pct_20260827_094710` | 8.0 | alps_selfgen_v3_s50pct | slurm_794882.out |
+| `qwen3_4b_alps_selfgen_v3_s60pct` | `cosmos1030/alps-s60pct_20260827_105937` | 8.0 | alps_selfgen_v3_s60pct | slurm_794883.out |
+| `qwen3_4b_alps_selfgen_v3_s70pct` | `cosmos1030/alps-s70pct_20260827_111542` | 8.0 | alps_selfgen_v3_s70pct | slurm_794884.out |
+| `qwen3_4b_alps_selfgen_v3_s80pct` | `cosmos1030/alps-s80pct_20260925_220218` | 8.0 | alps_selfgen_v3_s80pct | slurm_1003078.out |
+| `qwen3_4b_gptq_w2_g128_s0pct` | `cosmos1030/sparsellm-s0pct_20261008_133444` | 8.0 | SparseLLM Pruning Qwen3-4B s0% | slurm_1100255.out |
+| `qwen3_4b_gptq_w2_pc_s0pct` | `cosmos1030/sparsellm-s0pct_20261008_123842` | 8.0 | SparseLLM Pruning Qwen3-4B s0% | slurm_1099996.out |
+| `qwen3_4b_gptq_w3_g128_s0pct` | `cosmos1030/sparsellm-s0pct_20261008_131030` | 8.0 | SparseLLM Pruning Qwen3-4B s0% | slurm_1100201.out |
+| `qwen3_4b_gptq_w3_pc_s0pct` | `cosmos1030/sparsellm-s0pct_20261008_123705` | 8.0 | SparseLLM Pruning Qwen3-4B s0% | slurm_1099995.out |
+| `qwen3_4b_sparsellm_s24` | `cosmos1030/sparsellm-s50pct_20260831_220245` | 8.0 | sparsellm_s24 | slurm_825473.out |
+| `qwen3_4b_sparsellm_s50pct` | `cosmos1030/sparsellm-s50pct_20260831_204946` | 8.0 | sparsellm_s50pct | slurm_825470.out |
+| `qwen3_4b_sparsellm_s60pct` | `cosmos1030/sparsellm-s60pct_20260831_210736` | 8.0 | sparsellm_s60pct | slurm_825471.out |
+| `qwen3_4b_sparsellm_s70pct` | `cosmos1030/sparsellm-s70pct_20260831_211530` | 8.0 | sparsellm_s70pct | slurm_825472.out |
+| `qwen3_4b_sparsellm_s80pct` | `cosmos1030/sparsellm-s80pct_20260903_113201` | 8.0 | sparsellm_s80pct | slurm_837519.out |
+| `qwen3_8b_selfgen_v3_alps_s50pct` | `cosmos1030/alps-s50pct_20260827_095701` | 16.4 | alps_8b_selfgen_v3_s50pct | slurm_794887.out |
+| `qwen3_8b_selfgen_v3_alps_s60pct` | `cosmos1030/alps-s60pct_20260827_141236` | 16.4 | alps_8b_selfgen_v3_s60pct | slurm_794888.out |
+| `qwen3_8b_selfgen_v3_alps_s70pct` | `cosmos1030/alps-s70pct_20260827_144621` | 16.4 | alps_8b_selfgen_v3_s70pct | slurm_794889.out |
+| `qwen3_8b_selfgen_v3_alps_s80pct` | `cosmos1030/alps-s80pct_20260925_235139` | 16.4 | alps_8b_selfgen_v3_s80pct | slurm_1003079.out |
+| `qwen3_8b_sparsellm_s24` | `cosmos1030/sparsellm-s50pct_20260901_090527` | 16.4 | sparsellm_s24 | slurm_825477.out |
+| `qwen3_8b_sparsellm_s50pct` | `cosmos1030/sparsellm-s50pct_20260901_050129` | 16.4 | sparsellm_s50pct | slurm_825474.out |
+| `qwen3_8b_sparsellm_s60pct` | `cosmos1030/sparsellm-s60pct_20260901_062412` | 16.4 | sparsellm_s60pct | slurm_825475.out |
+| `qwen3_8b_sparsellm_s70pct` | `cosmos1030/sparsellm-s70pct_20260901_073704` | 16.4 | sparsellm_s70pct | slurm_825476.out |
+| `qwen3_8b_sparsellm_s80pct` | `cosmos1030/sparsellm-s80pct_20260903_020850` | 16.4 | sparsellm_s80pct | slurm_839780.out |
