@@ -165,7 +165,7 @@ $PYTHON main.py \
     --dataset=mixed_cot \
     --data_path="$DATA_PATH" \
     --sparsity_ratio=${SPARSITY} \
-    --sparsity_type=unstructured \
+    --sparsity_type=${SPARSITY_TYPE:-unstructured} \
     --do_gmp=true \
     --steps=${STEPS} \
     --gmp_batch_size=1 \

@@ -106,6 +106,11 @@ def _build_run_name(FLAGS):
                 if getattr(F, 'gmp_l1_open_groups_only', False):
                     name += "_openonly"
 
+        if getattr(F, 'gmp_pgd_nm_compensate', False):
+            name += "_nmcomp"
+        if (getattr(F, 'gmp_nm_lasso_shrink', 0.0) or 0.0) > 0:
+            name += f"_nmshrink{F.gmp_nm_lasso_shrink}"
+
         lr_sched = getattr(F, 'lr_scheduler', 'cosine')
         if lr_sched in ('constant', 'constant_with_warmup'):
             name += "_constlr"
@@ -1147,6 +1152,10 @@ if __name__ == '__main__':
                       "functionally cheaper. Motivated by the measurement that within a 4-group the 3rd "
                       "most important coordinate carries ~75% the importance of the 2nd, so 2:4 must always "
                       "evict coordinates the loss still cares about.")
+    flags.DEFINE_float('gmp_nm_lasso_shrink', 0.0, 'N:M only. Per-step multiplicative shrink (1-rho) of the '
+                       'alive weights the saliency ranks lowest in groups that still have more than prune_n alive '
+                       '(the next ones the projection will evict), applied after optimizer.step(). Decoupled-L1 / '
+                       'AST-CAST style: their function drains into survivors before the cut. 0 = off.')
     flags.DEFINE_float('gmp_pgd_nm_comp_ridge', 1e-6, 'Ridge added to C_SS (relative to its mean diagonal) '
                        'before the 2x2 solve in gmp_pgd_nm_compensate, for groups whose surviving inputs '
                        'are nearly collinear.')

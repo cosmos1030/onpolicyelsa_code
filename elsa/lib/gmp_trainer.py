@@ -1316,6 +1316,49 @@ def _ste_shrink_step(maskmgr, step: int, total_steps: int, ste_enabled: bool,
             param.data.add_(param.data * dead, alpha=-rho)
 
 
+@torch.no_grad()
+def _nm_lasso_shrink_step(maskmgr, fisher, rho: float):
+    """Saliency-guided proximal shrink for N:M growth (--gmp_nm_lasso_shrink).
+
+    In every group of prune_m that still has more than prune_n alive weights,
+    the (alive - prune_n) weights our own saliency ranks lowest -- the ones the
+    projection will evict next -- are multiplied by (1 - rho) after each
+    optimizer step. Their function drains into the survivors through ordinary
+    training while they are still in the network, so the eventual zeroing is
+    cheap (the decoupled-L1 idea of AST/CAST, but candidates are picked by the
+    same F*w^2 saliency the projection uses, and only in groups the 2:4
+    constraint has not settled yet). Applied after optimizer.step(), so it never
+    enters Adam's exp_avg_sq. Groups already at prune_n alive are untouched.
+    """
+    if rho <= 0 or not getattr(maskmgr, 'prune_m', 0):
+        return
+    n, m = maskmgr.prune_n, maskmgr.prune_m
+    for name, param in maskmgr.named_params.items():
+        w = param.data
+        mask = maskmgr.masks.get(name)
+        if w.dim() != 2 or mask is None or mask.shape != w.shape:
+            continue
+        rows, cols = w.shape
+        ng = cols // m
+        if ng == 0:
+            continue
+        al = mask[:, :ng * m].reshape(rows, ng, m)
+        n_alive = al.sum(-1, keepdim=True)
+        excess = (n_alive - n).clamp(min=0)                  # how many this group still has to lose
+        if not bool((excess > 0).any()):
+            continue                                         # layer already exactly N:M
+        imp = fisher.importance(name, param)
+        if imp is None or imp.shape != w.shape:
+            continue
+        sc = imp[:, :ng * m].reshape(rows, ng, m).float().masked_fill(~al, float('inf'))
+        rank = sc.argsort(-1).argsort(-1)                    # 0 = lowest saliency among alive
+        doomed = (rank < excess) & al
+        if not bool(doomed.any()):
+            continue
+        factor = torch.ones_like(sc, dtype=w.dtype).masked_fill(doomed, 1.0 - rho)
+        w[:, :ng * m].mul_(factor.reshape(rows, ng * m))
+
+
 def _srste_decay_step(maskmgr, step: int, total_steps: int, ste_enabled: bool,
                       decay: float, warmup: int):
     """SR-STE: pull the PRUNED weights toward zero, with an annealed strength.
@@ -2687,9 +2730,10 @@ def _nm_compensation_delta(param, cur_mask, cand_mask, cov, prune_m, ridge=1e-6)
 
     Only groups that actually lose a coordinate on THIS transition are touched
     (cur_mask alive & cand_mask dead), so the returned delta is as sparse as the
-    transition itself. C is shared by every output row, and the alive pattern
-    can only take C(m,2)=6 values, so the m x m solves are done once per
-    (group, pattern) and reused across all rows instead of once per (row, group).
+    transition itself. C is shared by every output row and the alive pattern can
+    only take 2^m-2 values (any 1..m-1 survivors, so a 4->3 step mid-growth is
+    compensated too), so the solves are batched per pattern across all
+    (row, group) pairs that have it.
 
     Returns a dense delta with the same shape as param (zero outside S), or None
     when this transition prunes nothing in this layer.
@@ -2714,29 +2758,28 @@ def _nm_compensation_delta(param, cur_mask, cand_mask, cov, prune_m, ridge=1e-6)
     I = torch.eye(prune_m, device=dev)
     reg = ridge * torch.diagonal(cov, dim1=1, dim2=2).abs().mean(-1).clamp(min=1e-12)
     delta = torch.zeros(rows, ng, prune_m, device=dev, dtype=torch.float32)
-    # a group's alive pattern as an m-bit code; enumerate the 6 two-alive codes
+    # a group's alive pattern as an m-bit code. Every pattern with 1..m-1 survivors is
+    # solved, not just the final n-alive ones: under --gmp_pgd_grow_to_target a group
+    # passes through 3-alive (2:4) on its way down, and a weight evicted on the 4->3
+    # step used to be zeroed with no compensation at all.
     powers = (2 ** torch.arange(prune_m, device=dev)).view(1, 1, -1)
     code = (alive.int() * powers).sum(-1)           # [rows, ng]
-    codes = []
-    for i in range(prune_m):
-        for j in range(i + 1, prune_m):
-            codes.append((int(2 ** i + 2 ** j), (i, j)))
-    for cval, (si, sj) in codes:
-        sel = (code == cval) & dying.any(-1)
+    any_dying = dying.any(-1)
+    for cval in range(1, 2 ** prune_m - 1):
+        S = [i for i in range(prune_m) if (cval >> i) & 1]
+        sel = (code == cval) & any_dying
         if not bool(sel.any()):
             continue
         r_idx, g_idx = sel.nonzero(as_tuple=True)
         cg = cov[g_idx]                             # [n, m, m]
-        n = cg.shape[0]
-        Css = torch.stack([torch.stack([cg[:, si, si], cg[:, si, sj]], -1),
-                           torch.stack([cg[:, sj, si], cg[:, sj, sj]], -1)], -2)  # [n,2,2]
-        Css = Css + reg[g_idx].view(n, 1, 1) * torch.eye(2, device=dev)
-        rhs = torch.stack([torch.einsum('ni,ni->n', cg[:, si, :], wD[r_idx, g_idx]),
-                           torch.einsum('ni,ni->n', cg[:, sj, :], wD[r_idx, g_idx])], -1)  # [n,2]
-        sol = torch.linalg.solve(Css, rhs.unsqueeze(-1)).squeeze(-1)               # [n,2]
+        n, k = cg.shape[0], len(S)
+        Sidx = torch.tensor(S, device=dev)
+        Css = cg[:, Sidx][:, :, Sidx] + reg[g_idx].view(n, 1, 1) * torch.eye(k, device=dev)   # [n,k,k]
+        rhs = torch.einsum('nkm,nm->nk', cg[:, Sidx, :], wD[r_idx, g_idx])                   # [n,k]
+        sol = torch.linalg.solve(Css, rhs.unsqueeze(-1)).squeeze(-1)                          # [n,k]
         sol = torch.nan_to_num(sol, nan=0.0, posinf=0.0, neginf=0.0)
-        delta[r_idx, g_idx, si] = sol[:, 0]
-        delta[r_idx, g_idx, sj] = sol[:, 1]
+        for t, si in enumerate(S):
+            delta[r_idx, g_idx, si] = sol[:, t]
     out = torch.zeros_like(w, dtype=torch.float32)
     out[:, :nm] = delta.reshape(rows, nm)
     return out.to(w.dtype)
@@ -6780,6 +6823,7 @@ def globalprune_gmp(
             _ste_shrink_step(maskmgr, step, total_steps, ste_enabled,
                              getattr(FLAGS, 'gmp_ste_shrink', 0.0),
                              getattr(FLAGS, 'gmp_ste_shrink_warmup', -1))
+            _nm_lasso_shrink_step(maskmgr, fisher, float(getattr(FLAGS, 'gmp_nm_lasso_shrink', 0.0) or 0.0))
             scheduler.step()
         optimizer.zero_grad()
 
