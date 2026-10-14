@@ -106,6 +106,8 @@ def _build_run_name(FLAGS):
                 if getattr(F, 'gmp_l1_open_groups_only', False):
                     name += "_openonly"
 
+        if getattr(F, 'gmp_pgd_nm_refit', False):
+            name += "_nmrefit"
         if getattr(F, 'gmp_pgd_nm_compensate', False):
             name += "_nmcomp"
         if (getattr(F, 'gmp_nm_lasso_shrink', 0.0) or 0.0) > 0:
@@ -1152,6 +1154,12 @@ if __name__ == '__main__':
                       "functionally cheaper. Motivated by the measurement that within a 4-group the 3rd "
                       "most important coordinate carries ~75% the importance of the 2nd, so 2:4 must always "
                       "evict coordinates the loss still cares about.")
+    flags.DEFINE_bool('gmp_pgd_nm_refit', False, 'N:M only. At every accepted projection, re-fit the surviving '
+                      'weights of each changed layer by masked least squares against the layer\'s current output '
+                      '(full input covariance, ALPS-style PCG). Supersedes gmp_pgd_nm_compensate.')
+    flags.DEFINE_integer('gmp_pgd_nm_refit_calib_size', 32, 'Sequences for the gmp_pgd_nm_refit covariance.')
+    flags.DEFINE_integer('gmp_pgd_nm_refit_seqlen', 2048, 'Sequence length for the gmp_pgd_nm_refit covariance.')
+    flags.DEFINE_integer('gmp_pgd_nm_refit_iters', 20, 'CG iterations per layer re-fit.')
     flags.DEFINE_float('gmp_nm_lasso_shrink', 0.0, 'N:M only. Per-step multiplicative shrink (1-rho) of the '
                        'alive weights the saliency ranks lowest in groups that still have more than prune_n alive '
                        '(the next ones the projection will evict), applied after optimizer.step(). Decoupled-L1 / '

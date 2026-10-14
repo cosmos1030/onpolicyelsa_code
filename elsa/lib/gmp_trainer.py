@@ -1719,6 +1719,7 @@ class GradualMaskManager:
                  named_shapes=None):
         self.named_params = named_params
         self._group_cov = None  # name -> [n_groups, m, m] input covariance for N:M survivor compensation
+        self._full_cov = None   # name -> [in, in] input covariance for --gmp_pgd_nm_refit (CPU)
         self.named_shapes = named_shapes  # {name: (out_features, in_features)}, FSDP-storage-agnostic; see _fsdp_nm_reconstruct
         self.prune_n = prune_n  # N for N:M semi-structured sparsity (0 = unstructured)
         self.prune_m = prune_m  # M for N:M semi-structured sparsity
@@ -1803,6 +1804,69 @@ class GradualMaskManager:
         self._group_cov = {n: (c / max(1, ntok[n])) for n, c in accum.items()}
         logging.info('[pgd_nm_compensate] captured group covariance for %d/%d layers '
                      '(m=%d)', len(self._group_cov), len(self.named_params), m)
+
+    def capture_full_cov(self, model, cal_batch, device, chunk_size=4):
+        """Full input covariance E[x x^T] per masked Linear, for --gmp_pgd_nm_refit.
+        Linears fed the same tensor (q/k/v, gate/up) share one matrix. Accumulated
+        on the GPU, stored on the CPU (1.7B: ~5.6 GB fp32)."""
+        _by_id = {id(_p): _n for _n, _p in self.named_params.items()}
+        name_to_module = {}
+        for _mn, _mod in model.named_modules():
+            if isinstance(_mod, nn.Linear):
+                _n = _by_id.get(id(_mod.weight))
+                if _n is not None:
+                    name_to_module[_n] = _mod
+        # Linears fed the same tensor share one matrix: k/v read q's input, up reads gate's.
+        def _canon(n):
+            for a, b in (('k_proj', 'q_proj'), ('v_proj', 'q_proj'), ('up_proj', 'gate_proj')):
+                if f'.{a}.' in n:
+                    return n.replace(f'.{a}.', f'.{b}.')
+            return n
+        alias = {n: _canon(n) for n in name_to_module if _canon(n) != n and _canon(n) in name_to_module}
+        accum, ntok = {}, {}
+
+        cur_keep = {'rows': None}  # flattened attention mask of the chunk being run (padding excluded)
+
+        def _make_hook(pname):
+            def hook(module, inp, out):
+                x = inp[0].detach()
+                x = x.reshape(-1, x.shape[-1]).float()
+                if cur_keep['rows'] is not None and cur_keep['rows'].numel() == x.shape[0]:
+                    x = x[cur_keep['rows']]
+                c = x.t() @ x
+                if pname in accum:
+                    accum[pname] += c; ntok[pname] += x.shape[0]
+                else:
+                    accum[pname] = c; ntok[pname] = x.shape[0]
+            return hook
+
+        name_to_module = {n: m for n, m in name_to_module.items() if n not in alias}
+        handles = [m.register_forward_hook(_make_hook(n)) for n, m in name_to_module.items()]
+        was_training = model.training
+        model.eval()
+        ids_full = cal_batch['input_ids']; am_full = cal_batch.get('attention_mask')
+        prev_tf32 = torch.backends.cuda.matmul.allow_tf32
+        torch.backends.cuda.matmul.allow_tf32 = False
+        with torch.no_grad():
+            for i in range(0, ids_full.shape[0], chunk_size):
+                ids = ids_full[i:i + chunk_size].to(device)
+                am = am_full[i:i + chunk_size].to(device) if am_full is not None else None
+                cur_keep['rows'] = am.reshape(-1).bool() if am is not None else None
+                model(input_ids=ids, attention_mask=am)
+        torch.backends.cuda.matmul.allow_tf32 = prev_tf32
+        if was_training:
+            model.train()
+        for h in handles:
+            h.remove()
+        cov = {n: (c / max(1, ntok[n])).cpu() for n, c in accum.items()}
+        del accum
+        torch.cuda.empty_cache()
+        for n, src in alias.items():
+            if src in cov:
+                cov[n] = cov[src]                            # shared tensor, no copy
+        self._full_cov = cov
+        logging.info('[pgd_nm_refit] captured full input covariance for %d/%d layers (%d shared) '
+                     'from %d sequences', len(cov), len(self.named_params), len(alias), ids_full.shape[0])
 
     def init_from_weights(self, fsdp_model=None):
         """Initialize mask from existing zero pattern (for sparse SFT on pre-pruned models)."""
@@ -2718,7 +2782,43 @@ def _pgd_kl_calib_batch(prompt_iter, n: int, seqlen: int, device: str) -> dict:
 
 
 @torch.no_grad()
+def _masked_lsq_refit(w_cur, keep, H, iters=20, ridge=0.01):
+    """Row-wise survivor re-fit for one Linear: the weights on the new support
+    `keep` that best reproduce the CURRENT layer output on the calibration
+    inputs, argmin_{W'} tr((W'-W) H (W'-W)^T) s.t. W' = 0 off `keep`, with
+    H = E[x x^T] the full input covariance. This is the OBS/SparseGPT/ALPS
+    back-solve (ALPS's own PCG, Jacobi-normalised) applied at a gradual
+    projection event instead of once at the end; the 4x4 group compensation is
+    the same solve restricted to one group. Measured one-shot on 1.7B 2:4: the
+    refit takes PPL 15-18 -> 7-8 for any reasonable mask, the single largest
+    gap between a zeroed mask and ALPS.
+    Returns the new weight (dense tensor, zero off `keep`) in w_cur's dtype."""
+    dev = w_cur.device
+    H = H.to(dev, torch.float32)
+    d = torch.diagonal(H).clone()
+    d = d + ridge * d.mean().clamp(min=1e-12)
+    s = d.sqrt()
+    Hn = H / s.view(-1, 1) / s.view(1, -1)
+    Hn.diagonal().copy_(d / d)                          # ridge lands on the normalised diagonal
+    keepf = keep.to(dev, torch.float32)
+    B0 = w_cur.float() * s.view(1, -1)                  # [out, in], normalised coordinates
+    target = B0 @ Hn
+    B = B0 * keepf
+    R = (target - B @ Hn) * keepf
+    P = R.clone()
+    rs = (R * R).sum(1, keepdim=True)
+    for _ in range(iters):
+        AP = (P @ Hn) * keepf
+        alpha = rs / (P * AP).sum(1, keepdim=True).clamp(min=1e-30)
+        B += alpha * P
+        R -= alpha * AP
+        rs_new = (R * R).sum(1, keepdim=True)
+        P = R + (rs_new / rs.clamp(min=1e-30)) * P
+        rs = rs_new
+    return (B / s.view(1, -1) * keepf).to(w_cur.dtype)
 
+
+@torch.no_grad()
 def _nm_compensation_delta(param, cur_mask, cand_mask, cov, prune_m, ridge=1e-6):
     """Survivor compensation for one N:M layer.
 
@@ -4310,6 +4410,14 @@ def globalprune_gmp(
     # also re-enables the schedule-driven maskmgr.update() path, which would put
     # a second, independent mechanism on the mask and confound the comparison.
     pgd_nm_compensate = bool(getattr(FLAGS, 'gmp_pgd_nm_compensate', False))
+    pgd_nm_refit = bool(getattr(FLAGS, 'gmp_pgd_nm_refit', False))
+    pgd_nm_refit_calib = int(getattr(FLAGS, 'gmp_pgd_nm_refit_calib_size', 32))
+    pgd_nm_refit_seqlen = int(getattr(FLAGS, 'gmp_pgd_nm_refit_seqlen', 2048))
+    pgd_nm_refit_iters = int(getattr(FLAGS, 'gmp_pgd_nm_refit_iters', 20))
+    if pgd_nm_refit:
+        logging.info(f"  [pgd_nm_refit] ENABLED: survivors of every layer an N:M projection changes are re-fit "
+                     f"by masked least squares on the full input covariance ({pgd_nm_refit_calib}x{pgd_nm_refit_seqlen} "
+                     f"tokens, {pgd_nm_refit_iters} CG iters); supersedes --gmp_pgd_nm_compensate.")
     pgd_nm_comp_ridge = float(getattr(FLAGS, 'gmp_pgd_nm_comp_ridge', 1e-6))
     if pgd_nm_compensate:
         logging.info(f"  [pgd_nm_compensate] ENABLED: survivors absorb the doomed coordinates' "
@@ -5767,6 +5875,7 @@ def globalprune_gmp(
                 or (qmgr is not None and _quant_kl_budget > 0)) and _pgd_kl_cal_batch is None:
             _pgd_kl_cal_batch = _refresh_pgd_kl_cal_batch()
             maskmgr._group_cov = None  # recapture the group covariance against the fresh batch
+            maskmgr._full_cov = None
         # Group covariance for survivor compensation: refreshed on the same
         # cadence as the KL calibration batch, and from the same sequences, so
         # the statistic the compensation solves against is the one the screen
@@ -5776,12 +5885,21 @@ def globalprune_gmp(
                 and getattr(maskmgr, '_group_cov', None) is None):
             maskmgr.capture_group_cov(fsdp_model if fsdp_model is not None else model,
                                       _pgd_kl_cal_batch, str(device), m=maskmgr.prune_m)
+        # Full input covariance for the row re-fit: its own, larger batch (a 6144-wide
+        # down_proj needs far more than the KL screen's 4x512 tokens), refreshed on the
+        # same cadence. Single-process only -- under FSDP param.data is a flat shard.
+        if (pgd_nm_refit and getattr(maskmgr, 'prune_m', 0) > 0 and fsdp_model is None
+                and _pgd_kl_cal_batch is not None and getattr(maskmgr, '_full_cov', None) is None):
+            _rf_batch = _pgd_kl_calib_batch(prompt_iter, pgd_nm_refit_calib, pgd_nm_refit_seqlen, str(device))
+            maskmgr.capture_full_cov(model, _rf_batch, str(device))
+            del _rf_batch
 
         _saliency_diag_step = getattr(FLAGS, 'gmp_saliency_diag_step', 0)
         if _saliency_diag_step > 0 and step == _saliency_diag_step and is_main_process:
             if _pgd_kl_cal_batch is None:
                 _pgd_kl_cal_batch = _refresh_pgd_kl_cal_batch()
                 maskmgr._group_cov = None  # recapture the group covariance against the fresh batch
+                maskmgr._full_cov = None
             _diag_ref_batch = _pgd_kl_calib_batch(prompt_iter, pgd_kl_calib_size, pgd_kl_calib_seqlen, str(device))
             saliency_snapshot_diagnostic(
                 model, maskmgr, fisher, _pgd_kl_cal_batch, _diag_ref_batch, str(device),
@@ -5797,6 +5915,7 @@ def globalprune_gmp(
             if _pgd_kl_cal_batch is None:
                 _pgd_kl_cal_batch = _refresh_pgd_kl_cal_batch()
                 maskmgr._group_cov = None  # recapture the group covariance against the fresh batch
+                maskmgr._full_cov = None
             _corr_ref_batch = _pgd_kl_calib_batch(prompt_iter, pgd_kl_calib_size, pgd_kl_calib_seqlen, str(device))
             saliency_random_group_correlation_diagnostic(
                 model, maskmgr, fisher, _pgd_kl_cal_batch, _corr_ref_batch, str(device),
@@ -5963,6 +6082,7 @@ def globalprune_gmp(
             if pgd_enabled and pgd_kl_budget > 0:
                 _pgd_kl_cal_batch = _refresh_pgd_kl_cal_batch()
                 maskmgr._group_cov = None  # recapture the group covariance against the fresh batch
+                maskmgr._full_cov = None
 
             if step <= dense_warmup_steps:
                 pass  # dense warmup: no mask update or apply
@@ -7397,7 +7517,32 @@ def globalprune_gmp(
                             # so it reflects the current model. Applied to param.data here;
                             # maskmgr.apply() does the zeroing right after, as before.
                             _comp_n = 0; _comp_absmax = 0.0
-                            if pgd_nm_compensate:
+                            if pgd_nm_refit:
+                                # Row re-fit (--gmp_pgd_nm_refit): before the transition zeroes the
+                                # evicted weights, re-solve each changed layer's survivors so the
+                                # layer reproduces its CURRENT output on the calibration inputs.
+                                if getattr(maskmgr, '_full_cov', None) is None and fsdp_model is None:
+                                    # the calibration batch was just refreshed (covariance reset) after the
+                                    # capture point earlier in this step -- capture now rather than skip
+                                    _rf_batch = _pgd_kl_calib_batch(prompt_iter, pgd_nm_refit_calib,
+                                                                    pgd_nm_refit_seqlen, str(device))
+                                    maskmgr.capture_full_cov(model, _rf_batch, str(device))
+                                    del _rf_batch
+                                _cov_full = getattr(maskmgr, '_full_cov', None) or {}
+                                _rf_t0 = time.time(); _rf_layers = 0
+                                for _n, _p in maskmgr.named_params.items():
+                                    if _p.data.dim() != 2 or _n not in _cov_full:
+                                        continue
+                                    if not bool((_pgd_nm_masks_before[_n] & ~_cand_final[_n]).any()):
+                                        continue
+                                    _p.data.copy_(_masked_lsq_refit(_p.data, _cand_final[_n], _cov_full[_n],
+                                                                    iters=pgd_nm_refit_iters))
+                                    _rf_layers += 1
+                                logging.info(f"  [pgd_nm_refit] step={step} re-fit {_rf_layers} layers "
+                                             f"in {time.time() - _rf_t0:.1f}s")
+                                if use_wandb and is_main_process:
+                                    wandb.log({'pgd/refit_layers': _rf_layers, 'pgd/refit_sec': time.time() - _rf_t0}, step=step)
+                            elif pgd_nm_compensate:
                                 _cov_all = getattr(maskmgr, '_group_cov', None) or {}
                                 for _n, _p in maskmgr.named_params.items():
                                     _d = _nm_compensation_delta(
@@ -8462,8 +8607,33 @@ def globalprune_gmp(
                                  f"(sparsity={maskmgr.current_sparsity():.4f})")
 
     # final mask at full sparsity
+    _final_refit = pgd_nm_refit and fsdp_model is None and getattr(maskmgr, 'prune_m', 0) > 0
+    if _final_refit:
+        _pre_masks = {n: m.clone() for n, m in maskmgr.masks.items()}
+        _pre_w = {n: p.data.clone() for n, p in maskmgr.named_params.items()}
     maskmgr.update(fisher, final_sparsity, fsdp_model,
                    block_size=(_block_size if (blockwise_enabled and maskmgr.pruning_scope == 'block') else None))
+    if _final_refit:
+        # the closing projection can still evict weights (a run that had not reached
+        # target yet) -- re-fit those layers too instead of leaving them zeroed
+        _changed = [n for n in maskmgr.named_params
+                    if n in _pre_masks and bool((_pre_masks[n] & ~maskmgr.masks[n]).any())]
+        if _changed:
+            if getattr(maskmgr, '_full_cov', None) is None:
+                _rf_batch = _pgd_kl_calib_batch(prompt_iter, pgd_nm_refit_calib, pgd_nm_refit_seqlen, str(device))
+                for _n in _changed:            # covariance of the pre-projection network
+                    maskmgr.named_params[_n].data.copy_(_pre_w[_n])
+                maskmgr.capture_full_cov(model, _rf_batch, str(device))
+                del _rf_batch
+            _cov_full = maskmgr._full_cov or {}
+            for _n in _changed:
+                if _n in _cov_full and _pre_w[_n].dim() == 2:
+                    maskmgr.named_params[_n].data.copy_(
+                        _masked_lsq_refit(_pre_w[_n], maskmgr.masks[_n], _cov_full[_n], iters=pgd_nm_refit_iters))
+                else:
+                    maskmgr.named_params[_n].data.copy_(_pre_w[_n] * maskmgr.masks[_n])
+            logging.info(f"  [pgd_nm_refit] final projection: re-fit {len(_changed)} changed layers")
+        del _pre_masks, _pre_w
     logging.info(f"Final sparsity: {maskmgr.current_sparsity():.4f}")
 
     if maskmgr.ste:
