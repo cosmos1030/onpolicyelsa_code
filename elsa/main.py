@@ -1205,7 +1205,7 @@ if __name__ == '__main__':
                       'freezes the mask, so there was no way to start from a pruned checkpoint '
                       '(e.g. ALPS 2:4) and let PGD keep refining WHICH weights survive. Without '
                       'this the mask starts all-ones and the checkpoint\'s sparsity is thrown away.')
-    flags.DEFINE_enum('gmp_saliency', 'fisher', ['fisher', 'magnitude', 'spa', 'sqrt_fisher', 'wanda'],
+    flags.DEFINE_enum('gmp_saliency', 'fisher', ['fisher', 'magnitude', 'spa', 'sqrt_fisher', 'wanda', 'obs'],
                       'Importance score for GMP pruning: fisher=F_hat*w^2 (Adam 2nd moment), magnitude=w^2, '
                       'spa=h*u^2 where u is the next unconstrained Adam iterate and h=sqrt(v_hat)+eps '
                       '(Sparse Projected Adam saliency -- exact solution to projecting u onto a sparse '

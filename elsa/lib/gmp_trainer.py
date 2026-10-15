@@ -1569,6 +1569,14 @@ class FisherAccumulator:
         --gmp_pruning_scope=layer, never 'global'."""
         if self.saliency == 'magnitude':
             return param.data.float() ** 2
+        if self.saliency == 'obs':
+            # OBS cost of zeroing w_ij alone: w_ij^2 / [H^-1]_jj (output-error units, so
+            # per-layer only -- use with --gmp_pruning_scope=layer). Falls back to w^2
+            # until the first covariance capture.
+            hinv = _OBS_HINV.get(name)
+            if hinv is None or param.dim() != 2 or hinv.numel() != param.shape[1]:
+                return param.data.float() ** 2
+            return param.data.float() ** 2 / hinv.to(param.device).reshape(1, -1).clamp(min=1e-12)
         if self.saliency == 'spa':
             return self._spa_importance(param)
         if self.saliency == 'wanda':
@@ -1865,6 +1873,15 @@ class GradualMaskManager:
             if src in cov:
                 cov[n] = cov[src]                            # shared tensor, no copy
         self._full_cov = cov
+        if getattr(self, 'obs_saliency', False):
+            # OBS single-weight cost w^2 / [H^-1]_jj needs only the inverse's diagonal
+            _OBS_HINV.clear()
+            for n, H in cov.items():
+                Hd = H.to(device, torch.float64)
+                Hd.diagonal().add_(0.01 * Hd.diagonal().mean().clamp(min=1e-12))
+                _OBS_HINV[n] = torch.diagonal(torch.cholesky_inverse(torch.linalg.cholesky(Hd))).float().cpu()
+                del Hd
+            torch.cuda.empty_cache()
         logging.info('[pgd_nm_refit] captured full input covariance for %d/%d layers (%d shared) '
                      'from %d sequences', len(cov), len(self.named_params), len(alias), ids_full.shape[0])
 
@@ -2779,6 +2796,11 @@ def _pgd_kl_calib_batch(prompt_iter, n: int, seqlen: int, device: str) -> dict:
         padded[i, :L] = s[0]
         attn[i, :L]   = 1
     return {'input_ids': padded.to(device), 'attention_mask': attn.to(device)}
+
+
+# name -> diag((H + damp)^-1) per masked Linear, filled by capture_full_cov; read by
+# --gmp_saliency=obs. Module-level so the saliency object needs no handle on the mask manager.
+_OBS_HINV = {}
 
 
 @torch.no_grad()
@@ -4886,6 +4908,7 @@ def globalprune_gmp(
     maskmgr = GradualMaskManager(named_params, fsdp_model, prune_n=prune_n, prune_m=prune_m,
                                   pruning_scope=getattr(FLAGS, 'gmp_pruning_scope', 'global'),
                                   ste=ste_enabled, named_shapes=named_shapes)
+    maskmgr.obs_saliency = getattr(FLAGS, 'gmp_saliency', 'fisher') == 'obs'
     # Used by _param_block_group (gmp_pruning_scope='block') to fold a
     # leftover/remainder tail of decoder layers into the last FULL group
     # instead of letting it form its own small orphan group -- e.g. 28
@@ -5888,7 +5911,8 @@ def globalprune_gmp(
         # Full input covariance for the row re-fit: its own, larger batch (a 6144-wide
         # down_proj needs far more than the KL screen's 4x512 tokens), refreshed on the
         # same cadence. Single-process only -- under FSDP param.data is a flat shard.
-        if (pgd_nm_refit and getattr(maskmgr, 'prune_m', 0) > 0 and fsdp_model is None
+        if ((pgd_nm_refit or getattr(FLAGS, 'gmp_saliency', 'fisher') == 'obs')
+                and getattr(maskmgr, 'prune_m', 0) > 0 and fsdp_model is None
                 and _pgd_kl_cal_batch is not None and getattr(maskmgr, '_full_cov', None) is None):
             _rf_batch = _pgd_kl_calib_batch(prompt_iter, pgd_nm_refit_calib, pgd_nm_refit_seqlen, str(device))
             maskmgr.capture_full_cov(model, _rf_batch, str(device))
