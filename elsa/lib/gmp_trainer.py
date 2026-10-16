@@ -4436,6 +4436,24 @@ def globalprune_gmp(
     pgd_nm_refit_calib = int(getattr(FLAGS, 'gmp_pgd_nm_refit_calib_size', 32))
     pgd_nm_refit_seqlen = int(getattr(FLAGS, 'gmp_pgd_nm_refit_seqlen', 2048))
     pgd_nm_refit_iters = int(getattr(FLAGS, 'gmp_pgd_nm_refit_iters', 20))
+    # 'current': reproduce the layer's output just before the cut (local, drift accumulates);
+    # 'dense': reproduce the ORIGINAL dense layer (teacher weights) on the current inputs,
+    # i.e. ALPS's own target, so every re-fit also pulls back the drift of earlier events.
+    pgd_nm_refit_target = str(getattr(FLAGS, 'gmp_pgd_nm_refit_target', 'current'))
+    _refit_dense_w = {}
+    if pgd_nm_refit and pgd_nm_refit_target == 'dense':
+        if teacher_model is None:
+            raise ValueError('--gmp_pgd_nm_refit_target=dense needs the dense teacher model')
+        _tw = dict(teacher_model.named_parameters())
+        for _n in named_params:
+            _t = _tw.get(_n)
+            if _t is None and _n.startswith('model.'):
+                _t = _tw.get(_n[len('model.'):])
+            if _t is not None and _t.dim() == 2:
+                _refit_dense_w[_n] = _t
+        logging.info(f"  [pgd_nm_refit] target=dense: matched {len(_refit_dense_w)}/{len(named_params)} teacher weights")
+        if not _refit_dense_w:
+            raise ValueError('--gmp_pgd_nm_refit_target=dense matched no teacher weights')
     if pgd_nm_refit:
         logging.info(f"  [pgd_nm_refit] ENABLED: survivors of every layer an N:M projection changes are re-fit "
                      f"by masked least squares on the full input covariance ({pgd_nm_refit_calib}x{pgd_nm_refit_seqlen} "
@@ -7553,14 +7571,20 @@ def globalprune_gmp(
                                     maskmgr.capture_full_cov(model, _rf_batch, str(device))
                                     del _rf_batch
                                 _cov_full = getattr(maskmgr, '_full_cov', None) or {}
+                                _rf_growing = maskmgr.current_sparsity() < final_sparsity - 1e-4
                                 _rf_t0 = time.time(); _rf_layers = 0
                                 for _n, _p in maskmgr.named_params.items():
                                     if _p.data.dim() != 2 or _n not in _cov_full:
                                         continue
                                     if not bool((_pgd_nm_masks_before[_n] & ~_cand_final[_n]).any()):
                                         continue
-                                    _p.data.copy_(_masked_lsq_refit(_p.data, _cand_final[_n], _cov_full[_n],
-                                                                    iters=pgd_nm_refit_iters))
+                                    # dense target only while still growing: once the mask is at target,
+                                    # maintenance swaps touch a few groups, and pulling the whole layer back
+                                    # to dense would erase what training has recovered since
+                                    _w_tgt = (_refit_dense_w.get(_n, _p.data)
+                                              if (pgd_nm_refit_target == 'dense' and _rf_growing) else _p.data)
+                                    _p.data.copy_(_masked_lsq_refit(_w_tgt.to(_p.device, _p.dtype), _cand_final[_n],
+                                                                    _cov_full[_n], iters=pgd_nm_refit_iters))
                                     _rf_layers += 1
                                 logging.info(f"  [pgd_nm_refit] step={step} re-fit {_rf_layers} layers "
                                              f"in {time.time() - _rf_t0:.1f}s")

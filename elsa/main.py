@@ -107,7 +107,7 @@ def _build_run_name(FLAGS):
                     name += "_openonly"
 
         if getattr(F, 'gmp_pgd_nm_refit', False):
-            name += "_nmrefit"
+            name += "_nmrefit" + ("dense" if getattr(F, 'gmp_pgd_nm_refit_target', 'current') == 'dense' else "")
         if getattr(F, 'gmp_pgd_nm_compensate', False):
             name += "_nmcomp"
         if (getattr(F, 'gmp_nm_lasso_shrink', 0.0) or 0.0) > 0:
@@ -1160,6 +1160,9 @@ if __name__ == '__main__':
     flags.DEFINE_integer('gmp_pgd_nm_refit_calib_size', 32, 'Sequences for the gmp_pgd_nm_refit covariance.')
     flags.DEFINE_integer('gmp_pgd_nm_refit_seqlen', 2048, 'Sequence length for the gmp_pgd_nm_refit covariance.')
     flags.DEFINE_integer('gmp_pgd_nm_refit_iters', 20, 'CG iterations per layer re-fit.')
+    flags.DEFINE_enum('gmp_pgd_nm_refit_target', 'current', ['current', 'dense'],
+                      "gmp_pgd_nm_refit target: 'current' reproduces the layer output just before the cut; "
+                      "'dense' reproduces the original dense (teacher) layer on the current inputs, as ALPS does.")
     flags.DEFINE_float('gmp_nm_lasso_shrink', 0.0, 'N:M only. Per-step multiplicative shrink (1-rho) of the '
                        'alive weights the saliency ranks lowest in groups that still have more than prune_n alive '
                        '(the next ones the projection will evict), applied after optimizer.step(). Decoupled-L1 / '
