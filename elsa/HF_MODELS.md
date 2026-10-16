@@ -813,3 +813,22 @@ wandb 학습 런·ALPS 로그와 자동으로 연결되지 않은 리포 (주로
 | `qwen3_8b_sparsellm_s60pct` | `cosmos1030/sparsellm-s60pct_20260901_062412` | 16.4 | sparsellm_s60pct | slurm_825475.out |
 | `qwen3_8b_sparsellm_s70pct` | `cosmos1030/sparsellm-s70pct_20260901_073704` | 16.4 | sparsellm_s70pct | slurm_825476.out |
 | `qwen3_8b_sparsellm_s80pct` | `cosmos1030/sparsellm-s80pct_20260903_020850` | 16.4 | sparsellm_s80pct | slurm_839780.out |
+
+## 6. 1.7B dense→2:4 개선 탐색 (2026-10-15~16, 로컬 삭제 전 기록)
+
+전부 Qwen3-1.7B dense 출발, 2:4, PGD grow_to_target, 롤아웃 2048 sidecar, NTP/KD/OPD 0.33씩, 2048 step, saliency fisher(별도 표기 제외). avg4 = math500/IFEval/LCB/GSM8K (seed42 in-job).
+
+| HF repo (cosmos1030/...) | 잡 | arm | lr | klb | avg4 |
+|---|---|---|---|---|---|
+| gmp-kd3e-1-1.7b-n24-s50pct-lr5e-5_20261015_231527 | 1150711 | 기준 | 5e-5 | 0.02 | 34.6 |
+| gmp-kd3e-1-1.7b-n24-s50pct-lr5e-5_20261016_010544 | 1150712 | 그룹 보정(ridge 1e-6) | 5e-5 | 0.02 | 23.1 |
+| gmp-kd3e-1-1.7b-n24-s50pct-lr5e-5_20261015_234949 | 1150715 | lasso shrink 3e-3 | 5e-5 | 0.02 | 32.5 |
+| gmp-kd3e-1-1.7b-n24-s50pct-lr5e-5_20261016_001249 | 1150716 | lasso shrink 1e-2 | 5e-5 | 0.02 | 29.0 |
+| gmp-kd3e-1-1.7b-n24-s50pct-lr5e-5_20261016_005049 | 1150717 | 그룹 보정 + shrink 1e-2 | 5e-5 | 0.02 | 25.4 |
+| gmp-kd3e-1-1.7b-n24-s50pct-lr5e-5_20261016_002513 | 1150814 | wanda saliency (layer scope) | 5e-5 | 0.02 | 29.7 |
+| gmp-kd3e-1-1.7b-n24-s50pct-lr5e-5_20261016_023705 | 1150815 | wanda + 그룹 보정 | 5e-5 | 0.02 | 17.2 |
+| gmp-kd3e-1-1.7b-n24-s50pct-lr5e-5_20261016_013829 | 1151063 | 행 단위 refit | 5e-5 | 0.02 | 32.8 |
+| gmp-kd3e-1-1.7b-n24-s50pct-lr5e-5_20261016_035858 | 1151064 | refit + shrink 1e-2 | 5e-5 | 0.02 | 34.1 |
+| gmp-kd3e-1-1.7b-n24-s50pct-lr5e-5_20261016_052213 | 1151065 | wanda + refit | 5e-5 | 0.02 | 26.3 |
+| gmp-kd3e-1-1.7b-n24-s50pct-lr5e-5_20261016_054628 | 1151101 | 그룹 보정(ridge 1e-2) | 5e-5 | 0.02 | 26.2 |
+| gmp-kd3e-1-1.7b-n24-s50pct-lr1e-4_20261016_161122 | 1156449 | 행 단위 refit | 1e-4 | 0.02 | 36.0 |
