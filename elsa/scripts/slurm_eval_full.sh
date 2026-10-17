@@ -8,7 +8,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=80G
 #SBATCH --time=2-00:00:00
-#SBATCH --exclude=n3,n42,n46,n51,n54,n60,n77,n80,n87,n91
+#SBATCH --exclude=n3,n42,n43,n46,n51,n54,n60,n77,n80,n84,n87,n90,n91,n92
 # 잡 표준출력은 노드 로컬에 쓴다. NFS(/home1)에 직접 쓰던 2026-09-23,
 # /home1이 11:34~14:45 멈추자 돌던 eval 12개가 uninterruptible I/O에 박혀
 # GPU를 0%로 28시간 점유했다. 끝날 때 trap이 /home1으로 한 번 복사한다.
