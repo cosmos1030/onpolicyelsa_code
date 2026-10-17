@@ -832,3 +832,23 @@ wandb 학습 런·ALPS 로그와 자동으로 연결되지 않은 리포 (주로
 | gmp-kd3e-1-1.7b-n24-s50pct-lr5e-5_20261016_052213 | 1151065 | wanda + refit | 5e-5 | 0.02 | 26.3 |
 | gmp-kd3e-1-1.7b-n24-s50pct-lr5e-5_20261016_054628 | 1151101 | 그룹 보정(ridge 1e-2) | 5e-5 | 0.02 | 26.2 |
 | gmp-kd3e-1-1.7b-n24-s50pct-lr1e-4_20261016_161122 | 1156449 | 행 단위 refit | 1e-4 | 0.02 | 36.0 |
+
+## 7. 1.7B dense→2:4 하이퍼파라미터 탐색 (2026-10-16~17, 로컬 삭제 전 기록)
+
+설정은 6절과 같음. RUN_TAG가 arm을 나타냄.
+
+| HF repo (cosmos1030/...) | 잡 | RUN_TAG | avg4 |
+|---|---|---|---|
+| gmp-kd3e-1-1.7b-n24-s50pct-lr5e-5_20261016_195910 | 1158078 | n24_alpsinit_ctrl | 46.87 |
+| gmp-kd3e-1-1.7b-n24-s50pct-lr5e-5_20261017_080640 | 1159332 | n24_dense_obs_refit | 30.43 |
+| gmp-kd3e-1-1.7b-n24-s50pct-lr5e-5_20261016_191809 | 1156579 | n24_dense_warm128_refit | 31.29 |
+| gmp-kd3e-1-1.7b-n24-s50pct-lr5e-5_20261016_181012 | 1156578 | n24_dense_warm128 | 34.82 |
+| gmp-kd3e-1-1.7b-n24-s50pct-lr5e-5_20261017_100048 | 1159426 | n24dense_klb0.01 | 33.84 |
+| gmp-kd3e-1-1.7b-n24-s50pct-lr1e-4_20261017_085008 | 1159428 | n24dense_klb0.05_lr1e-4 | 42.03 |
+| gmp-kd3e-1-1.7b-n24-s50pct-lr5e-5_20261017_095047 | 1159427 | n24dense_klb0.05 | 33.92 |
+| gmp-kd3e-1-1.7b-n24-s50pct-lr1e-4_20261017_081155 | 1159425 | n24dense_lr1e-4 | 41.88 |
+| gmp-kd3e-1-1.7b-n24-s50pct-lr1e-4_20261017_030641 | 1162898 | n24dense_refit_klb0.05_lr1e-4 | 35.45 |
+| gmp-kd3e-1-1.7b-n24-s50pct-lr2e-4_20261017_025243 | 1162897 | n24dense_refit_lr2e-4 | 37.74 |
+| gmp-kd3e-1-1.7b-n24-s50pct-lr1e-4_20261017_143148 | 1162896 | n24dense_refitdense_klb0.05_lr1e-4 | 33.72 |
+| gmp-kd3e-1-1.7b-n24-s50pct-lr5e-5_20261017_101205 | 1159429 | n24dense_shrink1e-3 | 34.99 |
+| gmp-kd3e-1-1.7b-n24-s50pct-lr5e-5_20261017_102717 | 1159430 | n24dense_shrink3e-4 | 35.14 |
