@@ -112,6 +112,8 @@ def _build_run_name(FLAGS):
             name += "_nmcomp"
         if (getattr(F, 'gmp_nm_lasso_shrink', 0.0) or 0.0) > 0:
             name += f"_nmshrink{F.gmp_nm_lasso_shrink}"
+        if getattr(F, 'gmp_pgd_rewind_at_target', False):
+            name += "_rewind" + ("" if getattr(F, 'gmp_pgd_rewind_reset_optim', True) else "keepopt")
         if getattr(F, 'gmp_adam_beta2', 0.999) != 0.999:
             name += f"_b2{F.gmp_adam_beta2}"
 
@@ -1228,6 +1230,13 @@ if __name__ == '__main__':
                       'active (non-pruned) coordinates using a running per-group activation-covariance metric '
                       '(see lib/activation_metric_projected_sgd.py) -- an online per-step analogue of PCG\'s '
                       'post-hoc reconstruction correction.')
+    flags.DEFINE_boolean('gmp_pgd_rewind_at_target', False, 'The first time the mask reaches the target sparsity, re-fit '
+                         'every masked Linear\'s survivors from the dense teacher weights (layer-sequential masked least '
+                         'squares, as ALPS) and continue training.')
+    flags.DEFINE_integer('gmp_pgd_rewind_calib_size', 128, '--gmp_pgd_rewind_at_target: calibration sequences.')
+    flags.DEFINE_integer('gmp_pgd_rewind_seqlen', 2048, '--gmp_pgd_rewind_at_target: calibration sequence length.')
+    flags.DEFINE_integer('gmp_pgd_rewind_iters', 50, '--gmp_pgd_rewind_at_target: CG iterations per layer.')
+    flags.DEFINE_boolean('gmp_pgd_rewind_reset_optim', True, '--gmp_pgd_rewind_at_target: clear the Adam state after the re-fit.')
     flags.DEFINE_float('gmp_adam_beta2', 0.999, 'AdamW beta2 for GMP training. Also sets the horizon of the Fisher '
                        'saliency, which is read from Adam exp_avg_sq (bias-corrected with this same beta2).')
     flags.DEFINE_float('gmp_pgd_lam', 1e-3, 'activation_metric_pgd: relative damping on the active-block covariance solve.')

@@ -1813,11 +1813,12 @@ class GradualMaskManager:
         logging.info('[pgd_nm_compensate] captured group covariance for %d/%d layers '
                      '(m=%d)', len(self._group_cov), len(self.named_params), m)
 
-    def capture_full_cov(self, model, cal_batch, device, chunk_size=4):
+    def capture_full_cov(self, model, cal_batch, device, chunk_size=4, only=None):
         """Full input covariance E[x x^T] per masked Linear, for --gmp_pgd_nm_refit.
         Linears fed the same tensor (q/k/v, gate/up) share one matrix. Accumulated
-        on the GPU, stored on the CPU (1.7B: ~5.6 GB fp32)."""
-        _by_id = {id(_p): _n for _n, _p in self.named_params.items()}
+        on the GPU, stored on the CPU (1.7B: ~5.6 GB fp32). `only`: restrict to
+        these parameter names (the layer-sequential rewind re-fit hooks one layer at a time)."""
+        _by_id = {id(_p): _n for _n, _p in self.named_params.items() if only is None or _n in only}
         name_to_module = {}
         for _mn, _mod in model.named_modules():
             if isinstance(_mod, nn.Linear):
@@ -4454,6 +4455,26 @@ def globalprune_gmp(
         logging.info(f"  [pgd_nm_refit] target=dense: matched {len(_refit_dense_w)}/{len(named_params)} teacher weights")
         if not _refit_dense_w:
             raise ValueError('--gmp_pgd_nm_refit_target=dense matched no teacher weights')
+    # Rewind at target (--gmp_pgd_rewind_at_target): the first time the mask reaches the target
+    # sparsity, re-solve every masked Linear's survivors from the DENSE teacher weights (ALPS's
+    # layer-sequential masked least squares, inputs propagated through the already re-fit layers),
+    # optionally reset the Adam state, and keep training. One-off, unlike the per-event refits.
+    pgd_rewind = bool(getattr(FLAGS, 'gmp_pgd_rewind_at_target', False))
+    _rewind_done = False
+    _rewind_dense_w = {}
+    if pgd_rewind:
+        if teacher_model is None or fsdp_model is not None:
+            raise ValueError('--gmp_pgd_rewind_at_target needs the dense teacher model and a non-FSDP run')
+        _tw = dict(teacher_model.named_parameters())
+        for _n in named_params:
+            _t = _tw.get(_n)
+            if _t is None and _n.startswith('model.'):
+                _t = _tw.get(_n[len('model.'):])
+            if _t is not None and _t.dim() == 2:
+                _rewind_dense_w[_n] = _t
+        logging.info(f"  [pgd_rewind] ENABLED: at target, survivors re-fit from {len(_rewind_dense_w)} dense teacher "
+                     f"weights ({getattr(FLAGS, 'gmp_pgd_rewind_calib_size', 128)}x{getattr(FLAGS, 'gmp_pgd_rewind_seqlen', 2048)} "
+                     f"tokens, layer-sequential), reset_optim={getattr(FLAGS, 'gmp_pgd_rewind_reset_optim', True)}")
     if pgd_nm_refit:
         logging.info(f"  [pgd_nm_refit] ENABLED: survivors of every layer an N:M projection changes are re-fit "
                      f"by masked least squares on the full input covariance ({pgd_nm_refit_calib}x{pgd_nm_refit_seqlen} "
@@ -6357,6 +6378,41 @@ def globalprune_gmp(
                     logging.info(f"  OPKD vLLM pool refilled: {len(_opkd_standalone_pool)} rollouts (step={step})")
                 _opkd_standalone_pool = _opkd_broadcast_pool(_opkd_standalone_pool, is_distributed, device)
                 _opkd_standalone_pool_ptr = local_rank
+
+            if pgd_rewind and not _rewind_done and maskmgr.current_sparsity() >= final_sparsity - 1e-4:
+                _rewind_done = True
+                _rw_t0 = time.time()
+                _rw_batch = _pgd_kl_calib_batch(prompt_iter, int(getattr(FLAGS, 'gmp_pgd_rewind_calib_size', 128)),
+                                                int(getattr(FLAGS, 'gmp_pgd_rewind_seqlen', 2048)), str(device))
+                _rw_layers = {}
+                for _n in _rewind_dense_w:
+                    _m = re.search(r'layers\.(\d+)\.', _n)
+                    if _m and _n in maskmgr.masks:
+                        _rw_layers.setdefault(int(_m.group(1)), []).append(_n)
+                with torch.no_grad():
+                    for _li in sorted(_rw_layers):
+                        _names = _rw_layers[_li]
+                        for _n in _names:     # this layer dense while its inputs are captured, as in ALPS
+                            maskmgr.named_params[_n].data.copy_(_rewind_dense_w[_n].to(maskmgr.named_params[_n].dtype))
+                        maskmgr.capture_full_cov(model, _rw_batch, str(device), only=set(_names))
+                        _cov = maskmgr._full_cov
+                        for _n in _names:
+                            _p = maskmgr.named_params[_n]
+                            _p.data.copy_(_masked_lsq_refit(_rewind_dense_w[_n].to(_p.device, _p.dtype), maskmgr.masks[_n],
+                                                            _cov[_n], iters=int(getattr(FLAGS, 'gmp_pgd_rewind_iters', 50))))
+                        maskmgr._full_cov = None
+                        del _cov
+                    maskmgr.apply()
+                del _rw_batch
+                torch.cuda.empty_cache()
+                if getattr(FLAGS, 'gmp_pgd_rewind_reset_optim', True):
+                    optimizer.state.clear()
+                logging.info(f"  [pgd_rewind] step={step} sparsity={maskmgr.current_sparsity():.4f}: re-fit "
+                             f"{sum(len(v) for v in _rw_layers.values())} linears in {len(_rw_layers)} layers from dense "
+                             f"in {time.time() - _rw_t0:.0f}s, optimizer state "
+                             f"{'reset' if getattr(FLAGS, 'gmp_pgd_rewind_reset_optim', True) else 'kept'}")
+                if use_wandb and is_main_process:
+                    wandb.log({'pgd/rewind_step': step, 'pgd/rewind_sec': time.time() - _rw_t0}, step=step)
 
             # Milestone checkpoint: save model after `mask_interval` recovery steps past milestone.
             # Two-phase: (1) record step when sparsity first crosses milestone,
