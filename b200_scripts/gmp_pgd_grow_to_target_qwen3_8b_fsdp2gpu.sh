@@ -135,7 +135,7 @@ export NCCL_DEBUG=WARN
 # (total_steps*grad_accum*world_size: 8192 -> 16384 rollouts), which pushed that
 # stretch past 480s. Monitoring stays ON -- a real hang should still be killed --
 # just with enough slack to survive the pool handling.
-export TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=3600
+export TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=${TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC:-3600}
 
 echo "=== PGD-driven growth (no TR-GMP) Qwen3-8B s${SPARSITY_PCT} kl_budget=${KL_BUDGET} lr=${LR} pgd_interval=${PGD_INTERVAL} lr_scheduler=${LR_SCHEDULER} steps=${STEPS} saliency=${SALIENCY} -- 2xB200 FSDP, vLLM sharing GPU0 of this pair, master_port=${MASTER_PORT} ==="
 echo "NODE=$(hostname)  MODEL=$MODEL  CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-<all>}"

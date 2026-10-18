@@ -246,7 +246,7 @@ def main(argv):
         dist.init_process_group(
             backend='nccl',
             device_id=torch.device(f'cuda:{local_rank}') if torch.cuda.is_available() else None,
-            timeout=_datetime.timedelta(hours=2),
+            timeout=_datetime.timedelta(hours=float(os.environ.get('ELSA_PG_TIMEOUT_HOURS', '2'))),  # frozen-pool roll2048 init needs >2h
         )
 
     if _use_fsdp_opkd:
