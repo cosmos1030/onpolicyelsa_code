@@ -112,6 +112,8 @@ def _build_run_name(FLAGS):
             name += "_nmcomp"
         if (getattr(F, 'gmp_nm_lasso_shrink', 0.0) or 0.0) > 0:
             name += f"_nmshrink{F.gmp_nm_lasso_shrink}"
+        if getattr(F, 'gmp_adam_beta2', 0.999) != 0.999:
+            name += f"_b2{F.gmp_adam_beta2}"
 
         lr_sched = getattr(F, 'lr_scheduler', 'cosine')
         if lr_sched in ('constant', 'constant_with_warmup'):
@@ -1226,6 +1228,8 @@ if __name__ == '__main__':
                       'active (non-pruned) coordinates using a running per-group activation-covariance metric '
                       '(see lib/activation_metric_projected_sgd.py) -- an online per-step analogue of PCG\'s '
                       'post-hoc reconstruction correction.')
+    flags.DEFINE_float('gmp_adam_beta2', 0.999, 'AdamW beta2 for GMP training. Also sets the horizon of the Fisher '
+                       'saliency, which is read from Adam exp_avg_sq (bias-corrected with this same beta2).')
     flags.DEFINE_float('gmp_pgd_lam', 1e-3, 'activation_metric_pgd: relative damping on the active-block covariance solve.')
     flags.DEFINE_integer('gmp_pgd_group_size', 4, 'activation_metric_pgd: input-dim column block size for the activation-covariance metric.')
     flags.DEFINE_float('gmp_pgd_trust_ratio', 5.0, 'activation_metric_pgd: cap the preconditioned step at this multiple of the plain-SGD step.')

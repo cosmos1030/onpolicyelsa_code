@@ -9,7 +9,7 @@
 #SBATCH --mem=220G
 #SBATCH --time=2-00:00:00
 #SBATCH --output=/local-data/user-data/%u/alps_ncalib_%j/slurm_%j.out
-#SBATCH --exclude=n3,n42,n46,n51,n52,n54,n60,n77,n80,n87,n91,n61,n64,n31,n19
+#SBATCH --exclude=n3,n42,n43,n46,n51,n52,n54,n60,n77,n80,n84,n87,n90,n91,n92,n61,n64,n31,n19
 exec 2>&1
 # Standard ALPS (fixed calibration only) with a configurable calibration size --
 # the "more data" control for --rollout_refine, whose mix refine pass sees 2x
@@ -36,7 +36,10 @@ case "$SIZE" in
     8b)   MODEL="/home1/doyoonkim/.cache/huggingface/hub/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218" ;;
     *) echo "unknown size $SIZE"; exit 1 ;;
 esac
-DATA="/home1/doyoonkim/projects/elsa/data/ot3_fineweb_40k_qwen3_nostrip_8192.jsonl"
+# ALPS_DATA/CALIB_TAG env: swap the calibration corpus (e.g. the boosting comparison arms); SEED env: calibration draw
+DATA="${ALPS_DATA:-/home1/doyoonkim/projects/elsa/data/ot3_fineweb_40k_qwen3_nostrip_8192.jsonl}"
+SEED=${SEED:-42}
+TAG="${TAG}${CALIB_TAG:-}"; if [ "$SEED" != "42" ]; then TAG="${TAG}_cseed${SEED}"; fi
 SAVED_MODEL="/home1/doyoonkim/projects/elsa/models/qwen3_${SIZE}_alps_${TAG}_${SP_TAG}"
 
 LOCAL_JOB_BASE="/local-data/user-data/${USER}/alps_ncalib_${SLURM_JOB_ID}"
@@ -72,7 +75,7 @@ $PYTHON qwen3_alps.py \
     ${SG_FLAG} \
     ${NM_FLAG} \
     --rho 300.0 \
-    --seed 42 \
+    --seed ${SEED} \
     --save "$SAVED_MODEL" \
     --push_to_hub \
     --hub_model_id "cosmos1030/alps-${TAG}-qwen3-${SIZE}-${SP_TAG}"

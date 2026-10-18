@@ -4910,7 +4910,9 @@ def globalprune_gmp(
                      f"group_size={FLAGS.gmp_pgd_group_size}, trust_ratio={FLAGS.gmp_pgd_trust_ratio}, "
                      f"momentum={FLAGS.gmp_pgd_momentum})")
     else:
-        optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.0)
+        _beta2 = float(getattr(FLAGS, 'gmp_adam_beta2', 0.999))
+        optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.0, betas=(0.9, _beta2))
+        logging.info(f"  Base optimizer: AdamW betas=(0.9, {_beta2})")
     logging.info(f"[rank {local_rank}] optimizer created")
     _fisher_source = getattr(FLAGS, 'gmp_fisher_source', 'adam')
     if _fisher_source == 'opd_empirical':
