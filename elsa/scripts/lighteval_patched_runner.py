@@ -125,9 +125,69 @@ def _patch_avg_at_n():
     AvgAtN.compute = compute
 
 
+def _patch_orphan_reasoning_close():
+    """Strip reasoning that was OPENED BY THE PROMPT, not by the model.
+
+    lighteval's remove_reasoning_tags only removes a span when BOTH tags are in
+    the generated text. Qwen3 emits its own "<think>", so that works. OLMo 3
+    Think's chat template ends the generation prompt with "<think>", so the
+    model's output is "reasoning... </think> answer" with no opening tag, the
+    reasoning is never removed, and it gets scored as part of the answer
+    (dense Olmo-3-7B-Think IFEval: 532/541 responses had </think> and no
+    <think>; prompt-level strict 0.318). Rule added here: an end tag with no
+    start tag before it closes a span that began at the start of the text.
+    Texts that carry both tags (Qwen) or neither take the original path, so
+    their scores are unchanged.
+    """
+    # Swap the function's code object in place instead of rebinding names:
+    # lighteval.pipeline holds its own reference (from ... import), and
+    # importing lighteval.pipeline here to rebind it initialised CUDA before
+    # vLLM forked its tensor-parallel worker, which then never joined the
+    # process group (DistStoreError 1/2 clients, every tp=2 eval).
+    from lighteval.utils import utils as _ut
+
+    def _remove_reasoning_tags(text, tag_pairs):
+        for start_tag, end_tag in tag_pairs:
+            end = text.find(end_tag)
+            if end != -1 and start_tag not in text[:end]:
+                text = text[end + len(end_tag):]
+        result = text
+        for start_tag, end_tag in tag_pairs:
+            while start_tag in result and end_tag in result:
+                start = result.find(start_tag)
+                end = result.find(end_tag, start)
+                if start != -1 and end != -1:
+                    result = result[:start] + result[end + len(end_tag):]
+                else:
+                    break
+        return result
+
+    _ut.remove_reasoning_tags.__code__ = _remove_reasoning_tags.__code__
+
+
+def _patch_cuda_graphs():
+    """lighteval 0.12 hard-codes enforce_eager=True when it builds vllm.LLM, so every
+    eval so far ran without CUDA graphs (decode-bound, GPU util 60-75%). Opt-in:
+    ELSA_VLLM_CUDA_GRAPH=1 flips it to False. CUDA graphs only change how kernels are
+    launched, not the math, so scores stay comparable with the eager runs."""
+    if os.environ.get("ELSA_VLLM_CUDA_GRAPH", "0") != "1":
+        return
+    import vllm
+    _orig_init = vllm.LLM.__init__
+
+    def _init(self, *args, **kwargs):
+        kwargs["enforce_eager"] = False
+        return _orig_init(self, *args, **kwargs)
+
+    vllm.LLM.__init__ = _init
+    print("[lighteval_patched_runner] CUDA graphs enabled (enforce_eager=False)", flush=True)
+
+
 _disable_sample_cache()
 _patch_avg_at_n()
 _patch_ifeval_json()
+_patch_orphan_reasoning_close()
+_patch_cuda_graphs()
 
 from lighteval.__main__ import app  # noqa: E402
 
