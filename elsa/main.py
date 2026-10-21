@@ -114,6 +114,8 @@ def _build_run_name(FLAGS):
             name += f"_nmshrink{F.gmp_nm_lasso_shrink}"
         if getattr(F, 'gmp_pgd_rewind_at_target', False):
             name += "_rewind" + ("" if getattr(F, 'gmp_pgd_rewind_reset_optim', True) else "keepopt")
+        if getattr(F, 'gmp_onpolicy_after_target', False):
+            name += "_opdaftertarget"
         if getattr(F, 'gmp_onpolicy_start_step', 0):
             name += f"_opdfrom{F.gmp_onpolicy_start_step}"
         if getattr(F, 'gmp_adam_beta2', 0.999) != 0.999:
@@ -1241,6 +1243,8 @@ if __name__ == '__main__':
     flags.DEFINE_boolean('gmp_pgd_rewind_reset_optim', True, '--gmp_pgd_rewind_at_target: clear the Adam state after the re-fit.')
     flags.DEFINE_integer('gmp_onpolicy_start_step', 0, 'Turn OPD (rollouts and its loss) on only from this step; '
                          '0 = from the start. For the late-OPD ablation.')
+    flags.DEFINE_boolean('gmp_onpolicy_after_target', False, 'Turn OPD (rollouts and its loss) on only once the mask '
+                         'first reaches the target sparsity. For the late-OPD ablation.')
     flags.DEFINE_float('gmp_adam_beta2', 0.999, 'AdamW beta2 for GMP training. Also sets the horizon of the Fisher '
                        'saliency, which is read from Adam exp_avg_sq (bias-corrected with this same beta2).')
     flags.DEFINE_float('gmp_pgd_lam', 1e-3, 'activation_metric_pgd: relative damping on the active-block covariance solve.')

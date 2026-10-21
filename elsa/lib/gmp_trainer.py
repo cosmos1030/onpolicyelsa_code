@@ -4618,6 +4618,10 @@ def globalprune_gmp(
     # lambda, or OPKD could never actually turn back on later.
     use_onpolicy   = (teacher_model is not None) and (_onpolicy_lambda_cfg > 0.0)
     opd_start_step = int(getattr(FLAGS, 'gmp_onpolicy_start_step', 0) or 0)
+    opd_after_target = bool(getattr(FLAGS, 'gmp_onpolicy_after_target', False))
+    _opd_target_hit = False
+    if use_onpolicy and opd_after_target:
+        logging.info("  [opd_start] OPD off (lambda 0, no rollouts) until the mask first reaches the target sparsity")
     if use_onpolicy and opd_start_step > 0:
         logging.info(f"  [opd_start] OPD off (lambda 0, no rollouts) until step {opd_start_step}, "
                      f"then lambda={_onpolicy_lambda_cfg}")
@@ -6467,8 +6471,15 @@ def globalprune_gmp(
         # mask_interval's own cadence or a strict subdivision of it.
         # --gmp_onpolicy_start_step: OPD (rollouts + loss) only from this step on -- the
         # "post-train late" ablation; before it the live lambda is 0 and no rollouts are drawn
-        _opd_live = step >= opd_start_step
-        if opd_start_step > 0 and not _delay_global_signal:
+        # --gmp_onpolicy_after_target: same, but OPD turns on the first time the mask reaches the
+        # target sparsity (latched -- it stays on even if maintenance swaps dip the count afterwards)
+        if opd_after_target and not _opd_target_hit and maskmgr.current_sparsity() >= final_sparsity - 1e-3:
+            _opd_target_hit = True
+            logging.info(f"  [opd_start] target sparsity reached at step {step}: OPD on from here")
+            if use_wandb and is_main_process:
+                wandb.log({'opd/start_step': step}, step=step)
+        _opd_live = step >= opd_start_step and (_opd_target_hit or not opd_after_target)
+        if (opd_start_step > 0 or opd_after_target) and not _delay_global_signal:
             onpolicy_lambda = _onpolicy_lambda_cfg if _opd_live else 0.0
         if use_onpolicy and _opd_live and not tr_enabled and step % onpolicy_interval == 0:
             _in_fsdp_refill3 = fsdp_model is not None and _FSDP_AVAILABLE
