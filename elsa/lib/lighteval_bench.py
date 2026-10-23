@@ -44,7 +44,11 @@ def _run_lighteval(model_path: str, task_str: str, out_dir: str,
         f"tensor_parallel_size={tp_size},gpu_memory_utilization={gpu_util:.4f},"
         f"max_model_length={max_model_length},max_num_batched_tokens={max_model_length},seed={seed},"
         f"override_chat_template=true,"
-        f"generation_parameters={{max_new_tokens:{max_new_tokens},temperature:0.6,top_p:0.95,top_k:20}}"
+        f"generation_parameters={{max_new_tokens:{max_new_tokens},temperature:0.6,top_p:0.95,top_k:20"
+        # ELSA_PRESENCE_PENALTY: vLLM presence penalty (Qwen3's card suggests 0-2 against endless
+        # repetition in thinking mode); unset = the standard protocol (no penalty)
+        + (f",presence_penalty:{float(os.environ['ELSA_PRESENCE_PENALTY'])}" if os.environ.get('ELSA_PRESENCE_PENALTY') else "")
+        + "}"
     )
     cmd = [sys.executable, _LIGHTEVAL_RUNNER, "vllm", model_args, task_str,
            "--output-dir", out_dir, "--save-details"]
