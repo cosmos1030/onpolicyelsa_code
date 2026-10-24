@@ -2357,6 +2357,65 @@ def _slm_ntp_loss(s_logits, t_logits, labels, ratio, chunk_size=1024):
     return loss, diag
 
 
+@torch.no_grad()
+def _opd_select_tokens(s_logits, t_logits, labels, mode, ratio, temperature=1.0, reverse=False, chunk_size=1024):
+    """Token selection for the on-policy distillation loss: keep, per rollout, the top `ratio` of
+    supervised positions by a score and return labels with the rest set to -100 (they get no loss).
+    mode='rho1'  : Rho-1's excess loss on the student's own sampled token,
+                   CE_student - CE_teacher = log p_T(y) - log p_S(y) (where the teacher rates the
+                   student's choice higher than the student does).
+    mode='softor': TIP (arXiv 2604.14084) Soft-OR score s = h + d - h*d, h = student entropy / log|V|
+                   (top 2% clipped per batch, min-max normalised), d = the per-token distillation
+                   divergence itself (same direction as the loss), min-max normalised.
+    Same next-token alignment as _kl_loss (logit t predicts label t+1). Returns (labels, diag)."""
+    sl, tl, y = s_logits[:, :-1], t_logits[:, :-1], labels[:, 1:]
+    valid = y != -100
+    B, T, V = sl.shape
+    step = chunk_size if chunk_size and chunk_size > 0 else T
+    ex, ent, div = [], [], []
+    for st in range(0, T, step):
+        en = min(T, st + step)
+        ls = F.log_softmax(sl[:, st:en].float() / temperature, dim=-1)
+        lt = F.log_softmax(tl[:, st:en].float() / temperature, dim=-1)
+        yy = y[:, st:en].clamp_min(0).unsqueeze(-1)
+        ex.append((lt.gather(-1, yy) - ls.gather(-1, yy)).squeeze(-1))
+        ps = ls.exp()
+        ent.append(-(ps * ls).sum(-1) / math.log(V))
+        div.append((ps * (ls - lt)).sum(-1) if reverse else (lt.exp() * (lt - ls)).sum(-1))
+        del ls, lt, ps
+    ex, ent, div = torch.cat(ex, 1), torch.cat(ent, 1), torch.cat(div, 1)
+    if mode == 'rho1':
+        score = ex
+    else:
+        h = ent.clone()
+        if bool(valid.any()):
+            cap = torch.quantile(h[valid].float(), 0.98)
+            h = h.clamp(max=cap)
+        def _mm(x):
+            v = x[valid]
+            lo, hi = v.min(), v.max()
+            return (x - lo) / (hi - lo).clamp_min(1e-12)
+        h, d = _mm(h), _mm(div)
+        score = h + d - h * d
+    score = score.masked_fill(~valid, float('-inf'))
+    keep = torch.zeros_like(valid)
+    for b in range(B):
+        m = int(valid[b].sum().item())
+        if m == 0:
+            continue
+        k = max(1, int(ratio * m))
+        keep[b, torch.topk(score[b], k).indices] = True
+    keep &= valid
+    new = labels.clone()
+    new[:, 1:] = torch.where(keep, y, torch.full_like(y, -100))
+    diag = {'opdsel/frac_kept': float(keep.sum().item()) / max(1, int(valid.sum().item())),
+            'opdsel/ent_kept': float(ent[keep].mean().item()) if bool(keep.any()) else 0.0,
+            'opdsel/ent_all': float(ent[valid].mean().item()) if bool(valid.any()) else 0.0,
+            'opdsel/div_kept': float(div[keep].mean().item()) if bool(keep.any()) else 0.0,
+            'opdsel/div_all': float(div[valid].mean().item()) if bool(valid.any()) else 0.0}
+    return new, diag
+
+
 def _kl_loss(s_logits, t_logits, labels, temperature, topk, reverse=False, chunk_size=0,
              prune_opd=False, prune_opd_drop=0.01, prune_opd_wbase=0.5,
              prune_opd_topk=256, prune_opd_threshold=0.7):
@@ -4665,6 +4724,11 @@ def globalprune_gmp(
     # lambda, or OPKD could never actually turn back on later.
     use_onpolicy   = (teacher_model is not None) and (_onpolicy_lambda_cfg > 0.0)
     opd_start_step = int(getattr(FLAGS, 'gmp_onpolicy_start_step', 0) or 0)
+    opd_tok_select = str(getattr(FLAGS, 'gmp_opd_token_select', 'none') or 'none')
+    opd_tok_ratio = float(getattr(FLAGS, 'gmp_opd_token_ratio', 0.5) or 0.5)
+    if use_onpolicy and opd_tok_select != 'none':
+        logging.info(f"  [opd_token_select] OPD loss on the top {opd_tok_ratio:.0%} of each rollout's tokens "
+                     f"by '{opd_tok_select}' (rest masked)")
     opd_after_target = bool(getattr(FLAGS, 'gmp_onpolicy_after_target', False))
     _opd_target_hit = False
     if use_onpolicy and opd_after_target:
@@ -6800,6 +6864,13 @@ def globalprune_gmp(
                             for _pn, (_pos, _) in _opkd_prev_delta.items():
                                 maskmgr.named_params[_pn].data[_pos] = 0.0
 
+                        if opd_tok_select != 'none':
+                            gen_labels, _sel_diag = _opd_select_tokens(
+                                s_out.logits.detach(), t_out.logits, gen_labels, opd_tok_select, opd_tok_ratio,
+                                temperature=kd_temperature, reverse=onpolicy_reverse_kl,
+                                chunk_size=kl_chunk_size or 1024)
+                            if use_wandb and is_main_process and _op_i == 0:
+                                wandb.log(_sel_diag, step=step)
                         op_kl, op_diag = _kl_loss(s_out.logits, t_out.logits, gen_labels,
                                                   kd_temperature, onpolicy_topk,
                                                   reverse=onpolicy_reverse_kl, chunk_size=kl_chunk_size,

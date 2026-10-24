@@ -114,6 +114,8 @@ def _build_run_name(FLAGS):
             name += f"_nmshrink{F.gmp_nm_lasso_shrink}"
         if getattr(F, 'gmp_pgd_rewind_at_target', False):
             name += "_rewind" + ("" if getattr(F, 'gmp_pgd_rewind_reset_optim', True) else "keepopt")
+        if getattr(F, 'gmp_opd_token_select', 'none') != 'none':
+            name += f"_opdsel{F.gmp_opd_token_select}{F.gmp_opd_token_ratio}"
         if getattr(F, 'gmp_onpolicy_after_target', False):
             name += "_opdaftertarget"
         if getattr(F, 'gmp_onpolicy_start_step', 0):
@@ -1245,6 +1247,10 @@ if __name__ == '__main__':
                          '0 = from the start. For the late-OPD ablation.')
     flags.DEFINE_boolean('gmp_onpolicy_after_target', False, 'Turn OPD (rollouts and its loss) on only once the mask '
                          'first reaches the target sparsity. For the late-OPD ablation.')
+    flags.DEFINE_enum('gmp_opd_token_select', 'none', ['none', 'rho1', 'softor'],
+                      'OPD token selection: rho1 = Rho-1 excess loss (log p_T - log p_S of the sampled token); '
+                      'softor = TIP Soft-OR of student entropy and per-token divergence. none = all tokens.')
+    flags.DEFINE_float('gmp_opd_token_ratio', 0.5, '--gmp_opd_token_select: fraction of each rollout\'s tokens kept.')
     flags.DEFINE_float('gmp_adam_beta2', 0.999, 'AdamW beta2 for GMP training. Also sets the horizon of the Fisher '
                        'saliency, which is read from Adam exp_avg_sq (bias-corrected with this same beta2).')
     flags.DEFINE_float('gmp_pgd_lam', 1e-3, 'activation_metric_pgd: relative damping on the active-block covariance solve.')
