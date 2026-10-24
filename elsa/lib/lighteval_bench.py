@@ -334,7 +334,19 @@ def run_lighteval_bench(
     for name, task_str, max_tok, ctx_len, ms, correct_keys in benchmarks:
         out_dir = os.path.join(out_base, name)
         os.makedirs(out_dir, exist_ok=True)
+        # CUDA graphs by default (lighteval_patched_runner reads ELSA_VLLM_CUDA_GRAPH; same math,
+        # ~25-30% faster decode). Callers that set it explicitly keep their choice; a failed
+        # graph run (e.g. capture OOM next to a live trainer) is retried once in eager mode.
+        os.environ.setdefault("ELSA_VLLM_CUDA_GRAPH", "1")
         rc, elapsed = _run_lighteval(model_path, task_str, out_dir, max_tok, gpu_util, ms, ctx_len, tp_size=tp_size, seed=seed)
+        if rc != 0 and os.environ.get("ELSA_VLLM_CUDA_GRAPH") == "1":
+            logger.warning(f"[lighteval_bench] {name} failed with CUDA graphs (rc={rc}); retrying eager")
+            os.environ["ELSA_VLLM_CUDA_GRAPH"] = "0"
+            try:
+                rc, elapsed2 = _run_lighteval(model_path, task_str, out_dir, max_tok, gpu_util, ms, ctx_len, tp_size=tp_size, seed=seed)
+                elapsed += elapsed2
+            finally:
+                os.environ["ELSA_VLLM_CUDA_GRAPH"] = "1"
         metrics[f"eval_time_sec/{name}"] = elapsed
         if rc != 0:
             logger.warning(f"[lighteval_bench] {name} exited with code {rc}")

@@ -62,6 +62,11 @@ SPARSITY_PCT=$($PYTHON -c "print(int(${SPARSITY}*100))")
 KD_ONLY=$($PYTHON -c "print('true' if float('${NTP_LAMBDA:-0.33}')==0.0 else 'false')")
 ALPS_MODEL="/NHNHOME/log-postech/doyoonkim/models/qwen3_8b_alps_s${SPARSITY_PCT}pct"
 SPARSITY_TAG="s${SPARSITY_PCT}pct"
+HUB_SP="s${SPARSITY_PCT}"
+# SPARSITY_TYPE=2:4 (env): semi-structured arm on the 2:4 ALPS checkpoint (pass SPARSITY=0.5)
+if [ "${SPARSITY_TYPE:-unstructured}" = "2:4" ]; then
+    ALPS_MODEL="/NHNHOME/log-postech/doyoonkim/models/qwen3_8b_alps_s24"; SPARSITY_TAG="n24"; HUB_SP="n24"
+fi
 
 DENSE_MODEL=$(ls -d /NHNHOME/log-postech/doyoonkim/.cache/huggingface/hub/models--Qwen--Qwen3-8B/snapshots/*/ 2>/dev/null | head -1)
 DENSE_MODEL="${DENSE_MODEL%/}"
@@ -112,13 +117,19 @@ fi
 
 cd /NHNHOME/log-postech/doyoonkim/onpolicyelsa_code/elsa
 
+HUB_ID=${HUB_ID:-cosmos1030/qwen3-8b-alps-ntpkdopd-${HUB_SP}-lr${LR}-roll${OPD_GEN_LEN}}
+# never overwrite an existing repo: append a timestamp if the name is taken
+if python -c "import sys;from huggingface_hub import HfApi;HfApi().model_info(sys.argv[1])" "$HUB_ID" >/dev/null 2>&1; then
+    HUB_ID="${HUB_ID}-$(date +%m%d%H%M)"
+fi
+echo "HUB_ID=$HUB_ID"
 $TORCHRUN --nproc_per_node=2 --master_port=${MASTER_PORT} main.py \
     --model="$ALPS_MODEL" \
     --gmp_teacher_model="$DENSE_MODEL" \
     --dataset=mixed_cot \
     --data_path="$DATA_PATH" \
     --sparsity_ratio=${SPARSITY} \
-    --sparsity_type=unstructured \
+    --sparsity_type=${SPARSITY_TYPE:-unstructured} \
     --do_gmp=true \
     --gmp_fixed_mask=true \
     --gmp_use_fsdp=true \
@@ -141,12 +152,14 @@ $TORCHRUN --nproc_per_node=2 --master_port=${MASTER_PORT} main.py \
     --gmp_onpolicy_max_new_tokens=${OPD_GEN_LEN} \
     --gmp_opkd_prev_mask_teacher=false \
     --gmp_opkd_vllm_gpu_mem=0.15 \
+    --gmp_opkd_vllm_gpu_index=0 \
     --gmp_mask_interval=${MASK_INTERVAL} \
     --gmp_prompt_path="$OPD_PROMPT_PATH" \
     --gmp_save_path=/NHNHOME/log-postech/doyoonkim/models \
     --gmp_ckpt_every_steps=${CKPT_EVERY:-0} --gmp_ckpt_dir="${CKPT_DIR:-}" --gmp_resume_from="${RESUME_FROM:-}" \
     --save_model=true \
     --push_to_hub=true \
+    --hub_model_id="$HUB_ID" \
     --eval_math500=false \
     --eval_full_bench=true \
     --eval_profile=${EVAL_PROFILE:-long} \

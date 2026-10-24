@@ -22,6 +22,7 @@ Usage:
 """
 
 import argparse
+import os
 import json
 import re
 from pathlib import Path
@@ -52,6 +53,15 @@ def _manual_render(msgs):
     # replicates DeepSeek's "verbatim" behavior on top of Qwen3's tags, so our
     # own strip logic's output is what actually reaches the training file.
     parts = []
+    if os.environ.get("CHAT_FORMAT", "chatml") == "r1":
+        # DeepSeek-R1-Distill (Llama/Qwen2) wrapper, verbatim like the ChatML path. No BOS here:
+        # the Llama tokenizer adds <｜begin▁of▁sentence｜> itself when the text is tokenized.
+        for m in msgs:
+            if m["role"] == "user":
+                parts.append(f"<｜User｜>{m['content']}")
+            else:
+                parts.append(f"<｜Assistant｜>{m['content']}<｜end▁of▁sentence｜>")
+        return "".join(parts)
     for m in msgs:
         parts.append(f"<|im_start|>{m['role']}\n{m['content']}<|im_end|>\n")
     return "".join(parts)

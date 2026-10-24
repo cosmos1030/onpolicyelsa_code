@@ -142,7 +142,11 @@ class ALPS_prune:
             self.YtX = (self.XtY_raw / X_norm).to(dev)
         else:
             self.YtX = torch.zeros_like(W)
-            self.YtX = torch.matmul(W.cpu() * X_norm,self.XtX).to(dev)
+            if os.environ.get('ALPS_GPU_EIGH', '0') == '1':
+                # same fp32 product on the GPU (TF32 is off at module top)
+                self.YtX = torch.matmul(W * X_norm.to(dev), self.XtX.to(dev))
+            else:
+                self.YtX = torch.matmul(W.cpu() * X_norm,self.XtX).to(dev)
 
 
         admm_st = time.time()
@@ -166,7 +170,13 @@ class ALPS_prune:
 
         
         totp, num_cout = B.shape
-        L, Q = torch.linalg.eigh(self.XtX.double())
+        # ALPS_GPU_EIGH=1: same float64 eigendecomposition on the GPU instead of a thread-capped CPU
+        # (the 14336x14336 down_proj Gram matrix of an 8B Llama made the CPU path take hours);
+        # Q, L then live on the GPU, so the per-rho XTX_inv rebuilds below run there too.
+        if os.environ.get('ALPS_GPU_EIGH', '0') == '1':
+            L, Q = torch.linalg.eigh(self.XtX.to(dev).double())
+        else:
+            L, Q = torch.linalg.eigh(self.XtX.double())
         XTX_inv = (Q @ ((1/(L+(rho))) * Q).T).float().to(dev)
         
         init_rho = False

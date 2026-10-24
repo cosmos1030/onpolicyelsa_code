@@ -183,11 +183,62 @@ def _patch_cuda_graphs():
     print("[lighteval_patched_runner] CUDA graphs enabled (enforce_eager=False)", flush=True)
 
 
+
+_LCB_JOB = None
+
+
+def _lcb_score_one(i):
+    metric, responses, docs = _LCB_JOB
+    return metric.compute_sample(model_response=responses[i], doc=docs[i])
+
+
+def _patch_parallel_lcb():
+    """lighteval scores LCB one problem at a time (CodegenMetric is a non-batched
+    sample metric, and each call builds a 1-problem process pool), so the scoring
+    phase uses ~1 core for 30-40 min while the GPU sits idle. Score the problems
+    concurrently instead: each problem still goes through the unmodified
+    metric.compute_sample, so per-problem results and their order are unchanged.
+    ELSA_LCB_WORKERS (default 24; 0 = original serial loop)."""
+    n_workers = int(os.environ.get("ELSA_LCB_WORKERS", "24"))
+    if n_workers <= 0:
+        return
+    import multiprocessing as mp
+    from concurrent.futures import ProcessPoolExecutor
+    import lighteval.metrics as _lm
+    import lighteval.pipeline as _lp
+    _orig_apply = _lm.apply_metric
+
+    def _is_lcb(m):
+        return type(m.sample_level_fn).__name__ == "CodegenMetric"
+
+    def apply_metric(responses, docs, metrics):
+        lcb = [m for m in metrics if not m.batched_compute and _is_lcb(m)]
+        if not lcb or len(docs) < 2:
+            return _orig_apply(responses=responses, docs=docs, metrics=metrics)
+        rest = [m for m in metrics if m not in lcb]
+        outputs = _orig_apply(responses=responses, docs=docs, metrics=rest) if rest else [{} for _ in docs]
+        global _LCB_JOB
+        for m in lcb:
+            _LCB_JOB = (m, responses, docs)
+            with ProcessPoolExecutor(max_workers=min(n_workers, len(docs)),
+                                     mp_context=mp.get_context("fork")) as ex:
+                scores = list(ex.map(_lcb_score_one, range(len(docs))))
+            _LCB_JOB = None
+            for out, sc in zip(outputs, scores):
+                out.update(sc)
+        return outputs
+
+    _lm.apply_metric = apply_metric
+    _lp.apply_metric = apply_metric
+    print(f"[lighteval_patched_runner] LCB scoring parallel over problems (workers={n_workers})", flush=True)
+
+
 _disable_sample_cache()
 _patch_avg_at_n()
 _patch_ifeval_json()
 _patch_orphan_reasoning_close()
 _patch_cuda_graphs()
+_patch_parallel_lcb()
 
 from lighteval.__main__ import app  # noqa: E402
 

@@ -166,11 +166,46 @@ def _make_catcher(inps, cache, nsamples):
     return Catcher
 
 
+def _rope_to(model, dev):
+    # Qwen3/Llama keep one model.model.rotary_emb; OLMo 3 keeps
+    # model.model.rotary_embs = {"sliding_attention", "full_attention"}.
+    for name in ('rotary_emb', 'rotary_embs'):
+        if hasattr(model.model, name):
+            setattr(model.model, name, getattr(model.model, name).to(dev))
+
+
+def _capture_rope_by_type(model, cache, inps):
+    """Per-layer-type rotary embeddings for models that mix attention types.
+
+    The Catcher only ever sees layer 0's call, and _layer_fwd replays those
+    kwargs into every layer. That is right for Qwen3 (one rope, one mask), but
+    OLMo 3 interleaves sliding-window layers (default rope) with full-attention
+    layers (YaRN rope): replaying layer 0's kwargs would run every full layer
+    with the sliding layers' rope. Compute each type's embedding here, while the
+    rope modules are still on the device, and let _layer_fwd pick per layer.
+    The mask is still shared, which is only exact while the calibration length
+    fits inside the sliding window -- refuse anything longer.
+    """
+    ropes = getattr(model.model, 'rotary_embs', None)
+    if ropes is None or cache.get('position_ids') is None:
+        return
+    win = getattr(model.config, 'sliding_window', None)
+    if win is not None and model.seqlen > win:
+        raise ValueError(f"seqlen {model.seqlen} > sliding_window {win}: the sliding and full "
+                         f"attention masks differ, which _layer_fwd does not handle")
+    x = inps[:1]
+    cache['position_embeddings_by_type'] = {k: m(x, cache['position_ids']) for k, m in ropes.items()}
+
+
 def _layer_fwd(layer, inp, cache):
     kwargs = {}
     for key in ('attention_mask', 'position_ids', 'position_embeddings'):
         if cache.get(key) is not None:
             kwargs[key] = cache[key]
+    by_type = cache.get('position_embeddings_by_type')
+    attn_type = getattr(getattr(layer, 'self_attn', None), 'attention_type', None)
+    if by_type is not None and attn_type in by_type:
+        kwargs['position_embeddings'] = by_type[attn_type]
     return layer(inp, **kwargs)[0]
 
 
@@ -194,8 +229,7 @@ def cache_dense_layer_inputs(model, dataloader, dev, nsamples, cache_dir):
     layers = model.model.layers
 
     model.model.embed_tokens = model.model.embed_tokens.to(dev)
-    if hasattr(model.model, 'rotary_emb'):
-        model.model.rotary_emb = model.model.rotary_emb.to(dev)
+    _rope_to(model, dev)
     layers[0] = layers[0].to(dev)
 
     dtype = next(iter(model.parameters())).dtype
@@ -210,11 +244,11 @@ def cache_dense_layer_inputs(model, dataloader, dev, nsamples, cache_dir):
         except ValueError:
             pass
     layers[0] = layers[0].module
+    _capture_rope_by_type(model, cache, inps)
 
     layers[0] = layers[0].cpu()
     model.model.embed_tokens = model.model.embed_tokens.cpu()
-    if hasattr(model.model, 'rotary_emb'):
-        model.model.rotary_emb = model.model.rotary_emb.cpu()
+    _rope_to(model, 'cpu')
     torch.cuda.empty_cache()
 
     outs = torch.zeros_like(inps)
@@ -393,8 +427,7 @@ def qwen3_sequential(model, dataloader, dev, args):
     model.model.embed_tokens = model.model.embed_tokens.to(dev)
     if hasattr(model.model, 'norm'):
         model.model.norm = model.model.norm.to(dev)
-    if hasattr(model.model, 'rotary_emb'):
-        model.model.rotary_emb = model.model.rotary_emb.to(dev)
+    _rope_to(model, dev)
     layers[0] = layers[0].to(dev)
 
     dtype = next(iter(model.parameters())).dtype
@@ -409,11 +442,11 @@ def qwen3_sequential(model, dataloader, dev, args):
         except ValueError:
             pass
     layers[0] = layers[0].module
+    _capture_rope_by_type(model, cache, inps)
 
     layers[0] = layers[0].cpu()
     model.model.embed_tokens = model.model.embed_tokens.cpu()
-    if hasattr(model.model, 'rotary_emb'):
-        model.model.rotary_emb = model.model.rotary_emb.cpu()
+    _rope_to(model, 'cpu')
     torch.cuda.empty_cache()
 
     outs = torch.zeros_like(inps)
@@ -603,8 +636,7 @@ def qwen3_eval(model, testenc, dev):
     layers = model.model.layers
 
     model.model.embed_tokens = model.model.embed_tokens.to(dev)
-    if hasattr(model.model, 'rotary_emb'):
-        model.model.rotary_emb = model.model.rotary_emb.to(dev)
+    _rope_to(model, dev)
     layers[0] = layers[0].to(dev)
 
     dtype = next(iter(model.parameters())).dtype
@@ -620,11 +652,11 @@ def qwen3_eval(model, testenc, dev):
         except ValueError:
             pass
     layers[0] = layers[0].module
+    _capture_rope_by_type(model, cache, inps)
 
     layers[0] = layers[0].cpu()
     model.model.embed_tokens = model.model.embed_tokens.cpu()
-    if hasattr(model.model, 'rotary_emb'):
-        model.model.rotary_emb = model.model.rotary_emb.cpu()
+    _rope_to(model, 'cpu')
     torch.cuda.empty_cache()
 
     outs = torch.zeros_like(inps)

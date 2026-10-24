@@ -1258,6 +1258,7 @@ if __name__ == '__main__':
     flags.DEFINE_integer('gmp_kd_topk', 0, 'Top-K for KD KL divergence (0 = full vocab).')
     flags.DEFINE_integer('gmp_kl_chunk_size', 0, 'Chunk the sequence dimension into pieces of this many tokens when computing full-vocab KL loss (0 = disabled, compute the whole sequence at once). Full-vocab log-softmax tensors at seqlen=8192 are ~5GB each in fp32 regardless of GPU count (not FSDP-sharded) -- fits an 80GB card but OOMs a 40GB one; chunking trades a Python loop for a bounded peak at the same total FLOPs.')
     flags.DEFINE_bool('gmp_kd_only', False, 'Use KD loss only (no NTP loss).')
+    flags.DEFINE_float('gmp_ntp_slm_ratio', 0.0, 'Rho-1 selective NTP: apply NTP only to this top fraction of tokens by excess loss (CE_student - CE_dense_teacher); 0 = plain NTP. Needs gmp_kd_lambda>0 (reuses the KD teacher forward).')
     flags.DEFINE_float('gmp_hidden_lambda', 0.0, 'Weight for final hidden matching loss vs dense teacher.')
     flags.DEFINE_boolean('gmp_blockwise_squarehead', False,
                           'Anchor-based SquareHead-style per-layer distillation loss (Kurtic et al., '

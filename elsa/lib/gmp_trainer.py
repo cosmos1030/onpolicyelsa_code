@@ -2314,6 +2314,49 @@ def _hidden_loss_layerwise(s_hidden_states, t_hidden_states, labels, attention_m
     return (weights * layer_losses).sum()
 
 
+def _slm_ntp_loss(s_logits, t_logits, labels, ratio, chunk_size=1024):
+    """Rho-1 style selective NTP (arXiv 2404.07965) with the dense teacher as the
+    reference model: per-token excess loss = CE_student - CE_teacher, and NTP is
+    applied only to the top `ratio` fraction of supervised tokens by excess loss.
+    High excess = the teacher predicts the token but the pruned student lost it;
+    tokens the teacher itself finds unlikely are dropped so NTP does not pull the
+    student toward the corpus distribution (forgetting). Same next-token shift as
+    HF out.loss. Returns (loss, diag)."""
+    sl = s_logits[:, :-1]
+    tl = t_logits[:, :-1]
+    y = labels[:, 1:]
+    valid = y != -100
+    B, T, V = sl.shape
+    step = chunk_size if chunk_size and chunk_size > 0 else T
+    ce_s, ce_t = [], []
+    for st in range(0, T, step):
+        en = min(T, st + step)
+        yy = y[:, st:en].clamp_min(0).reshape(-1)
+        ce_s.append(F.cross_entropy(sl[:, st:en].float().reshape(-1, V), yy, reduction='none').view(B, -1))
+        with torch.no_grad():
+            ce_t.append(F.cross_entropy(tl[:, st:en].float().reshape(-1, V), yy, reduction='none').view(B, -1))
+    ce_s = torch.cat(ce_s, dim=1)
+    ce_t = torch.cat(ce_t, dim=1)
+    n_valid = int(valid.sum().item())
+    if n_valid == 0:
+        return (ce_s * 0.0).sum(), {}
+    excess = (ce_s.detach() - ce_t).masked_fill(~valid, float('-inf'))
+    k = max(1, int(round(ratio * n_valid)))
+    thr = torch.topk(excess.reshape(-1), k).values.min()
+    sel = valid & (excess >= thr)
+    n_sel = sel.sum().clamp_min(1)
+    loss = (ce_s * sel).sum() / n_sel
+    dropped = valid & ~sel
+    diag = {
+        'slm/frac_selected': float(n_sel.item()) / n_valid,
+        'slm/ce_student_all': float(ce_s.detach()[valid].mean().item()),
+        'slm/ce_teacher_all': float(ce_t[valid].mean().item()),
+        'slm/excess_selected': float(excess[sel].mean().item()),
+        'slm/ce_teacher_dropped': float(ce_t[dropped].mean().item()) if bool(dropped.any()) else 0.0,
+    }
+    return loss, diag
+
+
 def _kl_loss(s_logits, t_logits, labels, temperature, topk, reverse=False, chunk_size=0,
              prune_opd=False, prune_opd_drop=0.01, prune_opd_wbase=0.5,
              prune_opd_topk=256, prune_opd_threshold=0.7):
@@ -2669,6 +2712,9 @@ def _opkd_vllm_wake(vllm_engine) -> None:
     _sync_opkd_weights_to_vllm() to write into memory vLLM had unmapped,
     segfaulting instead of raising a catchable Python OOM."""
     if hasattr(vllm_engine, 'wake_up') and getattr(vllm_engine, '_opkd_asleep', False):
+        if torch.cuda.is_available():
+            logging.info(f"[opkd_mem] before vLLM wake: allocated={torch.cuda.memory_allocated()/2**30:.1f}GiB "
+                         f"reserved={torch.cuda.memory_reserved()/2**30:.1f}GiB")
         vllm_engine.wake_up()
         vllm_engine._opkd_asleep = False
 
@@ -4340,6 +4386,7 @@ def globalprune_gmp(
     kd_topk        = getattr(FLAGS, 'gmp_kd_topk', 0)
     kl_chunk_size  = getattr(FLAGS, 'gmp_kl_chunk_size', 0)  # 0=disabled, see _kl_loss
     kd_only        = getattr(FLAGS, 'gmp_kd_only', False)
+    ntp_slm_ratio  = getattr(FLAGS, 'gmp_ntp_slm_ratio', 0.0) or 0.0  # >0: Rho-1 selective NTP vs dense teacher
     hidden_lambda  = getattr(FLAGS, 'gmp_hidden_lambda', 0.0)
     hidden_only    = getattr(FLAGS, 'gmp_hidden_only', False)
     hidden_mode    = getattr(FLAGS, 'gmp_hidden_mode', 'cosine')
@@ -5709,6 +5756,13 @@ def globalprune_gmp(
             )
             with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                 fwd_inputs = {k: v for k, v in batch.items()}
+                # SLM replaces out.loss with its own selective CE: don't let HF also build a
+                # full-vocab fp32 loss graph that is never backpropagated but stays alive
+                # (~5GB at seqlen 8192) until `out` is dropped -- that extra residency OOMed
+                # the single-GPU sidecar's wake_up().
+                _slm_on = ntp_slm_ratio > 0 and use_kd and not (hidden_only or kd_only)
+                if _slm_on:
+                    fwd_inputs.pop('labels', None)
                 out = model(**fwd_inputs, output_hidden_states=(use_hidden or blockwise_enabled))
                 for _h in _l1_fsdp_hooks:
                     _h.remove()
@@ -5744,6 +5798,12 @@ def globalprune_gmp(
                         for k, v in kd_diag.items():
                             accum_diag[k] = accum_diag.get(k, 0.0) + v
                         accum_diag_n += 1
+
+                    if _slm_on:
+                        ntp_loss, slm_diag = _slm_ntp_loss(out.logits, t_out.logits, batch['labels'],
+                                                           ntp_slm_ratio, chunk_size=kl_chunk_size or 1024)
+                        for k, v in slm_diag.items():
+                            accum_diag[k] = accum_diag.get(k, 0.0) + v
 
                     # build total loss
                     aux = (hidden_lambda * h_loss if use_hidden else ntp_loss.new_tensor(0.0)) + \

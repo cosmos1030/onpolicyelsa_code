@@ -161,6 +161,12 @@ fi
 
 cd /NHNHOME/log-postech/doyoonkim/onpolicyelsa_code/elsa
 
+HUB_ID=${HUB_ID:-cosmos1030/olmo3-7b-think-scout-s${SPARSITY_PCT}-klb${KL_BUDGET}-roll${OPD_GEN_LEN}$([ "${JUMP:-false}" = true ] && echo -jump || true)}
+# never overwrite an existing repo: append a timestamp if the name is taken
+if python -c "import sys;from huggingface_hub import HfApi;HfApi().model_info(sys.argv[1])" "$HUB_ID" >/dev/null 2>&1; then
+    HUB_ID="${HUB_ID}-$(date +%m%d%H%M)"
+fi
+echo "HUB_ID=$HUB_ID"
 $TORCHRUN --nproc_per_node=2 --master_port=${MASTER_PORT} main.py \
     --model="$MODEL" \
     --dataset=mixed_cot \
@@ -207,6 +213,7 @@ $TORCHRUN --nproc_per_node=2 --master_port=${MASTER_PORT} main.py \
     --gmp_save_path=/NHNHOME/log-postech/doyoonkim/models \
     --save_model=true \
     --push_to_hub=true \
+    --hub_model_id="$HUB_ID" \
     --eval_math500=false \
     --eval_full_bench=true \
     --eval_profile=${EVAL_PROFILE:-long} \
