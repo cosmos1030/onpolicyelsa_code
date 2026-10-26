@@ -116,6 +116,8 @@ def _build_run_name(FLAGS):
             name += "_rewind" + ("" if getattr(F, 'gmp_pgd_rewind_reset_optim', True) else "keepopt")
         if getattr(F, 'gmp_opd_token_select', 'none') != 'none':
             name += f"_opdsel{F.gmp_opd_token_select}{F.gmp_opd_token_ratio}"
+        if getattr(F, 'gmp_onpolicy_dynkl_topk', 0) > 0:
+            name += f"_dynkl{F.gmp_onpolicy_dynkl_topk}"
         if getattr(F, 'gmp_onpolicy_after_target', False):
             name += "_opdaftertarget"
         if getattr(F, 'gmp_onpolicy_start_step', 0):
@@ -1309,6 +1311,7 @@ if __name__ == '__main__':
                           'not in effect.')
     flags.DEFINE_integer('gmp_onpolicy_max_new_tokens', 256, 'Max new tokens for on-policy student generation.')
     flags.DEFINE_integer('gmp_onpolicy_kd_topk', 0, 'Top-K for on-policy KL divergence (0 = full vocab).')
+    flags.DEFINE_integer('gmp_onpolicy_dynkl_topk', 0, 'OnQ (arXiv 2610.29378) candidate-wise Dynamic KL for the on-policy loss over teacher top-K ∪ student top-K plus a residual category (0 = off; OnQ uses 20). Replaces the forward/reverse full-vocab KL of the main OPD term.')
     flags.DEFINE_float('gmp_onpolicy_temperature', 0.6, 'Sampling temperature for on-policy generation.')
     flags.DEFINE_integer('gmp_onpolicy_grad_accum', 1, 'Number of on-policy generate+KL micro-steps to accumulate per interval.')
     flags.DEFINE_float('gmp_onpolicy_grad_clip', 1.0, 'Gradient clip norm applied after each on-policy rollout backward.')

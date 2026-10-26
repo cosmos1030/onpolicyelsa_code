@@ -8,7 +8,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=80G
 #SBATCH --time=1-00:00:00
-#SBATCH --exclude=n3,n19,n31,n42,n46,n51,n52,n54,n55,n58,n60,n61,n64,n76,n77,n80,n84,n87,n90,n91
+#SBATCH --exclude=n3,n19,n31,n42,n43,n92,n46,n51,n52,n54,n55,n58,n60,n61,n64,n76,n77,n80,n84,n87,n90,n91
 #SBATCH --output=/local-data/user-data/%u/job_%j/slurm/%x_%j.out
 exec 2>&1
 
@@ -172,7 +172,8 @@ $PYTHON main.py \
     --wandb=true \
     --wandb_project=${WANDB_PROJECT} \
     --run_name_suffix="alpssft_${SPARSITY_TAG}_lr${LR}${TAG_SUFFIX}_$([ "${NTP_LAMBDA}" = "0" ] && echo kdopdonly_)$(basename "$DATA_PATH" .jsonl)" \
-    --seed=42
+    --seed=42 \
+    ${EXTRA_FLAGS:-}
 EXIT_CODE=$?
 
 # Propagate main.py's exit code. Without this the script always ended 0

@@ -16,6 +16,7 @@ import types
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.utils.checkpoint
 import wandb
 from absl import logging
 from contextlib import nullcontext
@@ -2416,6 +2417,64 @@ def _opd_select_tokens(s_logits, t_logits, labels, mode, ratio, temperature=1.0,
     return new, diag
 
 
+def _dynkl_chunk(sl, tl, k, temperature, eps):
+    """Per-token candidate-wise Dynamic KL for one sequence chunk (see _dynkl_topk_loss). Returns (B, c)."""
+    sl = sl.float() / temperature
+    tl = tl.float() / temperature
+    lse_s = torch.logsumexp(sl, dim=-1, keepdim=True)
+    with torch.no_grad():
+        lse_t = torch.logsumexp(tl, dim=-1, keepdim=True)
+        t_idx = tl.topk(k, dim=-1).indices
+        s_idx = sl.topk(k, dim=-1).indices
+        s_new = ~(s_idx.unsqueeze(-1) == t_idx.unsqueeze(-2)).any(dim=-1)  # student top-k not already in teacher top-k
+        idx = torch.cat([t_idx, s_idx], dim=-1)                            # union U(h), duplicates masked below
+        cand = torch.cat([torch.ones_like(s_new), s_new], dim=-1).float()
+        p = (tl.gather(-1, idx) - lse_t).exp() * cand
+        p_bot = (1.0 - p.sum(-1, keepdim=True)).clamp_min(0.0)
+        n_s = cand.sum(-1, keepdim=True) + 1.0                              # |S(h)| = |U(h)| + residual
+        p = (p + eps) / (1.0 + n_s * eps) * cand
+        p_bot = (p_bot + eps) / (1.0 + n_s * eps)
+    logq = sl.gather(-1, idx) - lse_s
+    q = logq.exp() * cand
+    q_bot = (1.0 - q.sum(-1, keepdim=True)).clamp_min(1e-12)
+    P = torch.cat([p, p_bot], dim=-1)
+    Q = torch.cat([q, q_bot], dim=-1)
+    logQ = torch.cat([logq, q_bot.log()], dim=-1)
+    logP = P.clamp_min(1e-30).log()
+    m = torch.cat([cand, torch.ones_like(p_bot)], dim=-1)
+    alpha = (P / (P + Q).clamp_min(1e-30)).detach()
+    d = alpha * P * (logP - logQ) + (1.0 - alpha) * Q * (logQ - logP)
+    return (d * m).sum(-1)
+
+
+def _dynkl_topk_loss(s_logits, t_logits, labels, k=20, temperature=1.0, chunk_size=1024, eps=1e-8):
+    """OnQ (arXiv 2610.29378) candidate-wise Dynamic KL with its top-K approximation, for the on-policy loss.
+    Per prefix h: U(h) = teacher top-K ∪ student top-K, S(h) = U(h) ∪ {⊥} with ⊥ the remaining mass
+    (p_⊥ = 1 - Σ_U p, q_⊥ = 1 - Σ_U q); teacher categories smoothed (p + eps) / (1 + |S| eps);
+    D = Σ_{c∈S} [α_c p_c log(p_c/q_c) + (1-α_c) q_c log(q_c/p_c)], α_c = sg[p_c / (p_c + q_c)].
+    Averaged over all supervised tokens in the batch (labels != -100), same next-token alignment as _kl_loss.
+    Each sequence chunk runs under activation checkpointing, so the backward keeps only the (bf16) logits
+    themselves instead of a full-vocab fp32 log-softmax per chunk. Returns (loss, diag)."""
+    sl, tl, y = s_logits[:, :-1], t_logits[:, :-1], labels[:, 1:]
+    mask = (y != -100).float()
+    denom = mask.sum().clamp(min=1)
+    if mask.sum() == 0:
+        return s_logits.new_tensor(0.0), {}
+    T = sl.shape[1]
+    step = chunk_size if chunk_size and chunk_size > 0 else T
+    parts = []
+    for st in range(0, T, step):
+        en = min(T, st + step)
+        if torch.is_grad_enabled() and sl.requires_grad:
+            parts.append(torch.utils.checkpoint.checkpoint(
+                _dynkl_chunk, sl[:, st:en], tl[:, st:en], k, temperature, eps, use_reentrant=False))
+        else:
+            parts.append(_dynkl_chunk(sl[:, st:en], tl[:, st:en], k, temperature, eps))
+    d = torch.cat(parts, dim=1)
+    loss = (d * mask).sum() / denom
+    return loss, {'dynkl/per_token': float(loss.detach().item())}
+
+
 def _kl_loss(s_logits, t_logits, labels, temperature, topk, reverse=False, chunk_size=0,
              prune_opd=False, prune_opd_drop=0.01, prune_opd_wbase=0.5,
              prune_opd_topk=256, prune_opd_threshold=0.7):
@@ -4465,6 +4524,7 @@ def globalprune_gmp(
     filter_opkd_combined        = getattr(FLAGS, 'gmp_opkd_filter_combined', False)
     onpolicy_max_new    = getattr(FLAGS, 'gmp_onpolicy_max_new_tokens', 256)
     onpolicy_topk       = getattr(FLAGS, 'gmp_onpolicy_kd_topk', 0)
+    onpolicy_dynkl_topk = getattr(FLAGS, 'gmp_onpolicy_dynkl_topk', 0)
     onpolicy_temp       = getattr(FLAGS, 'gmp_onpolicy_temperature', 0.6)
     onpolicy_grad_accum = max(1, getattr(FLAGS, 'gmp_onpolicy_grad_accum', 1))
     onpolicy_grad_clip  = getattr(FLAGS, 'gmp_onpolicy_grad_clip', 1.0)
@@ -4729,6 +4789,8 @@ def globalprune_gmp(
     if use_onpolicy and opd_tok_select != 'none':
         logging.info(f"  [opd_token_select] OPD loss on the top {opd_tok_ratio:.0%} of each rollout's tokens "
                      f"by '{opd_tok_select}' (rest masked)")
+    if use_onpolicy and onpolicy_dynkl_topk > 0:
+        logging.info(f"  [dynkl] OPD loss = OnQ candidate-wise Dynamic KL over teacher/student top-{onpolicy_dynkl_topk} union + residual")
     opd_after_target = bool(getattr(FLAGS, 'gmp_onpolicy_after_target', False))
     _opd_target_hit = False
     if use_onpolicy and opd_after_target:
@@ -6871,14 +6933,19 @@ def globalprune_gmp(
                                 chunk_size=kl_chunk_size or 1024)
                             if use_wandb and is_main_process and _op_i == 0:
                                 wandb.log(_sel_diag, step=step)
-                        op_kl, op_diag = _kl_loss(s_out.logits, t_out.logits, gen_labels,
-                                                  kd_temperature, onpolicy_topk,
-                                                  reverse=onpolicy_reverse_kl, chunk_size=kl_chunk_size,
-                                                  prune_opd=opkd_prune_opd,
-                                                  prune_opd_drop=opkd_prune_opd_drop,
-                                                  prune_opd_wbase=opkd_prune_opd_wbase,
-                                                  prune_opd_topk=opkd_prune_opd_topk,
-                                                  prune_opd_threshold=opkd_prune_opd_threshold)
+                        if onpolicy_dynkl_topk > 0:
+                            op_kl, op_diag = _dynkl_topk_loss(s_out.logits, t_out.logits, gen_labels,
+                                                              k=onpolicy_dynkl_topk, temperature=kd_temperature,
+                                                              chunk_size=kl_chunk_size or 1024)
+                        else:
+                            op_kl, op_diag = _kl_loss(s_out.logits, t_out.logits, gen_labels,
+                                                      kd_temperature, onpolicy_topk,
+                                                      reverse=onpolicy_reverse_kl, chunk_size=kl_chunk_size,
+                                                      prune_opd=opkd_prune_opd,
+                                                      prune_opd_drop=opkd_prune_opd_drop,
+                                                      prune_opd_wbase=opkd_prune_opd_wbase,
+                                                      prune_opd_topk=opkd_prune_opd_topk,
+                                                      prune_opd_threshold=opkd_prune_opd_threshold)
                         if t_prev_out is not None:
                             op_kl_prev, _ = _kl_loss(s_out.logits, t_prev_out.logits, gen_labels,
                                                       kd_temperature, onpolicy_topk,
