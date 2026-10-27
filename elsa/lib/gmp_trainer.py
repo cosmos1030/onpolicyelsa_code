@@ -6960,17 +6960,29 @@ def globalprune_gmp(
 
                         with torch.no_grad():
                             _gen_pos_mask = (gen_labels[:, 1:] != -100).float()
-                            _s_logp = F.log_softmax(s_out.logits[:, :-1] / kd_temperature, dim=-1)
-                            _t_logp = F.log_softmax(t_out.logits[:, :-1] / kd_temperature, dim=-1)
-                            _s_ent = -(_s_logp.exp() * _s_logp).sum(dim=-1)
-                            _t_ent = -(_t_logp.exp() * _t_logp).sum(dim=-1)
+                            # chunked over T: full-vocab fp32 log-softmax of an 8k rollout is ~5GiB per tensor
+                            _K = 100
+                            _ent_s, _ent_t, _ovl = [], [], []
+                            _Tm1 = s_out.logits.shape[1] - 1
+                            for _c0 in range(0, _Tm1, 1024):
+                                _c1 = min(_c0 + 1024, _Tm1)
+                                _sl = s_out.logits[:, _c0:_c1]
+                                _tl = t_out.logits[:, _c0:_c1]
+                                _s_logp = F.log_softmax(_sl / kd_temperature, dim=-1)
+                                _ent_s.append(-(_s_logp.exp() * _s_logp).sum(dim=-1))
+                                del _s_logp
+                                _t_logp = F.log_softmax(_tl / kd_temperature, dim=-1)
+                                _ent_t.append(-(_t_logp.exp() * _t_logp).sum(dim=-1))
+                                del _t_logp
+                                _s_top = _sl.topk(_K, dim=-1).indices
+                                _t_top = _tl.topk(_K, dim=-1).indices
+                                _ovl.append((_s_top.unsqueeze(-1) == _t_top.unsqueeze(-2)).any(dim=-1).float().mean(dim=-1))
+                            _s_ent = torch.cat(_ent_s, dim=1)
+                            _t_ent = torch.cat(_ent_t, dim=1)
+                            _overlap = torch.cat(_ovl, dim=1)
                             _denom = _gen_pos_mask.sum().clamp(min=1)
                             _s_ent_mean = (_s_ent * _gen_pos_mask).sum() / _denom
                             _t_ent_mean = (_t_ent * _gen_pos_mask).sum() / _denom
-                            _K = 100
-                            _s_top = s_out.logits[:, :-1].topk(_K, dim=-1).indices
-                            _t_top = t_out.logits[:, :-1].topk(_K, dim=-1).indices
-                            _overlap = (_s_top.unsqueeze(-1) == _t_top.unsqueeze(-2)).any(dim=-1).float().mean(dim=-1)
                             _overlap_mean = (_overlap * _gen_pos_mask).sum() / _denom
 
                             is_log_w = None
