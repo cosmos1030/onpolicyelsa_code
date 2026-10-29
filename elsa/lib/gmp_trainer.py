@@ -5445,6 +5445,12 @@ def globalprune_gmp(
             collate_fn=_collate_fn,
         )
     data_iter = _infinite(loader, sampler=_train_sampler if is_distributed else None)
+    # Re-fit / rewind covariance source: its own shuffled pass over the training documents, so the
+    # training batch order is untouched (--gmp_pgd_refit_calib_source=train)
+    refit_calib_iter = prompt_iter
+    if getattr(FLAGS, 'gmp_pgd_refit_calib_source', 'prompts') == 'train':
+        refit_calib_iter = _infinite(DataLoader(train_dataset, batch_size=1, shuffle=True, collate_fn=_collate_fn,
+                                                generator=torch.Generator().manual_seed(1234)))
 
     # Anchor KD: separate iterator over CoT dataset (batch_size=1)
     anchor_iter = None
@@ -6149,7 +6155,7 @@ def globalprune_gmp(
         if ((pgd_nm_refit or getattr(FLAGS, 'gmp_saliency', 'fisher') == 'obs')
                 and getattr(maskmgr, 'prune_m', 0) > 0 and fsdp_model is None
                 and _pgd_kl_cal_batch is not None and getattr(maskmgr, '_full_cov', None) is None):
-            _rf_batch = _pgd_kl_calib_batch(prompt_iter, pgd_nm_refit_calib, pgd_nm_refit_seqlen, str(device))
+            _rf_batch = _pgd_kl_calib_batch(refit_calib_iter, pgd_nm_refit_calib, pgd_nm_refit_seqlen, str(device))
             maskmgr.capture_full_cov(model, _rf_batch, str(device))
             del _rf_batch
 
@@ -6576,7 +6582,7 @@ def globalprune_gmp(
             if pgd_rewind and not _rewind_done and maskmgr.current_sparsity() >= final_sparsity - 1e-4:
                 _rewind_done = True
                 _rw_t0 = time.time()
-                _rw_batch = _pgd_kl_calib_batch(prompt_iter, int(getattr(FLAGS, 'gmp_pgd_rewind_calib_size', 128)),
+                _rw_batch = _pgd_kl_calib_batch(refit_calib_iter, int(getattr(FLAGS, 'gmp_pgd_rewind_calib_size', 128)),
                                                 int(getattr(FLAGS, 'gmp_pgd_rewind_seqlen', 2048)), str(device))
                 _rw_layers = {}
                 for _n in _rewind_dense_w:
@@ -7854,7 +7860,7 @@ def globalprune_gmp(
                                 if getattr(maskmgr, '_full_cov', None) is None and fsdp_model is None:
                                     # the calibration batch was just refreshed (covariance reset) after the
                                     # capture point earlier in this step -- capture now rather than skip
-                                    _rf_batch = _pgd_kl_calib_batch(prompt_iter, pgd_nm_refit_calib,
+                                    _rf_batch = _pgd_kl_calib_batch(refit_calib_iter, pgd_nm_refit_calib,
                                                                     pgd_nm_refit_seqlen, str(device))
                                     maskmgr.capture_full_cov(model, _rf_batch, str(device))
                                     del _rf_batch
@@ -8956,7 +8962,7 @@ def globalprune_gmp(
                     if n in _pre_masks and bool((_pre_masks[n] & ~maskmgr.masks[n]).any())]
         if _changed:
             if getattr(maskmgr, '_full_cov', None) is None:
-                _rf_batch = _pgd_kl_calib_batch(prompt_iter, pgd_nm_refit_calib, pgd_nm_refit_seqlen, str(device))
+                _rf_batch = _pgd_kl_calib_batch(refit_calib_iter, pgd_nm_refit_calib, pgd_nm_refit_seqlen, str(device))
                 for _n in _changed:            # covariance of the pre-projection network
                     maskmgr.named_params[_n].data.copy_(_pre_w[_n])
                 maskmgr.capture_full_cov(model, _rf_batch, str(device))

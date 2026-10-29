@@ -1244,6 +1244,10 @@ if __name__ == '__main__':
     flags.DEFINE_integer('gmp_pgd_rewind_calib_size', 128, '--gmp_pgd_rewind_at_target: calibration sequences.')
     flags.DEFINE_integer('gmp_pgd_rewind_seqlen', 2048, '--gmp_pgd_rewind_at_target: calibration sequence length.')
     flags.DEFINE_integer('gmp_pgd_rewind_iters', 50, '--gmp_pgd_rewind_at_target: CG iterations per layer.')
+    flags.DEFINE_enum('gmp_pgd_refit_calib_source', 'prompts', ['prompts', 'train'],
+                      'Covariance data for --gmp_pgd_nm_refit / --gmp_pgd_rewind_at_target. prompts = OPD user turns only '
+                      '(old behaviour; ~180 tokens each, no reasoning tokens -- measured one-shot on 1.7B 2:4 it leaves the '
+                      'layer-local error where no re-fit does); train = training documents, cut to the refit seqlen.')
     flags.DEFINE_boolean('gmp_pgd_rewind_reset_optim', True, '--gmp_pgd_rewind_at_target: clear the Adam state after the re-fit.')
     flags.DEFINE_integer('gmp_onpolicy_start_step', 0, 'Turn OPD (rollouts and its loss) on only from this step; '
                          '0 = from the start. For the late-OPD ablation.')
