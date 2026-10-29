@@ -1833,7 +1833,7 @@ class GradualMaskManager:
                     return n.replace(f'.{a}.', f'.{b}.')
             return n
         alias = {n: _canon(n) for n in name_to_module if _canon(n) != n and _canon(n) in name_to_module}
-        accum, ntok = {}, {}
+        accum, ntok, nbad = {}, {}, {}
 
         cur_keep = {'rows': None}  # flattened attention mask of the chunk being run (padding excluded)
 
@@ -1843,6 +1843,11 @@ class GradualMaskManager:
                 x = x.reshape(-1, x.shape[-1]).float()
                 if cur_keep['rows'] is not None and cur_keep['rows'].numel() == x.shape[0]:
                     x = x[cur_keep['rows']]
+                fin = torch.isfinite(x).all(1)
+                if not bool(fin.all()):
+                    # a token whose activation is already non-finite would NaN the whole matrix
+                    nbad[pname] = nbad.get(pname, 0) + int((~fin).sum())
+                    x = x[fin]
                 c = x.t() @ x
                 if pname in accum:
                     accum[pname] += c; ntok[pname] += x.shape[0]
@@ -1868,7 +1873,20 @@ class GradualMaskManager:
             model.train()
         for h in handles:
             h.remove()
-        cov = {n: (c / max(1, ntok[n])).cpu() for n, c in accum.items()}
+        if nbad:
+            _order = list(name_to_module)
+            _first = min(nbad, key=_order.index)
+            logging.warning(f'[capture_full_cov] dropped non-finite activation rows in {len(nbad)} layers '
+                            f'(first {_first}: {nbad[_first]} rows; max {max(nbad.values())} of '
+                            f'{max(ntok.values(), default=0) + max(nbad.values())} tokens)')
+        # a layer that kept no finite token gets no covariance, so the re-fit skips it instead of zeroing it
+        cov = {n: (c / ntok[n]).cpu() for n, c in accum.items() if ntok[n] > 0}
+        _ovf = [n for n, c in cov.items() if not bool(torch.isfinite(c).all())]
+        if _ovf:
+            # finite activations whose x^T x still overflowed fp32
+            logging.warning(f'[capture_full_cov] {len(_ovf)} covariances overflowed (first {_ovf[0]}); left out')
+            for n in _ovf:
+                del cov[n]
         del accum
         torch.cuda.empty_cache()
         for n, src in alias.items():
@@ -6609,6 +6627,8 @@ def globalprune_gmp(
                         maskmgr.capture_full_cov(model, _rw_batch, str(device), only=set(_names))
                         _cov = maskmgr._full_cov
                         for _n in _names:
+                            if _n not in _cov:      # no finite covariance: left dense here, masked by apply()
+                                continue
                             _p = maskmgr.named_params[_n]
                             _p.data.copy_(_masked_lsq_refit(_rewind_dense_w[_n].to(_p.device, _p.dtype), maskmgr.masks[_n],
                                                             _cov[_n], iters=int(getattr(FLAGS, 'gmp_pgd_rewind_iters', 50))))
