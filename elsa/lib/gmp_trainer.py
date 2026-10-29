@@ -2982,6 +2982,9 @@ def _masked_lsq_refit(w_cur, keep, H, iters=20, ridge=0.01):
     Returns the new weight (dense tensor, zero off `keep`) in w_cur's dtype."""
     dev = w_cur.device
     H = H.to(dev, torch.float32)
+    if not bool(torch.isfinite(H).all()):
+        logging.warning('[masked_lsq_refit] non-finite covariance; masked current weight kept')
+        return w_cur * keep.to(dev, w_cur.dtype)
     d = torch.diagonal(H).clone()
     d = d + ridge * d.mean().clamp(min=1e-12)
     s = d.sqrt()
@@ -2996,12 +2999,21 @@ def _masked_lsq_refit(w_cur, keep, H, iters=20, ridge=0.01):
     rs = (R * R).sum(1, keepdim=True)
     for _ in range(iters):
         AP = (P @ Hn) * keepf
-        alpha = rs / (P * AP).sum(1, keepdim=True).clamp(min=1e-30)
+        pap = (P * AP).sum(1, keepdim=True)
+        # rows whose search direction has lost positive curvature (fp32 round-off on the near-singular
+        # massive-activation block of a document covariance) stop here instead of taking a huge step
+        alpha = torch.where(pap > 1e-30, rs / pap.clamp(min=1e-30), torch.zeros_like(pap))
         B += alpha * P
         R -= alpha * AP
         rs_new = (R * R).sum(1, keepdim=True)
         P = R + (rs_new / rs.clamp(min=1e-30)) * P
         rs = rs_new
+    bad = ~torch.isfinite(B).all(1)
+    if bad.any():
+        # a non-finite row would NaN the whole model; fall back to plain masking for that row
+        logging.warning(f'[masked_lsq_refit] {int(bad.sum())}/{B.shape[0]} rows non-finite '
+                        f'(H finite={bool(torch.isfinite(H).all())}); masked current weight kept for them')
+        B[bad] = (B0 * keepf)[bad]
     return (B / s.view(1, -1) * keepf).to(w_cur.dtype)
 
 
