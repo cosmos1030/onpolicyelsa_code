@@ -4461,6 +4461,12 @@ def globalprune_gmp(
     device = next(model.parameters()).device
     named_params = _find_linear_weights(model)
     named_shapes = _find_linear_shapes(model)
+    _dense_types = [t for t in str(getattr(FLAGS, 'gmp_dense_types', '') or '').split(',') if t]
+    if _dense_types:
+        # these linear types stay dense: never masked, never counted in the sparsity target
+        named_params = {n: p for n, p in named_params.items() if n.split('.')[-2] not in _dense_types}
+        named_shapes = {n: s for n, s in named_shapes.items() if n in named_params}
+        logging.info(f"  --gmp_dense_types={','.join(_dense_types)}: {len(named_params)} linears left prunable")
 
     # ── FSDP detection ─────────────────────────────────────────────────────────
     fsdp_model = None

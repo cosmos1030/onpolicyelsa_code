@@ -1244,6 +1244,9 @@ if __name__ == '__main__':
     flags.DEFINE_integer('gmp_pgd_rewind_calib_size', 128, '--gmp_pgd_rewind_at_target: calibration sequences.')
     flags.DEFINE_integer('gmp_pgd_rewind_seqlen', 2048, '--gmp_pgd_rewind_at_target: calibration sequence length.')
     flags.DEFINE_integer('gmp_pgd_rewind_iters', 50, '--gmp_pgd_rewind_at_target: CG iterations per layer.')
+    flags.DEFINE_string('gmp_dense_types', '',
+                        'Comma-separated Linear type names (e.g. v_proj,o_proj) left dense: excluded from the mask and from '
+                        'the sparsity target. For the 2:4 test of whether forcing 50% on v/o carries the dense-start deficit.')
     flags.DEFINE_enum('gmp_pgd_refit_calib_source', 'prompts', ['prompts', 'train'],
                       'Covariance data for --gmp_pgd_nm_refit / --gmp_pgd_rewind_at_target. prompts = OPD user turns only '
                       '(old behaviour; ~180 tokens each, no reasoning tokens -- measured one-shot on 1.7B 2:4 it leaves the '
