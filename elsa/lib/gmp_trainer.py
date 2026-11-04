@@ -9,8 +9,11 @@ Key components (from "The State of Sparsity in LLMs"):
   4. Periodic mask update every `mask_update_interval` steps
 """
 
+import bisect
+import collections.abc
 import math
 import re
+import struct
 import time
 import types
 import torch
@@ -435,24 +438,192 @@ def _pgd_build_topk_vals(imps_by_name, cand_by_name, want_highest, global_lo, gl
     # sentinel fill in-place, so the hot path allocates nothing. `scratch` is
     # owned by the caller so it survives across PGD calls; when it is None the
     # old allocating behavior is kept for callers that have not been wired up.
-    vals = {} if scratch is None else scratch
-    for n in imps_by_name:
-        src = imps_by_name[n]
-        buf = vals.get(n)
-        if buf is None or buf.shape != src.shape or buf.dtype != torch.float32 or buf.device != src.device:
-            buf = torch.empty_like(src, dtype=torch.float32)
-            vals[n] = buf
-        # buf <- log(clamp(src)), then sentinel wherever this name is not a
-        # candidate. copy_ first so a non-fp32 `src` converts cleanly (an
-        # out=-style op would reject the dtype mismatch). The only transient
-        # left is the negated bool mask, which is 1 byte/element -- an eighth
-        # of the two fp32 tensors this replaced.
-        buf.copy_(src)
-        buf.clamp_(min=_floor)
-        buf.log_()
-        buf.masked_fill_(~cand_by_name[n], sentinel)
+    #
+    # MEMORY (2026-11-05): the persistent scratch above still held one fp32
+    # copy of every prunable weight per pool (~5.2GiB at 1.7B, three pools on
+    # the N:M path) for the whole run, and _pgd_topk_mask's scratch-less
+    # callers allocated a fresh one per call. `vals` is now a lazy mapping
+    # (_PGDLogVals) that recomputes one tensor's values on access from the
+    # importance and candidate tensors the caller already holds -- the same
+    # ops in the same order, so every value is bit-identical, and the only
+    # transient is one tensor's worth. `scratch` is accepted and ignored.
+    vals = _PGDLogVals(imps_by_name, cand_by_name, _floor, sentinel)
     lo, hi = _log_floor - 1.0, _log_hi_bound + 1.0
     return vals, lo, hi
+
+
+class _PGDLogVals(collections.abc.Mapping):
+    """Read-only name -> tensor mapping with the values _pgd_build_topk_vals
+    used to materialize: log(clamp(imp, floor)) on candidates, `sentinel`
+    elsewhere. Each access returns a fresh tensor, so the importance and
+    candidate tensors must not be mutated while this is alive (they are not:
+    both are fixed for the duration of one PGD event)."""
+
+    def __init__(self, imps_by_name, cand_by_name, floor, sentinel):
+        self._imps, self._cand = imps_by_name, cand_by_name
+        self._floor, self._sentinel = floor, sentinel
+
+    def __getitem__(self, n):
+        v = self._imps[n].float().clamp(min=self._floor)
+        v.log_()
+        v.masked_fill_(~self._cand[n], self._sentinel)
+        return v
+
+    def __iter__(self):
+        return iter(self._imps)
+
+    def __len__(self):
+        return len(self._imps)
+
+
+# Exact order statistics for the PGD threshold searches. The searches bisect a
+# threshold 48/64 times, each pass a compare+sum over every prunable weight and
+# a host sync (~1.4s per call at 1.7B, ~8s per event in the growth phase). Their
+# result depends on the data only through each comparison "count(v <= mid) < k",
+# which equals "fp32(mid) < (k-th smallest v)". So find that k-th value exactly
+# with a 3-pass radix select over the fp32 bit patterns, then replay the same
+# bisection on the host against it: same mids, same branches, same final
+# threshold, bit for bit. GMP_PGD_RADIX=0 restores the scanning loops.
+_PGD_RADIX_PASSES = ((21, 11), (10, 11), (0, 10))
+
+
+def _pgd_radix_enabled():
+    import os as _os_radix
+    return _os_radix.environ.get('GMP_PGD_RADIX') != '0'
+
+
+def _pgd_f32(x):
+    """x rounded to fp32 (what a tensor<->python-scalar compare on an fp32 tensor sees)."""
+    return struct.unpack('<f', struct.pack('<f', x))[0]
+
+
+def _pgd_kth_smallest(tensors, r, dev, use_fsdp):
+    """r-th smallest (1-based) value over every element of the fp32 tensors
+    yielded by tensors() (called once per pass; FSDP: over all ranks' shards).
+    Requires 1 <= r <= total element count."""
+    if use_fsdp:
+        import torch.distributed as _dist
+    else:
+        got = _pgd_kth_smallest_bracket(tensors, r)
+        _PGD_KTH_STATS[got is None] += 1
+        if got is not None:
+            return got
+    prefix, pbits = 0, 0
+    for shift, width in _PGD_RADIX_PASSES:
+        nb = 1 << width
+        hist = torch.zeros(nb + 1, dtype=torch.long, device=dev)
+        for v in tensors():
+            b = v.reshape(-1).view(torch.int32)
+            # signed order of `key` == float order of v; adding 2**31 (sign-bit
+            # flip) makes it the unsigned order the digits below are read in
+            u = (b ^ ((b >> 31) & 0x7FFFFFFF)) ^ -0x80000000
+            d = (u >> shift) & (nb - 1)
+            if pbits:
+                d = torch.where(((u >> (shift + width)) & ((1 << pbits) - 1)) == prefix, d, nb)
+            hist += torch.bincount(d, minlength=nb + 1)
+        if use_fsdp:
+            _dist.all_reduce(hist, op=_dist.ReduceOp.SUM)
+        cum = hist[:nb].cumsum(0).tolist()
+        digit = bisect.bisect_left(cum, r)
+        if digit > 0:
+            r -= cum[digit - 1]
+        prefix, pbits = (prefix << width) | digit, pbits + width
+    key = prefix - (1 << 31)
+    bits = key ^ ((key >> 31) & 0x7FFFFFFF)
+    return struct.unpack('<f', struct.pack('<i', bits))[0]
+
+
+_PGD_KTH_SAMPLE = 1 << 21
+_PGD_KTH_STATS = [0, 0]   # bracket hits / misses (radix fallbacks), reset by the per-event timing log
+_PGD_KTH_GATHER_MAX = 1 << 25
+
+
+def _pgd_kth_smallest_bracket(tensors, r):
+    """Single-rank fast path of _pgd_kth_smallest: bracket the r-th value with
+    a strided sample, verify the bracket with one counting pass, and take the
+    exact answer from the few elements strictly inside it. The radix passes'
+    bincount serializes on atomics when most values share a few bins (~0.35s
+    per pass at 1.7B on A100, vs ~25ms for a compare+sum). Returns None when
+    the bracket misses or holds too many elements; the caller falls back."""
+    # one tensor at a time: with lazy vals each is computed on access, so only
+    # its strided slice (cloned, so the full tensor can be freed) is kept
+    sizes = [v.numel() for v in tensors.__self__._imps.values()] \
+        if isinstance(getattr(tensors, '__self__', None), _PGDLogVals) else [v.numel() for v in tensors()]
+    n_total = sum(sizes)
+    stride = max(1, n_total // _PGD_KTH_SAMPLE)
+    # coprime to 2 and 3 so the sample walks every column of the 2^a*3^b-wide
+    # weights (importance varies strongly per input channel; a stride sharing a
+    # factor with the row width only ever sees some columns and misses)
+    while stride > 1 and (stride % 2 == 0 or stride % 3 == 0):
+        stride += 1
+    samp = [v.reshape(-1)[stride // 2::stride].clone() for v in tensors()]
+    samp = torch.cat(samp).sort().values if samp else None
+    if samp is None or samp.numel() == 0:
+        return None
+    s = samp.numel()
+    q = (r - 0.5) / n_total
+    m = 8.0 * math.sqrt(s * q * (1.0 - q)) + 64
+    i_a, i_b = int(q * s - m), int(q * s + m)
+    a = samp[i_a].item() if i_a >= 0 else -math.inf
+    b = samp[i_b].item() if i_b < s else math.inf
+    del samp
+    cnt = None
+    for v in tensors():
+        c = torch.stack([(v < a).sum(), (v <= a).sum(), (v < b).sum(), (v <= b).sum()])
+        cnt = c if cnt is None else cnt + c
+    lt_a, le_a, lt_b, le_b = cnt.tolist()
+    if r <= lt_a or r > le_b:
+        return None
+    if r <= le_a:
+        return a
+    if r > lt_b:
+        return b
+    if lt_b - le_a > _PGD_KTH_GATHER_MAX:
+        return None
+    inner = torch.cat([v[(v > a) & (v < b)].reshape(-1) for v in tensors()])
+    return torch.kthvalue(inner, r - le_a).values.item()
+
+
+def _pgd_kth_for_bisect(tensors, k, n_total, want_highest, dev, use_fsdp):
+    """The value _pgd_bisect_replay compares against: the k-th smallest (or k-th
+    largest if want_highest), or +-inf where k is outside [1, n_total] so the
+    replay takes the same all-one-way branches the scanning loop would."""
+    r = (n_total - k + 1) if want_highest else k
+    if r < 1:
+        return -math.inf
+    if r > n_total:
+        return math.inf
+    return _pgd_kth_smallest(tensors, r, dev, use_fsdp)
+
+
+def _pgd_bisect_replay(lo, hi, iters, kth, want_highest):
+    """Host-only replay of the threshold bisection: identical (lo, hi) to the
+    loop that counts count(v <= mid) (or count(v >= mid) if want_highest)
+    against k on the device each iteration."""
+    for _ in range(iters):
+        mid = (lo + hi) / 2.0
+        m = _pgd_f32(mid)
+        if want_highest:
+            if m > kth:
+                hi = mid
+            else:
+                lo = mid
+        else:
+            if m < kth:
+                lo = mid
+            else:
+                hi = mid
+    return lo, hi
+
+
+def _pgd_all_fp32(tensors):
+    return all(t.dtype == torch.float32 for t in tensors)
+
+
+def _pgd_count(tensors):
+    """Total of t.sum() over tensors with one host sync instead of one per tensor."""
+    sums = [t.sum() for t in tensors]
+    return int(torch.stack(sums).sum().item()) if sums else 0
 
 
 def _pgd_topk_mask_from_vals(vals, lo, hi, k, dev, use_fsdp, want_highest):
@@ -478,7 +649,8 @@ def _pgd_topk_mask_from_vals(vals, lo, hi, k, dev, use_fsdp, want_highest):
         # That is the value the bisection converges to (its bracket width,
         # ~100/2**64, is far below fp32 spacing), so `sel` and the tie block
         # below see the same threshold. Large k (the early growth phase, k in
-        # the millions) and FSDP (per-rank shards) keep the bisection.
+        # the millions) and FSDP (per-rank shards) take the radix select +
+        # bisection replay below instead.
         # GMP_PGD_TOPK_BISECT=1 forces the old path for A/B checks.
         _parts = [torch.topk(v.reshape(-1), min(k, v.numel()), largest=want_highest, sorted=False).values
                   for v in vals.values()]
@@ -488,6 +660,17 @@ def _pgd_topk_mask_from_vals(vals, lo, hi, k, dev, use_fsdp, want_highest):
         _kth = torch.kthvalue(_cat, (_cat.numel() - _kk + 1) if want_highest else _kk).values
         del _cat
         thr = float(_kth.item())
+        sel = {n: ((v >= thr) if want_highest else (v <= thr)) for n, v in vals.items()}
+        return _pgd_thin_tie_cluster(vals, sel, thr, k, dev, use_fsdp)
+    if _pgd_radix_enabled():
+        n_total = sum(t.numel() for t in (vals._imps if isinstance(vals, _PGDLogVals) else vals).values())
+        if use_fsdp:
+            _n_total_t = torch.tensor([n_total], dtype=torch.long, device=dev)
+            _dist.all_reduce(_n_total_t, op=_dist.ReduceOp.SUM)
+            n_total = int(_n_total_t.item())
+        kth = _pgd_kth_for_bisect(vals.values, k, n_total, want_highest, dev, use_fsdp)
+        lo, hi = _pgd_bisect_replay(lo, hi, 64, kth, want_highest)
+        thr = lo if want_highest else hi
         sel = {n: ((v >= thr) if want_highest else (v <= thr)) for n, v in vals.items()}
         return _pgd_thin_tie_cluster(vals, sel, thr, k, dev, use_fsdp)
     cnt_t = torch.zeros(1, dtype=torch.long, device=dev)
@@ -1115,7 +1298,22 @@ def _pgd_topk_groups_from_scores(scores, k, dev, use_fsdp, seed=None):
         finite_lo, finite_hi = _lo_t.item(), _hi_t.item()
     thr_lo, thr_hi = finite_lo, finite_hi
     cnt_t = torch.zeros(1, dtype=torch.long, device=dev)
-    for _ in range(48):
+    _radix = _pgd_radix_enabled() and _pgd_all_fp32(scores.values())
+    if _radix:
+        # count(v >= mid) > k  <=>  fp32(mid) <= (k+1)-th largest; replay the loop below against it
+        n_total = sum(v.numel() for v in scores.values())
+        if use_fsdp:
+            _n_t = torch.tensor([n_total], dtype=torch.long, device=dev)
+            _dist.all_reduce(_n_t, op=_dist.ReduceOp.SUM)
+            n_total = int(_n_t.item())
+        kth = _pgd_kth_smallest(scores.values, n_total - k, dev, use_fsdp) if n_total - k >= 1 else None
+        for _ in range(48):
+            mid = (thr_lo + thr_hi) / 2.0
+            if kth is not None and _pgd_f32(mid) <= kth:
+                thr_lo = mid
+            else:
+                thr_hi = mid
+    for _ in range(0 if _radix else 48):
         mid = (thr_lo + thr_hi) / 2.0
         cnt_t.zero_()
         for v in scores.values():
@@ -4728,10 +4926,9 @@ def globalprune_gmp(
                      "step; the self-KL bisection resumes as pure maintenance from the next PGD step on.")
     _pgd_kl_cal_batch = None  # small/short batch, refreshed every mask_interval steps (see below), reused every PGD step in between
     _pgd_scratch   = {}  # name -> preallocated fp32 buffer, reused in-place every PGD step (see below)
-    # Same idea, for _pgd_build_topk_vals' log-space candidate tensors. Three
-    # separate pools because a single PGD call can hold more than one live at
-    # once (the N:M path builds a prune pool and a revive pool simultaneously),
-    # so they must not share a buffer.
+    # Formerly persistent buffers for _pgd_build_topk_vals' log-space candidate
+    # tensors; it now returns a lazy _PGDLogVals and ignores these (kept so the
+    # call sites stay unchanged).
     _pgd_vals_scratch      = {}   # unstructured / prune pool
     _pgd_vals_scratch_nm_a = {}   # N:M overshoot (prune-only) pool
     _pgd_vals_scratch_nm_b = {}   # N:M undershoot (revive-only) pool
@@ -7482,7 +7679,7 @@ def globalprune_gmp(
                                     for _q, _v in zip(_dbg_qs, _dbg_vals.tolist())}, step=step)
                 # n_keep / n_total — one all_reduce for FSDP
                 _pgd_stats = torch.tensor(
-                    [sum(maskmgr.masks[n].sum().item() for n in _pgd_imps),
+                    [_pgd_count(maskmgr.masks[n] for n in _pgd_imps),
                      sum(v.numel() for v in _pgd_imps.values())],
                     dtype=torch.long, device=_pgd_dev)
                 if _pgd_use_fsdp:
@@ -7500,10 +7697,10 @@ def globalprune_gmp(
 
                 # global min/max — two all_reduces for FSDP
                 _pgd_lo_t = torch.tensor(
-                    min(v.min().item() for v in _pgd_imps.values()),
+                    torch.stack([v.min() for v in _pgd_imps.values()]).min().item(),
                     dtype=torch.float32, device=_pgd_dev)
                 _pgd_hi_t = torch.tensor(
-                    max(v.max().item() for v in _pgd_imps.values()),
+                    torch.stack([v.max() for v in _pgd_imps.values()]).max().item(),
                     dtype=torch.float32, device=_pgd_dev)
                 if _pgd_use_fsdp:
                     _dist.all_reduce(_pgd_lo_t, op=_dist.ReduceOp.MIN)
@@ -7529,7 +7726,13 @@ def globalprune_gmp(
                 # the true global bounds for later reuse.
                 _pgd_thr_lo, _pgd_thr_hi = _pgd_lo, _pgd_hi
                 _pgd_cnt_t = torch.zeros(1, dtype=torch.long, device=_pgd_dev)
-                for _ in range(48):
+                # exact k-th value + host replay of the loop below (see _pgd_kth_smallest)
+                _pgd_radix_desired = _pgd_radix_enabled() and _pgd_all_fp32(_pgd_imps.values())
+                if _pgd_radix_desired:
+                    _pgd_kth_d = _pgd_kth_for_bisect(_pgd_imps.values, _pgd_k_prune, int(_pgd_stats[1].item()),
+                                                     False, _pgd_dev, _pgd_use_fsdp)
+                    _pgd_thr_lo, _pgd_thr_hi = _pgd_bisect_replay(_pgd_thr_lo, _pgd_thr_hi, 48, _pgd_kth_d, False)
+                for _ in range(0 if _pgd_radix_desired else 48):
                     _pgd_mid = (_pgd_thr_lo + _pgd_thr_hi) / 2.0
                     _pgd_cnt_t.zero_()
                     for _v in _pgd_imps.values():
@@ -7687,8 +7890,8 @@ def globalprune_gmp(
                     _dbg_mem("after _pgd_nm_finished_swap_build")
                     _pgd_nm_rank = _dist.get_rank() if _pgd_use_fsdp else None
 
-                    _n_a_t = torch.tensor(sum(v.sum().item() for v in _pgd_elig_prune_dir.values()), dtype=torch.long, device=_pgd_dev)
-                    _n_b_t = torch.tensor(sum(v.sum().item() for v in _pgd_elig_revive_dir.values()), dtype=torch.long, device=_pgd_dev)
+                    _n_a_t = torch.tensor(_pgd_count(_pgd_elig_prune_dir.values()), dtype=torch.long, device=_pgd_dev)
+                    _n_b_t = torch.tensor(_pgd_count(_pgd_elig_revive_dir.values()), dtype=torch.long, device=_pgd_dev)
                     # NOT all_reduced: unlike _pgd_elig_prune_dir/_revive_dir
                     # (genuinely different per-rank local shards, scattered
                     # back by _pgd_nm_directional), _fin_scores is the FULL,
@@ -7696,7 +7899,7 @@ def globalprune_gmp(
                     # returns -- summing a count computed identically on every
                     # rank and then all_reduce(SUM)-ing it would multiply the
                     # true count by world_size.
-                    _n_c_t = torch.tensor(sum(torch.isfinite(v).sum().item() for v in _fin_scores.values()), dtype=torch.long, device=_pgd_dev)
+                    _n_c_t = torch.tensor(_pgd_count(torch.isfinite(v) for v in _fin_scores.values()), dtype=torch.long, device=_pgd_dev)
                     if _pgd_use_fsdp:
                         _dist.all_reduce(_n_a_t, op=_dist.ReduceOp.SUM)
                         _dist.all_reduce(_n_b_t, op=_dist.ReduceOp.SUM)
@@ -8007,7 +8210,7 @@ def globalprune_gmp(
                             _revive_cand = {_n: _new_masks[_n] & ~maskmgr.masks[_n] for _n in maskmgr.named_params}
                             _prune_cand = {_n: (~_new_masks[_n]) & maskmgr.masks[_n] for _n in maskmgr.named_params}
                             _n_swap_cand_t = torch.tensor(
-                                sum(v.sum().item() for v in _prune_cand.values()), dtype=torch.long, device=_pgd_dev)
+                                _pgd_count(_prune_cand.values()), dtype=torch.long, device=_pgd_dev)
                             if _pgd_use_fsdp:
                                 _dist.all_reduce(_n_swap_cand_t, op=_dist.ReduceOp.SUM)
                             _n_swap_cand = int(_n_swap_cand_t.item())
@@ -8151,7 +8354,7 @@ def globalprune_gmp(
                                                               maskmgr.prune_m, _pgd_k_prune, _pgd_dev, _pgd_use_fsdp,
                                                               shapes=(maskmgr.named_shapes if _pgd_use_fsdp else None))
                         _n_elig_t = torch.tensor(
-                            sum(v.sum().item() for v in _eligible_prune.values()), dtype=torch.long, device=_pgd_dev)
+                            _pgd_count(_eligible_prune.values()), dtype=torch.long, device=_pgd_dev)
                         if _pgd_use_fsdp:
                             _dist.all_reduce(_n_elig_t, op=_dist.ReduceOp.SUM)
                         # BUGFIX: _k_actual (eligible-to-prune, budget-based) and
@@ -8175,7 +8378,7 @@ def globalprune_gmp(
                         # n_revive_cand FIRST and use the SAME final count for
                         # both prune and revive selection.
                         _n_revive_cand_t = torch.tensor(
-                            sum(v.sum().item() for v in _revive_cand.values()), dtype=torch.long, device=_pgd_dev)
+                            _pgd_count(_revive_cand.values()), dtype=torch.long, device=_pgd_dev)
                         if _pgd_use_fsdp:
                             _dist.all_reduce(_n_revive_cand_t, op=_dist.ReduceOp.SUM)
                         _n_elig = int(_n_elig_t.item())
@@ -8346,9 +8549,9 @@ def globalprune_gmp(
                     _revive_cand = {_n: _pgd_desired[_n] & ~maskmgr.masks[_n] for _n in maskmgr.named_params}
                     _prune_cand  = {_n: (~_pgd_desired[_n]) & maskmgr.masks[_n] for _n in maskmgr.named_params}
                     _n_prune_cand_t = torch.tensor(
-                        sum(v.sum().item() for v in _prune_cand.values()), dtype=torch.long, device=_pgd_dev)
+                        _pgd_count(_prune_cand.values()), dtype=torch.long, device=_pgd_dev)
                     _n_revive_cand_t = torch.tensor(
-                        sum(v.sum().item() for v in _revive_cand.values()), dtype=torch.long, device=_pgd_dev)
+                        _pgd_count(_revive_cand.values()), dtype=torch.long, device=_pgd_dev)
                     if _pgd_use_fsdp:
                         _dist.all_reduce(_n_prune_cand_t, op=_dist.ReduceOp.SUM)
                         _dist.all_reduce(_n_revive_cand_t, op=_dist.ReduceOp.SUM)
@@ -8571,7 +8774,9 @@ def globalprune_gmp(
                                        else _pgd_kl_at(_n_prune_cand))
                     logging.info(f"  [DBG kl_at_timing] calls={_pgd_kl_at_calls[0]} total_forward_time={_pgd_kl_at_time[0]:.3f}s "
                                  f"avg_per_call={(_pgd_kl_at_time[0]/max(1,_pgd_kl_at_calls[0])):.3f}s "
-                                 f"topk_time={_pgd_topk_time[0]:.3f}s fwd_time={_pgd_fwd_time[0]:.3f}s (step={step})")
+                                 f"topk_time={_pgd_topk_time[0]:.3f}s fwd_time={_pgd_fwd_time[0]:.3f}s "
+                                 f"kth_bracket_hit/miss={_PGD_KTH_STATS[0]}/{_PGD_KTH_STATS[1]} (step={step})")
+                    _PGD_KTH_STATS[0] = _PGD_KTH_STATS[1] = 0
                     _ev_tot = time.time() - _PGD_EV_T0[0] if _PGD_EV_T0[0] else -1.0
                     if _TR_KL_SEC:
                         logging.info(f"  [pgd][cost] step={step} screen_calls={len(_TR_KL_SEC)} "
@@ -8696,9 +8901,9 @@ def globalprune_gmp(
                     # every pgd_kl_share/pgd_max_swap_frac run. Gate on whichever side is
                     # larger instead, so a lopsided candidate count can't bypass the cap.
                     _n_prune_cand_t = torch.tensor(
-                        sum(v.sum().item() for v in _prune_cand.values()), dtype=torch.long, device=_pgd_dev)
+                        _pgd_count(_prune_cand.values()), dtype=torch.long, device=_pgd_dev)
                     _n_revive_cand_t = torch.tensor(
-                        sum(v.sum().item() for v in _revive_cand.values()), dtype=torch.long, device=_pgd_dev)
+                        _pgd_count(_revive_cand.values()), dtype=torch.long, device=_pgd_dev)
                     if _pgd_use_fsdp:
                         _dist.all_reduce(_n_revive_cand_t, op=_dist.ReduceOp.SUM)
                         _dist.all_reduce(_n_prune_cand_t, op=_dist.ReduceOp.SUM)
@@ -8746,9 +8951,9 @@ def globalprune_gmp(
                     _revive_cand = {_n: _pgd_desired[_n] & ~maskmgr.masks[_n] for _n in maskmgr.named_params}
                     _prune_cand  = {_n: (~_pgd_desired[_n]) & maskmgr.masks[_n] for _n in maskmgr.named_params}
                     _n_revive_cand_t = torch.tensor(
-                        sum(v.sum().item() for v in _revive_cand.values()), dtype=torch.long, device=_pgd_dev)
+                        _pgd_count(_revive_cand.values()), dtype=torch.long, device=_pgd_dev)
                     _n_prune_cand_t = torch.tensor(
-                        sum(v.sum().item() for v in _prune_cand.values()), dtype=torch.long, device=_pgd_dev)
+                        _pgd_count(_prune_cand.values()), dtype=torch.long, device=_pgd_dev)
                     if _pgd_use_fsdp:
                         _dist.all_reduce(_n_revive_cand_t, op=_dist.ReduceOp.SUM)
                         _dist.all_reduce(_n_prune_cand_t, op=_dist.ReduceOp.SUM)
