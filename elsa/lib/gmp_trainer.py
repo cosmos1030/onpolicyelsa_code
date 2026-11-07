@@ -2774,6 +2774,9 @@ def _teacher_topk_logp(t_hidden, t_weight, k, temperature, chunk):
     restricted to its own top-k -- computed chunk by chunk from the final
     hidden states so the (T, V) teacher logits never exist either."""
     vals, idxs = [], []
+    if t_hidden.shape[0] == 0:
+        return (torch.empty(0, k, dtype=torch.long, device=t_hidden.device),
+                torch.empty(0, k, dtype=torch.float32, device=t_hidden.device))
     with torch.no_grad():
         for s0 in range(0, t_hidden.shape[0], chunk):
             zt = (t_hidden[s0:s0 + chunk] @ t_weight.t()).float() / temperature
@@ -2786,7 +2789,8 @@ def _teacher_topk_logp(t_hidden, t_weight, k, temperature, chunk):
 
 def _fused_head_forward(self, input_ids=None, attention_mask=None, *args,
                         fused_topk_labels=None, fused_topk_teacher_idx=None,
-                        fused_topk_teacher_logp=None, fused_topk_cfg=None, **kwargs):
+                        fused_topk_teacher_logp=None, fused_topk_cfg=None,
+                        fused_topk_teacher_k=None, **kwargs):
     """Replacement CausalLM.forward, following verl (verl/models/transformers/
     monkey_patch.py patch_forward_with_backends, which assigns
     model.__class__.forward, and dense_common.forward_with_torch_backend): the
@@ -2807,6 +2811,12 @@ def _fused_head_forward(self, input_ids=None, attention_mask=None, *args,
     h = self.model(input_ids=input_ids, **kw).last_hidden_state                # (B, T, D)
     sel = fused_topk_labels[:, 1:] != -100
     hs = h[:, :-1][sel]
+    if fused_topk_teacher_k is not None:
+        # teacher mode: top-k log-probs computed inside the forward too, so an
+        # FSDP-sharded teacher (--gmp_teacher_fsdp) has its lm_head gathered
+        t_idx, t_logp = _teacher_topk_logp(hs, self.lm_head.weight, int(fused_topk_teacher_k),
+                                           float(temperature), int(chunk))
+        return FusedTopKTeacherOutput(t_idx=t_idx, t_logp=t_logp)
     if hs.shape[0] == 0:
         return FusedTopKOutput(loss=h.sum() * 0.0, ntp=0.0, kd=0.0)
     parts = {}
@@ -2827,6 +2837,12 @@ class FusedTopKOutput(_ModelOutput):
     kd: float = 0.0
 
 
+@_dataclass
+class FusedTopKTeacherOutput(_ModelOutput):
+    t_idx: torch.Tensor = None
+    t_logp: torch.Tensor = None
+
+
 def install_fused_head_forward(model):
     """Class-level patch, as verl does. Installing it lazily after FSDP
     wrapping is fine: FSDP calls the wrapped module through Module.__call__,
@@ -2839,24 +2855,23 @@ def install_fused_head_forward(model):
 
 def _fused_topk_distill(model, teacher_model, input_ids, attention_mask, labels, k,
                         ntp_w, kd_w, temperature, chunk=1024):
-    """Teacher top-k (plain, unsharded teacher -- same as the non-fused FSDP
-    path) + student fused lm_head loss on the shifted valid positions, the
+    """Teacher top-k (computed inside the teacher's own forward, so it works
+    for a plain or an FSDP-sharded teacher) + student fused lm_head loss on the shifted valid positions, the
     student going through model(...) so FSDP handles its params. Works for a
     plain HF CausalLM and for an FSDP-wrapped one. Returns
     (weighted_loss_tensor, ntp_mean, kd_mean, teacher_topk_mass_mean)."""
     install_fused_head_forward(getattr(model, '_fsdp_wrapped_module', model))
-    kw = {} if attention_mask is None else {'attention_mask': attention_mask}
-    sel = labels[:, 1:] != -100
+    install_fused_head_forward(getattr(teacher_model, '_fsdp_wrapped_module', teacher_model))
+    cfg = (float(ntp_w), float(kd_w), float(temperature), int(chunk))
     with torch.no_grad():
-        th = teacher_model.model(input_ids=input_ids, **kw).last_hidden_state
-        ths = th[:, :-1][sel]
-        del th
-        t_idx, t_logp = _teacher_topk_logp(ths, teacher_model.lm_head.weight, k, temperature, chunk)
-        del ths
+        t_out = teacher_model(input_ids=input_ids, attention_mask=attention_mask,
+                              fused_topk_labels=labels, fused_topk_cfg=cfg, fused_topk_teacher_k=int(k))
+        t_idx, t_logp = t_out.t_idx, t_out.t_logp
+        del t_out
         t_mass = t_logp.exp().sum(-1).mean().item() if t_logp.numel() else 0.0
     out = model(input_ids=input_ids, attention_mask=attention_mask,
                 fused_topk_labels=labels, fused_topk_teacher_idx=t_idx, fused_topk_teacher_logp=t_logp,
-                fused_topk_cfg=(float(ntp_w), float(kd_w), float(temperature), int(chunk)))
+                fused_topk_cfg=cfg)
     return out.loss, out.ntp, out.kd, t_mass
 
 

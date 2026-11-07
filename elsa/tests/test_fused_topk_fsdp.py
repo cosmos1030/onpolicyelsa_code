@@ -84,6 +84,19 @@ with torch.amp.autocast('cuda', dtype=torch.bfloat16):
 L.backward()
 fsdp_grads = grads_of(fs)
 fs.zero_grad(set_to_none=True)
+# same fused loss with an FSDP-sharded teacher (--gmp_teacher_fsdp layout)
+import copy as _copy
+t_fs = FSDP(_copy.deepcopy(teacher), auto_wrap_policy=functools.partial(transformer_auto_wrap_policy, transformer_layer_cls={blk}),
+            mixed_precision=MixedPrecision(param_dtype=torch.bfloat16, reduce_dtype=torch.bfloat16, buffer_dtype=torch.bfloat16),
+            sharding_strategy=ShardingStrategy.FULL_SHARD, use_orig_params=True, device_id=dev)
+with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+    Lt, _, kdt, masst = _fused_topk_distill(fs, t_fs, ids, attn, labels, K, NTP_W, KD_W, TAU, 128)
+Lt.backward()
+fsdp_tgrads = grads_of(fs)
+fs.zero_grad(set_to_none=True)
+print(f'[rank{rank}] FSDP-teacher fused loss {Lt.item():.6f} kd {kdt:.5f} mass {masst:.4f} | '
+      + ' '.join(f"{n.split('.')[-2]}:rel={((fsdp_tgrads[n]-fsdp_grads[n]).norm()/fsdp_grads[n].norm()).item():.2e}" for n in names), flush=True)
+del t_fs
 Lp, _, _ = ref_loss(fs)
 Lp.backward()
 fsdp_plain_grads = grads_of(fs)
