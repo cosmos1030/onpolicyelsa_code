@@ -5998,6 +5998,15 @@ def globalprune_gmp(
         refit_calib_iter = _infinite(DataLoader(train_dataset, batch_size=1, shuffle=True, collate_fn=_collate_fn,
                                                 generator=torch.Generator().manual_seed(1234)))
 
+    # --gmp_pgd_screen_source=train: screening sequences from the training
+    # documents (OT3 question + teacher CoT), own shuffled pass so the training
+    # batch order is untouched; FineWeb rows (no chat template) are skipped.
+    screen_train_iter = None
+    if pgd_screen_source == 'train':
+        screen_train_iter = _infinite(DataLoader(train_dataset, batch_size=1, shuffle=True, collate_fn=_collate_fn,
+                                                 generator=torch.Generator().manual_seed(4321)))
+    _im_start_id = tokenizer.convert_tokens_to_ids('<|im_start|>')
+
     # Anchor KD: separate iterator over CoT dataset (batch_size=1)
     anchor_iter = None
     if use_anchor:
@@ -6698,7 +6707,23 @@ def globalprune_gmp(
             # measuring self-KL against a different data distribution than
             # the TR growth check it's meant to share a trust-region budget
             # with.
-            if is_main_process:
+            if is_main_process and pgd_screen_source == 'train':
+                _seqs, _skipped = [], 0
+                while len(_seqs) < pgd_kl_calib_size:
+                    _ids = next(screen_train_iter)['input_ids'][:, :pgd_kl_calib_seqlen]
+                    if (_ids == _im_start_id).any():
+                        _seqs.append(_ids)
+                    else:
+                        _skipped += 1
+                _ids = torch.cat([F.pad(x, (0, pgd_kl_calib_seqlen - x.shape[1])) for x in _seqs], 0)
+                _att = torch.cat([F.pad(torch.ones_like(x), (0, pgd_kl_calib_seqlen - x.shape[1])) for x in _seqs], 0)
+                # same trailing pad column as the rollout source: FA2 under train() misbehaves on
+                # a fully unpadded batch (every OT3 doc is >= 512 tokens)
+                _batch = {'input_ids': torch.cat([_ids, _ids.new_zeros(_ids.shape[0], 1)], 1).to(device),
+                          'attention_mask': torch.cat([_att, _att.new_zeros(_att.shape[0], 1)], 1).to(device)}
+                logging.info(f"  [pgd_screen] train docs (OT3 question + teacher CoT): {len(_seqs)} seqs x <= "
+                             f"{pgd_kl_calib_seqlen} tok, valid={int(_att.sum())}, skipped {_skipped} non-chat rows (step={step})")
+            elif is_main_process:
                 if (_opkd_refilled_pre_mask or pgd_screen_source == 'rollout') and _opkd_standalone_pool:
                     _n_cal = min(pgd_kl_calib_size, len(_opkd_standalone_pool))
                     if pgd_screen_source == 'rollout':
