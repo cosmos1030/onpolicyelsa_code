@@ -114,6 +114,20 @@ class VLLMServerAdapter:
 
     def sync_weights(self, state_dict):
         """Send CPU state_dict to the vLLM server and block until applied."""
+        import os as _os
+        if _os.environ.get('GMP_EMULATE_INPROC_SYNC_BUG') == '1':
+            # Reproduce the pre-2026-10-09 in-process sync bug (rebuttal
+            # control): the old name-matching copy never reached vLLM's fused
+            # qkv_proj / gate_up_proj, so q/k/v/gate/up stayed at their
+            # load-time values for the whole run while o_proj, down_proj,
+            # norms and embeddings tracked training. Dropping those five
+            # projections here leaves them untouched in the sidecar the same
+            # way (sleep level 1 keeps weights across sleep/wake).
+            _drop = ('.q_proj.', '.k_proj.', '.v_proj.', '.gate_proj.', '.up_proj.')
+            _n0 = len(state_dict)
+            state_dict = {k: v for k, v in state_dict.items() if not any(d in k for d in _drop)}
+            logging.info(f"[sync_bug_emulation] syncing {len(state_dict)}/{_n0} params "
+                         f"(q/k/v/gate/up left at load-time values)")
         self._conn.send(('sync_weights', state_dict))
         result = self._recv_with_alive_check()
         if result != 'synced':

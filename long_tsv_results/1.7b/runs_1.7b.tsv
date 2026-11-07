@@ -189,6 +189,7 @@ Qwen 3 1.7B s50 s3_1.7b_s50_scout_ntpslm0.6_seed0	rmlbypju	s3_1.7b_s50_scout_ntp
 Qwen 3 1.7B s50 s3_1.7b_s50_scout_ntpslm0.6_seed1	lv2xg6ws	s3_1.7b_s50_scout_ntpslm0.6_seed1	finished	42	/home1/doyoonkim/projects/elsa/models/gmp_1.7b_s50pct_lr5e-05_onpol_lmda0.33_20261025_010939_p4052007															
 Qwen 3 1.7B s50 s3_1.7b_s50_scout_opdaftertarget_seed0	ny4d3jcc	s3_1.7b_s50_scout_opdaftertarget_seed0	finished	42	/home1/doyoonkim/projects/elsa/models/gmp_1.7b_s50pct_lr5e-05_onpol_lmda0.33_20261022_142436_p3777707															
 Qwen 3 1.7B s50 s3_1.7b_s50_scout_opdaftertarget_seed1	nr1dxhqq	s3_1.7b_s50_scout_opdaftertarget_seed1	finished	42	/home1/doyoonkim/projects/elsa/models/gmp_1.7b_s50pct_lr5e-05_onpol_lmda0.33_20261022_142436_p3777707															
+Qwen 3 1.7B s50 s3_1.7b_sgpt_c4_s50	dvy2geil	s3_1.7b_sgpt_c4_s50	finished	42	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_sgpt_s50pct_n128_c4															
 Qwen 3 1.7B s60 SparseGPT	ovo16qrk	s3_1.7b_s60_sparsegpt	finished	0,1,42	cosmos1030/sparsegpt-qwen3-1.7b-s60pct															
 Qwen 3 1.7B s60 SparseGPT selfgen	0gjczpqk	s3_1.7b_s60_sgpt_selfgen	crashed	0,1,42	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_sgpt_s60pct_n128_selfgenv3															
 Qwen 3 1.7B s60 SparseGPT selfgen	nwqk6e7z	s3_1.7b_s60_sgpt_selfgen_seed42	finished	0,1,42	/home1/doyoonkim/projects/elsa/models/qwen3_1.7b_sgpt_s60pct_n128_selfgenv3															

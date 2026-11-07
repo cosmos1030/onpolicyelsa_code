@@ -29,6 +29,10 @@ if [ "$CALIB" = "selfgen" ]; then
     fi
     CALIB_ARG="--calib_data_path $SELFGEN_DATA"
     CALIB_TAG="_selfgenv3"
+elif [ "$CALIB" = "c4" ]; then
+    # rebuttal S3: standard C4 calibration (SparseGPT get_c4 protocol, seed0, 2048-token windows); prune + PPL only, lighteval runs separately via slurm_eval_full.sh (long)
+    CALIB_ARG="--calib_data_path /home1/doyoonkim/projects/elsa/data/c4_calib_qwen3_2048_n256_seed0.jsonl --prune_only"
+    CALIB_TAG="_c4"
 else
     CALIB_ARG=""
     CALIB_TAG=""

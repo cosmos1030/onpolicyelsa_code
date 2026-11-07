@@ -19,6 +19,7 @@ import types
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import os as _os_kldbg
 import torch.utils.checkpoint
 import wandb
 from absl import logging
@@ -1741,6 +1742,14 @@ class FisherAccumulator:
 
         Returns None before the first optimizer step (no state yet).
         """
+        _vp = getattr(self, '_vprime', None)
+        if _vp is not None:
+            # --gmp_saliency_exclude_opd: OPD-free second moment, same beta2 / bias correction as Adam's
+            v = _vp.get(id(param))
+            if v is None or self._vprime_step == 0:
+                return None
+            beta2 = self.optimizer.param_groups[0].get('betas', (0.9, 0.999))[1]
+            return v.float() / (1.0 - beta2 ** self._vprime_step)
         st = self.optimizer.state.get(param, {})
         v = st.get('exp_avg_sq', None)
         if v is None:
@@ -2691,6 +2700,116 @@ def _dynkl_topk_loss(s_logits, t_logits, labels, k=20, temperature=1.0, chunk_si
     return loss, {'dynkl/per_token': float(loss.detach().item())}
 
 
+class _FusedLMHeadTopKKL(torch.autograd.Function):
+    """lm_head + (NTP CE, teacher-top-K forward KL) without materializing the
+    (T, V) student logits -- the pattern of verl's forward_kl_topk loss
+    (verl/trainer/distillation/fsdp/losses.py) fused with the lm_head the way
+    VeOmni's chunk_topk_distill / Liger's fused-linear losses do it.
+
+    Loss per valid position (labels != -100, already shifted), averaged over N:
+      ntp_w * CE(z, y)  +  kd_w * sum_{v in TopK_T} p_v (log p_v - log q_v)
+    with z = h W^T, q = softmax(z / tau) over the FULL vocab (not renormalized),
+    p = teacher softmax(z_t / tau) over the full vocab gathered at its own
+    top-K (not renormalized, no tail term) -- exactly verl's forward_kl_topk.
+    Gradients are formed chunk by chunk in the forward (Liger-style), so the
+    backward is two scaled copies:
+      dCE/dz  = softmax(z) - onehot(y)
+      dKL/dz  = (P * q - scatter(p)) / tau,  P = sum_{v in TopK} p_v
+    """
+
+    @staticmethod
+    def forward(ctx, hidden, weight, labels, t_idx, t_logp, ntp_w, kd_w, temperature, chunk, parts):
+        N = hidden.shape[0]
+        grad_h = torch.empty_like(hidden)
+        grad_w = torch.zeros(weight.shape, dtype=torch.float32, device=weight.device)
+        ntp_sum = hidden.new_zeros((), dtype=torch.float32)
+        kd_sum = hidden.new_zeros((), dtype=torch.float32)
+        for s0 in range(0, N, chunk):
+            s1 = min(s0 + chunk, N)
+            h = hidden[s0:s1]
+            z = (h @ weight.t()).float()                                   # (c, V)
+            g = torch.zeros_like(z)
+            if ntp_w != 0.0:
+                y = labels[s0:s1]
+                lse = torch.logsumexp(z, dim=-1)
+                ntp_sum = ntp_sum + (lse - z.gather(-1, y.unsqueeze(-1)).squeeze(-1)).sum()
+                q1 = torch.softmax(z, dim=-1)
+                q1.scatter_add_(-1, y.unsqueeze(-1), -torch.ones_like(y, dtype=q1.dtype).unsqueeze(-1))
+                g.add_(q1, alpha=ntp_w / N)
+                del q1
+            if kd_w != 0.0:
+                zt = z / temperature
+                lse_t = torch.logsumexp(zt, dim=-1, keepdim=True)
+                idx = t_idx[s0:s1]
+                tlp = t_logp[s0:s1]
+                p = tlp.exp()
+                s_lp_k = zt.gather(-1, idx) - lse_t
+                kd_sum = kd_sum + (p * (tlp - s_lp_k)).sum()
+                q = (zt - lse_t).exp_()
+                q.mul_(p.sum(-1, keepdim=True))
+                q.scatter_add_(-1, idx, -p)
+                g.add_(q, alpha=kd_w / (N * temperature))
+                del zt, q
+            g16 = g.to(weight.dtype)
+            del g, z
+            grad_h[s0:s1] = g16 @ weight
+            grad_w += (g16.t() @ h).float()
+            del g16
+        ctx.save_for_backward(grad_h, grad_w)
+        ctx.w_dtype = weight.dtype
+        total = (ntp_w * ntp_sum + kd_w * kd_sum) / max(N, 1)
+        parts['ntp'] = (ntp_sum / max(N, 1)).item()
+        parts['kd'] = (kd_sum / max(N, 1)).item()
+        return total
+
+    @staticmethod
+    def backward(ctx, grad_out):
+        grad_h, grad_w = ctx.saved_tensors
+        return (grad_h * grad_out.to(grad_h.dtype), (grad_w * grad_out).to(ctx.w_dtype),
+                None, None, None, None, None, None, None, None)
+
+
+def _teacher_topk_logp(t_hidden, t_weight, k, temperature, chunk):
+    """Teacher log-probs at temperature tau, normalized over the full vocab,
+    restricted to its own top-k -- computed chunk by chunk from the final
+    hidden states so the (T, V) teacher logits never exist either."""
+    vals, idxs = [], []
+    with torch.no_grad():
+        for s0 in range(0, t_hidden.shape[0], chunk):
+            zt = (t_hidden[s0:s0 + chunk] @ t_weight.t()).float() / temperature
+            lp = zt - torch.logsumexp(zt, dim=-1, keepdim=True)
+            v, i = lp.topk(k, dim=-1)
+            vals.append(v); idxs.append(i)
+            del zt, lp
+    return torch.cat(idxs, 0), torch.cat(vals, 0)
+
+
+def _fused_topk_distill(model, teacher_model, input_ids, attention_mask, labels, k,
+                        ntp_w, kd_w, temperature, chunk=1024):
+    """Student/teacher body forwards + fused lm_head losses on the shifted
+    valid positions. Returns (weighted_loss_tensor, ntp_mean, kd_mean,
+    teacher_topk_mass_mean). Single-GPU (non-FSDP) HF CausalLM only."""
+    kw = {} if attention_mask is None else {'attention_mask': attention_mask}
+    h = model.model(input_ids=input_ids, **kw).last_hidden_state            # (B, T, D)
+    sel = labels[:, 1:] != -100
+    hs = h[:, :-1][sel]
+    ys = labels[:, 1:][sel]
+    with torch.no_grad():
+        th = teacher_model.model(input_ids=input_ids, **kw).last_hidden_state
+        ths = th[:, :-1][sel]
+        del th
+        t_idx, t_logp = _teacher_topk_logp(ths, teacher_model.lm_head.weight, k, temperature, chunk)
+        del ths
+        t_mass = t_logp.exp().sum(-1).mean().item() if t_logp.numel() else 0.0
+    if hs.shape[0] == 0:
+        z = h.sum() * 0.0
+        return z, 0.0, 0.0, t_mass
+    parts = {}
+    total = _FusedLMHeadTopKKL.apply(hs, model.lm_head.weight, ys, t_idx, t_logp,
+                                     float(ntp_w), float(kd_w), float(temperature), int(chunk), parts)
+    return total, parts['ntp'], parts['kd'], t_mass
+
+
 def _kl_loss(s_logits, t_logits, labels, temperature, topk, reverse=False, chunk_size=0,
              prune_opd=False, prune_opd_drop=0.01, prune_opd_wbase=0.5,
              prune_opd_topk=256, prune_opd_threshold=0.7):
@@ -3446,7 +3565,11 @@ class _MaskedFwd:
         return False
 
 
-def _compute_tr_kl(model: nn.Module, cal_batch: dict, cand_masks: dict,
+def _compute_tr_kl(model, *args, **kwargs):
+    return _compute_tr_kl_impl(model, *args, **kwargs)
+
+
+def _compute_tr_kl_impl(model: nn.Module, cal_batch: dict, cand_masks: dict,
                    maskmgr: 'GradualMaskManager', device: str,
                    kl_reduce: str = 'mean', kl_quantile: float = 0.95,
                    ref_cache: dict = None) -> float:
@@ -3506,6 +3629,18 @@ def _compute_tr_kl(model: nn.Module, cal_batch: dict, cand_masks: dict,
         if ref_cache is not None:
             ref_cache['old_lp'] = old_lp
             ref_cache['valid']  = valid
+        if _os_kldbg.environ.get('GMP_PGD_KL_DEBUG'):
+            # same model, same batch, nothing changed: must give KL 0
+            with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+                _l2 = model(input_ids=input_ids, attention_mask=attn_mask).logits.detach()
+            _lp2 = F.log_softmax(_l2[:, :-1, :].float(), dim=-1)
+            _o = old_lp.float()
+            _kl_self = ((_o.exp() * (_o - _lp2)).sum(-1)[valid]).mean().item()
+            logging.info(f"  [pgd_kl_dbg] self-check KL(old||same-model-again)={_kl_self:.6g} "
+                         f"ids_sum={int(input_ids.sum())} attn_sum={int(attn_mask.sum())} shape={tuple(input_ids.shape)} "
+                         f"train={model.training} gc={getattr(model, 'is_gradient_checkpointing', None)} "
+                         f"attn_impl={getattr(getattr(model, 'config', None), '_attn_implementation', None)}")
+            del _l2, _lp2, _o
 
     # Temporarily zero newly-pruned weights (old_mask=True & cand_mask=False).
     # No `.any()` skip-if-empty check here on purpose: boolean-mask indexing
@@ -4735,6 +4870,8 @@ def globalprune_gmp(
     ntp_lambda     = getattr(FLAGS, 'gmp_ntp_lambda', 1.0)
     kd_lambda      = getattr(FLAGS, 'gmp_kd_lambda', 0.0)
     kd_temperature = getattr(FLAGS, 'gmp_kd_temperature', 2.0)
+    fused_topk_k     = int(getattr(FLAGS, 'gmp_fused_topk_k', 0) or 0)  # >0: NTP+KD and OPD via fused lm_head + teacher-top-K forward KL
+    fused_topk_chunk = int(getattr(FLAGS, 'gmp_fused_topk_chunk', 1024) or 1024)
     kd_topk        = getattr(FLAGS, 'gmp_kd_topk', 0)
     kl_chunk_size  = getattr(FLAGS, 'gmp_kl_chunk_size', 0)  # 0=disabled, see _kl_loss
     kd_only        = getattr(FLAGS, 'gmp_kd_only', False)
@@ -4800,9 +4937,12 @@ def globalprune_gmp(
     _pgd_dynamic_swap_frac = 0.0  # set at each mask_interval boundary when pgd_kl_share=true (see near _tr_mask_update call)
     pgd_kl_calib_size = max(1, getattr(FLAGS, 'gmp_pgd_kl_calib_size', 4))
     pgd_kl_calib_seqlen = max(1, getattr(FLAGS, 'gmp_pgd_kl_calib_seqlen', 512))
+    pgd_screen_source   = getattr(FLAGS, 'gmp_pgd_screen_source', 'prompt')
     pgd_kl_bisect_iters = max(1, getattr(FLAGS, 'gmp_pgd_kl_bisect_iters', 6))
     pgd_skip_growth_step = getattr(FLAGS, 'gmp_pgd_skip_growth_step', False)  # skip PGD on the exact step growth just fired, so the model trains at least one step under the mask growth decided before PGD can touch it again
     pgd_post_target_only = getattr(FLAGS, 'gmp_pgd_post_target_only', False)  # isolate PGD's post-target-maintenance role from its during-growth-ramp role -- see gate check at the main PGD condition below
+    pgd_freeze_after_target = getattr(FLAGS, 'gmp_pgd_freeze_after_target', False)
+    _pgd_frozen = [False]
     pgd_interval = max(1, getattr(FLAGS, 'gmp_pgd_interval', 1))  # only run PGD's reprojection every Nth step (default 1 = every step, prior behavior) -- decouples PGD's own cadence from mask_interval's growth cadence
     pgd_topk_impl = getattr(FLAGS, 'gmp_pgd_topk_impl', 'bisect')  # DIAGNOSTIC/A-B only (analysis phase, not a default): 'bisect' (default, unchanged 64-iter value-threshold search) or 'kthvalue' (torch.kthvalue on a one-time concat of the candidate pool instead) -- only wired into the unstructured gmp_pgd_kl_budget branch (where gmp_pgd_grow_to_target lives), non-FSDP only.
     pgd_grow_to_target = getattr(FLAGS, 'gmp_pgd_grow_to_target', False)  # PGD-driven growth (no separate TR-GMP growth): _pgd_desired targets final_sparsity directly (instead of matching current keep-count), and revive is no longer forced equal to prune -- revive saturates at min(k, revive_cand) while prune keeps going up to k, so whenever prune_cand > revive_cand (current sparsity < target) the self-KL-gated bisection alone drives net sparsity growth, at whatever pace the budget allows. Once current sparsity reaches target, prune_cand/revive_cand naturally converge and it degrades to pure polish/maintenance -- no separate at-target branch needed (unlike the old N:M pre/post-target split). Intended for --gmp_tr_enabled=false. Also supports sparsity_type=N:M now: _pgd_desired is replaced with a per-group top-prune_n projection of current importance (_pgd_nm_post_target) instead of a global threshold, and N:M bypasses the old pre/post-target split entirely, falling through to this same unstructured-shaped bisection -- intermediate masks are free to violate the N:M pattern group-by-group (a group's dead-count can sit anywhere from 0 to prune_m-prune_n mid-training, not just 0-or-exactly-N), converging to exactly N:M only once _pgd_desired is fully matched. Only affects the gmp_pgd_kl_budget branch below.
@@ -4946,6 +5086,10 @@ def globalprune_gmp(
     # cadence, so L_pre/L_post/L_next_pre for a given window are guaranteed to
     # share the exact same batch regardless of what mask_interval does in between.
     pgd_recovery_diag = getattr(FLAGS, 'gmp_pgd_recovery_diag', False)
+    pgd_log_drift = getattr(FLAGS, 'gmp_pgd_log_weight_drift', False)
+    _drift_state = {'lp': None, 'valid': None, 'batch': None, 'step': None}
+    step_drift_log = getattr(FLAGS, 'gmp_log_step_drift', False)
+    _step_drift = {'lp': None, 'batch': None, 'step': None}
     _pgd_recdiag_batch = None       # this window's fixed cache batch (resampled once per window)
     _pgd_recdiag_L_pre = None       # L(Q_t^-) measured at this window's open
     _pgd_recdiag_S = None           # L_post - L_pre for the currently-open window
@@ -5005,6 +5149,16 @@ def globalprune_gmp(
         logging.info("  [blockwise] gmp_blockwise_delay_global_signal=true: NTP/KD/OPKD held at 0 "
                      "until block_size reaches its max (SquareHead-only training + Fisher importance until then)")
     use_teacher_gen_kd_flag = getattr(FLAGS, 'gmp_teacher_gen_kd', False)
+    if fused_topk_k > 0:
+        _bad = {'fsdp': is_fsdp, 'hidden loss': use_hidden, 'blockwise': blockwise_enabled,
+                'ntp_slm': ntp_slm_ratio > 0, 'teacher_gen_kd': use_teacher_gen_kd,
+                'onpolicy_reverse_kl': onpolicy_reverse_kl, 'onpolicy_dynkl_topk': onpolicy_dynkl_topk > 0,
+                'prevmask_opkd': prevmask_opkd_lambda > 0, 'prune_opd': opkd_prune_opd,
+                'opd_token_select': opd_tok_select != 'none', 'onpolicy_pg': onpolicy_pg}
+        _bad = [k for k, v in _bad.items() if v]
+        if _bad:
+            raise ValueError(f'--gmp_fused_topk_k is not implemented together with: {_bad}')
+        logging.info(f'[fused_topk] NTP+KD and OPD via fused lm_head, teacher top-{fused_topk_k} forward KL (verl forward_kl_topk), chunk={fused_topk_chunk}')
     # Teacher-gen KD (forward KL, prompts pre-generated once from data_path)
     # and on-policy/OPD (reverse KL, live student rollouts from gmp_prompt_path)
     # draw from independently-configurable prompt sources and don't share any
@@ -5355,6 +5509,9 @@ def globalprune_gmp(
         logging.info("Fisher source: opd_empirical (grad^2 on OPD cal_batch)")
     else:
         fisher = FisherAccumulator(named_params, optimizer, saliency=FLAGS.gmp_saliency)
+        if getattr(FLAGS, 'gmp_saliency_exclude_opd', False):
+            fisher._vprime, fisher._vprime_step = {}, 0
+            logging.info("  [vprime] --gmp_saliency_exclude_opd: saliency uses an OPD-free second moment v'")
         if base_optimizer == 'activation_metric_pgd':
             logging.info("Fisher source: adam (exp_avg_sq) -- no-op with activation_metric_pgd "
                          "(no such state), fine for gmp_fixed_mask=true where it's never consulted")
@@ -6044,7 +6201,18 @@ def globalprune_gmp(
     if _resume_from:
         step = _load_train_ckpt(_resume_from)
 
+    _PH_ON = bool(_os_kldbg.environ.get('GMP_PHASE_TIMING'))
+    _ph = {'t': None, 'acc': {}, 'n': 0}
+    def _phase(name):
+        if not _PH_ON:
+            return
+        torch.cuda.synchronize()
+        _now = time.time()
+        if _ph['t'] is not None:
+            _ph['acc'][name] = _ph['acc'].get(name, 0.0) + _now - _ph['t']
+        _ph['t'] = _now
     while step < total_steps:
+        _phase('between_steps')
         # periodic checkpoint: taken at the TOP of the body so the previous step's
         # mask update / PGD projection is already complete, and every rank reaches it
         # (the FSDP state-dict gather is collective).
@@ -6128,68 +6296,85 @@ def globalprune_gmp(
                 _slm_on = ntp_slm_ratio > 0 and use_kd and not (hidden_only or kd_only)
                 if _slm_on:
                     fwd_inputs.pop('labels', None)
-                out = model(**fwd_inputs, output_hidden_states=(use_hidden or blockwise_enabled))
-                for _h in _l1_fsdp_hooks:
-                    _h.remove()
-                ntp_loss = out.loss
-
-                if use_kd or use_hidden or blockwise_enabled:
-                    t_inputs = {k: v for k, v in batch.items() if k != 'labels'}
-                    with torch.no_grad():
-                        t_out = teacher_model(
-                            **t_inputs,
-                            output_hidden_states=(use_hidden or blockwise_enabled),
-                        )
-
-                    if use_hidden:
-                        if hidden_layers == "anneal_all_to_final":
-                            h_loss = _hidden_loss_layerwise(
-                                out.hidden_states[1:], t_out.hidden_states[1:],
-                                batch['labels'], batch['attention_mask'],
-                                mode=hidden_mode, mask_mode=hidden_mask,
-                                step=step, total_steps=total_steps,
-                            )
-                        else:
-                            h_loss = _hidden_loss(
-                                out.hidden_states[-1], t_out.hidden_states[-1],
-                                batch['labels'], batch['attention_mask'],
-                                mode=hidden_mode, mask_mode=hidden_mask,
-                            )
-                        accum_kd += h_loss.item() / grad_accum
-                    if use_kd:
-                        kl, kd_diag = _kl_loss(out.logits, t_out.logits, batch['labels'],
-                                               kd_temperature, kd_topk, chunk_size=kl_chunk_size)
-                        accum_kd += kl.item() / grad_accum
-                        for k, v in kd_diag.items():
-                            accum_diag[k] = accum_diag.get(k, 0.0) + v
-                        accum_diag_n += 1
-
-                    if _slm_on:
-                        ntp_loss, slm_diag = _slm_ntp_loss(out.logits, t_out.logits, batch['labels'],
-                                                           ntp_slm_ratio, chunk_size=kl_chunk_size or 1024)
-                        for k, v in slm_diag.items():
-                            accum_diag[k] = accum_diag.get(k, 0.0) + v
-
-                    # build total loss
-                    aux = (hidden_lambda * h_loss if use_hidden else ntp_loss.new_tensor(0.0)) + \
-                          (kd_lambda * kl if use_kd else ntp_loss.new_tensor(0.0))
-                    skip_ntp = (hidden_only or kd_only)
-                    if skip_ntp:
-                        loss = aux / grad_accum
-                    else:
-                        loss = (ntp_lambda * ntp_loss + aux) / grad_accum
-                    if not skip_ntp:
-                        accum_ntp += ntp_loss.item() / grad_accum
-
-                    if blockwise_enabled:
-                        _sq_anchors = _squarehead_anchor_layers(len(out.hidden_states), _block_size)
-                        _sq_loss = _squarehead_loss(out.hidden_states, t_out.hidden_states,
-                                                     _sq_anchors, batch['attention_mask'])
-                        loss = loss + blockwise_hardness * _sq_loss / grad_accum
-                        accum_blockwise += _sq_loss.item() / grad_accum
+                _phase('ntpkd_data_prep')
+                if fused_topk_k > 0:
+                    # verl forward_kl_topk + fused lm_head (see _FusedLMHeadTopKKL): no (T,V) logits
+                    loss, _f_ntp, _f_kd, _f_tmass = _fused_topk_distill(
+                        model, teacher_model, batch['input_ids'], batch.get('attention_mask'), batch['labels'],
+                        fused_topk_k, 0.0 if (hidden_only or kd_only) else ntp_lambda,
+                        kd_lambda if use_kd else 0.0, kd_temperature, fused_topk_chunk)
+                    loss = loss / grad_accum
+                    _phase('ntpkd_fused_fwd_loss')
+                    if not (hidden_only or kd_only):
+                        accum_ntp += _f_ntp / grad_accum
+                    accum_kd += _f_kd / grad_accum
+                    accum_diag['kd/topk_teacher_mass'] = accum_diag.get('kd/topk_teacher_mass', 0.0) + _f_tmass
+                    accum_diag_n += 1
                 else:
-                    loss = ntp_lambda * ntp_loss / grad_accum
-                    accum_ntp += ntp_loss.item() / grad_accum
+                    out = model(**fwd_inputs, output_hidden_states=(use_hidden or blockwise_enabled))
+                    _phase('ntpkd_student_fwd')
+                    for _h in _l1_fsdp_hooks:
+                        _h.remove()
+                    ntp_loss = out.loss
+
+                    if use_kd or use_hidden or blockwise_enabled:
+                        t_inputs = {k: v for k, v in batch.items() if k != 'labels'}
+                        with torch.no_grad():
+                            t_out = teacher_model(
+                                **t_inputs,
+                                output_hidden_states=(use_hidden or blockwise_enabled),
+                            )
+                        _phase('ntpkd_teacher_fwd')
+
+                        if use_hidden:
+                            if hidden_layers == "anneal_all_to_final":
+                                h_loss = _hidden_loss_layerwise(
+                                    out.hidden_states[1:], t_out.hidden_states[1:],
+                                    batch['labels'], batch['attention_mask'],
+                                    mode=hidden_mode, mask_mode=hidden_mask,
+                                    step=step, total_steps=total_steps,
+                                )
+                            else:
+                                h_loss = _hidden_loss(
+                                    out.hidden_states[-1], t_out.hidden_states[-1],
+                                    batch['labels'], batch['attention_mask'],
+                                    mode=hidden_mode, mask_mode=hidden_mask,
+                                )
+                            accum_kd += h_loss.item() / grad_accum
+                        if use_kd:
+                            kl, kd_diag = _kl_loss(out.logits, t_out.logits, batch['labels'],
+                                                   kd_temperature, kd_topk, chunk_size=kl_chunk_size)
+                            accum_kd += kl.item() / grad_accum
+                            for k, v in kd_diag.items():
+                                accum_diag[k] = accum_diag.get(k, 0.0) + v
+                            accum_diag_n += 1
+
+                        if _slm_on:
+                            ntp_loss, slm_diag = _slm_ntp_loss(out.logits, t_out.logits, batch['labels'],
+                                                               ntp_slm_ratio, chunk_size=kl_chunk_size or 1024)
+                            for k, v in slm_diag.items():
+                                accum_diag[k] = accum_diag.get(k, 0.0) + v
+
+                        # build total loss
+                        aux = (hidden_lambda * h_loss if use_hidden else ntp_loss.new_tensor(0.0)) + \
+                              (kd_lambda * kl if use_kd else ntp_loss.new_tensor(0.0))
+                        skip_ntp = (hidden_only or kd_only)
+                        if skip_ntp:
+                            loss = aux / grad_accum
+                        else:
+                            loss = (ntp_lambda * ntp_loss + aux) / grad_accum
+                        if not skip_ntp:
+                            accum_ntp += ntp_loss.item() / grad_accum
+
+                        if blockwise_enabled:
+                            _sq_anchors = _squarehead_anchor_layers(len(out.hidden_states), _block_size)
+                            _sq_loss = _squarehead_loss(out.hidden_states, t_out.hidden_states,
+                                                         _sq_anchors, batch['attention_mask'])
+                            loss = loss + blockwise_hardness * _sq_loss / grad_accum
+                            accum_blockwise += _sq_loss.item() / grad_accum
+                    else:
+                        loss = ntp_lambda * ntp_loss / grad_accum
+                        accum_ntp += ntp_loss.item() / grad_accum
 
                 # ── Teacher-gen KD: forward KL on teacher rollouts using pre-stored top-K logits ──
                 if use_teacher_gen_kd and tgkd_cache:
@@ -6264,6 +6449,7 @@ def globalprune_gmp(
             _bwd_ctx = (model.no_sync()
                         if is_fsdp and micro_step < grad_accum - 1
                         else nullcontext())
+            _phase('ntpkd_loss_compute')
             import os as _os_dbg
             if _os_dbg.environ.get('GMP_ANOMALY_DEBUG'):
                 with _bwd_ctx, torch.autograd.detect_anomaly():
@@ -6271,6 +6457,7 @@ def globalprune_gmp(
             else:
                 with _bwd_ctx:
                     loss.backward()
+            _phase('ntpkd_student_bwd')
             accum_loss += loss.item()
 
         # anchored KD contributes to the NTP optimizer step
@@ -6330,14 +6517,31 @@ def globalprune_gmp(
             # the TR growth check it's meant to share a trust-region budget
             # with.
             if is_main_process:
-                if _opkd_refilled_pre_mask and _opkd_standalone_pool:
+                if (_opkd_refilled_pre_mask or pgd_screen_source == 'rollout') and _opkd_standalone_pool:
                     _n_cal = min(pgd_kl_calib_size, len(_opkd_standalone_pool))
-                    _pool_items = [
-                        {'full_seq': item['full_seq'][:, :pgd_kl_calib_seqlen], 'prompt_len': item['prompt_len']}
-                        for item in _opkd_standalone_pool[:_n_cal]
-                    ]
+                    if pgd_screen_source == 'rollout':
+                        logging.info(f"  [pgd_screen] rollout pool: {_n_cal} seqs x <= {pgd_kl_calib_seqlen} tok (pool size {len(_opkd_standalone_pool)}, step={step})")
+                    if pgd_screen_source == 'rollout':
+                        _pool_items = [
+                            {'full_seq': item['full_seq'][:, :pgd_kl_calib_seqlen], 'prompt_len': item['prompt_len']}
+                            for item in _opkd_standalone_pool[:_n_cal]
+                        ]
+                    else:
+                        _pool_items = [
+                            {'full_seq': item['full_seq'][:, :pgd_kl_calib_seqlen], 'prompt_len': item['prompt_len']}
+                            for item in _opkd_standalone_pool[:_n_cal]
+                        ]
                     _batch = _opkd_pool_to_batch(_pool_items, str(device))
+                    if pgd_screen_source == 'rollout':
+                        # 4 x 512 after truncation is fully unpadded, and FA2 under train() returns garbage on
+                        # fully unpadded batches; one trailing pad column (attention 0, excluded from the KL)
+                        # keeps the batch padded like every screen that has worked here
+                        _b, _t = _batch['input_ids'].shape
+                        _batch = {'input_ids': torch.cat([_batch['input_ids'], _batch['input_ids'].new_zeros(_b, 1)], 1),
+                                  'attention_mask': torch.cat([_batch['attention_mask'], _batch['attention_mask'].new_zeros(_b, 1)], 1)}
                 else:
+                    if pgd_screen_source == 'rollout':
+                        logging.warning(f"  [pgd_screen] rollout requested but pool empty -- prompt fallback (step={step})")
                     _batch = _pgd_kl_calib_batch(
                         prompt_iter, pgd_kl_calib_size, pgd_kl_calib_seqlen, str(device))
             else:
@@ -6480,6 +6684,7 @@ def globalprune_gmp(
             _opkd_standalone_pool_ptr = local_rank
             torch.cuda.empty_cache()
 
+        _phase('ntpkd_rest')
         # periodic mask update (freeze mask after pruning_end_steps)
         if step % mask_interval == 0:
             # NOTE: _refresh_pgd_kl_cal_batch() used to be called right here,
@@ -6889,6 +7094,7 @@ def globalprune_gmp(
             # mitigation, no effect on the mask-search/KL logic or its outputs.
             torch.cuda.empty_cache()
 
+        _phase('mask_block')
         # pgd2growth OPKD pool refill (tr_enabled=false): decoupled from
         # mask_interval entirely, gated on its own step % onpolicy_interval
         # cadence. Mirrors the "AFTER mask update" refill above but as an
@@ -6916,10 +7122,13 @@ def globalprune_gmp(
                 if is_main_process and _opkd_vllm_engine is not None:
                     if fsdp_model is None:
                         _offload_optimizer_state(optimizer)
+                    _phase('refill_offload_optimizer')
                     _opkd_vllm_wake(_opkd_vllm_engine)
+                    _phase('refill_vllm_wake')
                     if hasattr(_opkd_vllm_engine, 'sync_weights'):
                         _sd = {n: p.data.cpu() for n, p in model.named_parameters()}
                         _opkd_vllm_engine.sync_weights(_sd)
+                        _phase('refill_weight_sync')
                         del _sd
                     elif not _in_fsdp_refill3:
                         _sync_opkd_weights_to_vllm(model, _opkd_vllm_engine)
@@ -6927,8 +7136,11 @@ def globalprune_gmp(
                 _n_pool = onpolicy_interval * grad_accum * world_size
                 _pool_batches = [next(prompt_iter) for _ in range(_n_pool)]
                 _vllm_inputs, _flat_meta = _opkd_flatten_pool_batches(_pool_batches)
+                _phase('refill_prep')
                 _vllm_outs = _opkd_vllm_engine.generate(_vllm_inputs, _opkd_vllm_params)
+                _phase('refill_generate')
                 _opkd_vllm_sleep(_opkd_vllm_engine)
+                _phase('refill_vllm_sleep')
                 if fsdp_model is None:
                     _reload_optimizer_state(optimizer, device)
                 _opkd_standalone_pool = _opkd_build_pool_from_outputs(_pool_batches, _flat_meta, _vllm_outs)
@@ -6955,6 +7167,12 @@ def globalprune_gmp(
             # zero_grad so OPKD backward gives pure g_OPKD
             optimizer.zero_grad()
 
+        _vprime_snap = None
+        if getattr(fisher, '_vprime', None) is not None:
+            # g_ntpkd: everything accumulated so far this step, before any OPD backward
+            _vprime_snap = {id(p): p.grad.detach().to(torch.bfloat16).clone()
+                            for p in named_params.values() if p.grad is not None}
+        _phase('rollout_refill')
         # ── On-policy: rollout collection + RL grad accumulation (combined step fires below) ──
         # When opkd_use_vllm is active and pool has data, fire every step (pool makes it cheap).
         # Gated on the LIVE onpolicy_lambda (not use_onpolicy, which stays true from
@@ -6962,6 +7180,8 @@ def globalprune_gmp(
         # has zeroed it) -- otherwise gmp_blockwise_delay_global_signal's delay phase
         # still burns real vLLM rollout compute for a loss term that gets multiplied
         # by 0 anyway.
+        if getattr(FLAGS, 'gmp_opd_loss_off', False):
+            onpolicy_lambda = 0.0  # --gmp_opd_loss_off: rollouts still refill the pool (screening), no OPD loss
         _opkd_fires = use_onpolicy and onpolicy_lambda > 0.0 and (
             step % onpolicy_interval == 0
             or bool(_opkd_standalone_pool)
@@ -7142,120 +7362,137 @@ def globalprune_gmp(
                     gen_labels[:, :prompt_len] = -100
                     gen_labels[generated == _pad_id] = -100
 
-                    with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-                        s_out = model(input_ids=generated)
+                    _phase('opd_data_prep')
+                    if fused_topk_k > 0:
+                        # OPD = forward KL on teacher top-K over the rollout, fused lm_head (no (T,V) logits)
+                        with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+                            op_kl, _, _f_op_kd, _f_op_tmass = _fused_topk_distill(
+                                model, teacher_model, generated, None, gen_labels, fused_topk_k,
+                                0.0, 1.0, kd_temperature, fused_topk_chunk)
+                        _phase('opd_fused_fwd_loss')
+                        op_kl_prev = None
+                        op_diag = {'topk_teacher_mass': _f_op_tmass}
+                        _s_ent_mean = _t_ent_mean = _overlap_mean = op_kl.new_zeros(())
+                        op_loss = onpolicy_lambda * op_kl / (batch_size * grad_accum * onpolicy_grad_accum)
+                    else:
+                        with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+                            s_out = model(input_ids=generated)
+                            _phase('opd_student_fwd')
 
-                        # Dense teacher forward (primary OPKD teacher, always used)
-                        with torch.no_grad():
-                            t_out = teacher_model(input_ids=generated)
-
-                        # Prev-mask teacher: dual mode (both losses combined)
-                        t_prev_out = None
-                        if prevmask_opkd_lambda > 0 and _opkd_prev_delta:
-                            for _pn, (_pos, _vals) in _opkd_prev_delta.items():
-                                maskmgr.named_params[_pn].data[_pos] = _vals
+                            # Dense teacher forward (primary OPKD teacher, always used)
                             with torch.no_grad():
-                                t_prev_out = model(input_ids=generated)
-                            for _pn, (_pos, _) in _opkd_prev_delta.items():
-                                maskmgr.named_params[_pn].data[_pos] = 0.0
-                        elif opkd_prev_mask_teacher and _opkd_prev_delta:
-                            # Legacy: replace dense teacher entirely with prev-mask teacher
-                            for _pn, (_pos, _vals) in _opkd_prev_delta.items():
-                                maskmgr.named_params[_pn].data[_pos] = _vals
+                                t_out = teacher_model(input_ids=generated)
+                            _phase('opd_teacher_fwd')
+
+                            # Prev-mask teacher: dual mode (both losses combined)
+                            t_prev_out = None
+                            if prevmask_opkd_lambda > 0 and _opkd_prev_delta:
+                                for _pn, (_pos, _vals) in _opkd_prev_delta.items():
+                                    maskmgr.named_params[_pn].data[_pos] = _vals
+                                with torch.no_grad():
+                                    t_prev_out = model(input_ids=generated)
+                                for _pn, (_pos, _) in _opkd_prev_delta.items():
+                                    maskmgr.named_params[_pn].data[_pos] = 0.0
+                            elif opkd_prev_mask_teacher and _opkd_prev_delta:
+                                # Legacy: replace dense teacher entirely with prev-mask teacher
+                                for _pn, (_pos, _vals) in _opkd_prev_delta.items():
+                                    maskmgr.named_params[_pn].data[_pos] = _vals
+                                with torch.no_grad():
+                                    t_out = model(input_ids=generated)
+                                for _pn, (_pos, _) in _opkd_prev_delta.items():
+                                    maskmgr.named_params[_pn].data[_pos] = 0.0
+
+                            if opd_tok_select != 'none':
+                                gen_labels, _sel_diag = _opd_select_tokens(
+                                    s_out.logits.detach(), t_out.logits, gen_labels, opd_tok_select, opd_tok_ratio,
+                                    temperature=kd_temperature, reverse=onpolicy_reverse_kl,
+                                    chunk_size=kl_chunk_size or 1024)
+                                if use_wandb and is_main_process and _op_i == 0:
+                                    wandb.log(_sel_diag, step=step)
+                            if onpolicy_dynkl_topk > 0:
+                                op_kl, op_diag = _dynkl_topk_loss(s_out.logits, t_out.logits, gen_labels,
+                                                                  k=onpolicy_dynkl_topk, temperature=kd_temperature,
+                                                                  chunk_size=kl_chunk_size or 1024)
+                            else:
+                                op_kl, op_diag = _kl_loss(s_out.logits, t_out.logits, gen_labels,
+                                                          kd_temperature, onpolicy_topk,
+                                                          reverse=onpolicy_reverse_kl, chunk_size=kl_chunk_size,
+                                                          prune_opd=opkd_prune_opd,
+                                                          prune_opd_drop=opkd_prune_opd_drop,
+                                                          prune_opd_wbase=opkd_prune_opd_wbase,
+                                                          prune_opd_topk=opkd_prune_opd_topk,
+                                                          prune_opd_threshold=opkd_prune_opd_threshold)
+                            if t_prev_out is not None:
+                                op_kl_prev, _ = _kl_loss(s_out.logits, t_prev_out.logits, gen_labels,
+                                                          kd_temperature, onpolicy_topk,
+                                                          reverse=onpolicy_reverse_kl, chunk_size=kl_chunk_size,
+                                                          prune_opd=opkd_prune_opd,
+                                                          prune_opd_drop=opkd_prune_opd_drop,
+                                                          prune_opd_wbase=opkd_prune_opd_wbase,
+                                                          prune_opd_topk=opkd_prune_opd_topk,
+                                                          prune_opd_threshold=opkd_prune_opd_threshold)
+                            else:
+                                op_kl_prev = None
+
                             with torch.no_grad():
-                                t_out = model(input_ids=generated)
-                            for _pn, (_pos, _) in _opkd_prev_delta.items():
-                                maskmgr.named_params[_pn].data[_pos] = 0.0
+                                _gen_pos_mask = (gen_labels[:, 1:] != -100).float()
+                                # chunked over T: full-vocab fp32 log-softmax of an 8k rollout is ~5GiB per tensor
+                                _K = 100
+                                _ent_s, _ent_t, _ovl = [], [], []
+                                _Tm1 = s_out.logits.shape[1] - 1
+                                for _c0 in range(0, _Tm1, 1024):
+                                    _c1 = min(_c0 + 1024, _Tm1)
+                                    _sl = s_out.logits[:, _c0:_c1]
+                                    _tl = t_out.logits[:, _c0:_c1]
+                                    _s_logp = F.log_softmax(_sl / kd_temperature, dim=-1)
+                                    _ent_s.append(-(_s_logp.exp() * _s_logp).sum(dim=-1))
+                                    del _s_logp
+                                    _t_logp = F.log_softmax(_tl / kd_temperature, dim=-1)
+                                    _ent_t.append(-(_t_logp.exp() * _t_logp).sum(dim=-1))
+                                    del _t_logp
+                                    _s_top = _sl.topk(_K, dim=-1).indices
+                                    _t_top = _tl.topk(_K, dim=-1).indices
+                                    _ovl.append((_s_top.unsqueeze(-1) == _t_top.unsqueeze(-2)).any(dim=-1).float().mean(dim=-1))
+                                _s_ent = torch.cat(_ent_s, dim=1)
+                                _t_ent = torch.cat(_ent_t, dim=1)
+                                _overlap = torch.cat(_ovl, dim=1)
+                                _denom = _gen_pos_mask.sum().clamp(min=1)
+                                _s_ent_mean = (_s_ent * _gen_pos_mask).sum() / _denom
+                                _t_ent_mean = (_t_ent * _gen_pos_mask).sum() / _denom
+                                _overlap_mean = (_overlap * _gen_pos_mask).sum() / _denom
 
-                        if opd_tok_select != 'none':
-                            gen_labels, _sel_diag = _opd_select_tokens(
-                                s_out.logits.detach(), t_out.logits, gen_labels, opd_tok_select, opd_tok_ratio,
-                                temperature=kd_temperature, reverse=onpolicy_reverse_kl,
-                                chunk_size=kl_chunk_size or 1024)
-                            if use_wandb and is_main_process and _op_i == 0:
-                                wandb.log(_sel_diag, step=step)
-                        if onpolicy_dynkl_topk > 0:
-                            op_kl, op_diag = _dynkl_topk_loss(s_out.logits, t_out.logits, gen_labels,
-                                                              k=onpolicy_dynkl_topk, temperature=kd_temperature,
-                                                              chunk_size=kl_chunk_size or 1024)
-                        else:
-                            op_kl, op_diag = _kl_loss(s_out.logits, t_out.logits, gen_labels,
-                                                      kd_temperature, onpolicy_topk,
-                                                      reverse=onpolicy_reverse_kl, chunk_size=kl_chunk_size,
-                                                      prune_opd=opkd_prune_opd,
-                                                      prune_opd_drop=opkd_prune_opd_drop,
-                                                      prune_opd_wbase=opkd_prune_opd_wbase,
-                                                      prune_opd_topk=opkd_prune_opd_topk,
-                                                      prune_opd_threshold=opkd_prune_opd_threshold)
-                        if t_prev_out is not None:
-                            op_kl_prev, _ = _kl_loss(s_out.logits, t_prev_out.logits, gen_labels,
-                                                      kd_temperature, onpolicy_topk,
-                                                      reverse=onpolicy_reverse_kl, chunk_size=kl_chunk_size,
-                                                      prune_opd=opkd_prune_opd,
-                                                      prune_opd_drop=opkd_prune_opd_drop,
-                                                      prune_opd_wbase=opkd_prune_opd_wbase,
-                                                      prune_opd_topk=opkd_prune_opd_topk,
-                                                      prune_opd_threshold=opkd_prune_opd_threshold)
-                        else:
-                            op_kl_prev = None
+                                is_log_w = None
+                                if use_mixed:
+                                    _s_lp = F.log_softmax(s_out.logits[:, :-1].detach().float(), dim=-1)
+                                    _t_lp = F.log_softmax(t_out.logits[:, :-1].float(), dim=-1)
+                                    _gids  = gen_labels[:, 1:].clamp(min=0)
+                                    _s_tok = _s_lp.gather(-1, _gids.unsqueeze(-1)).squeeze(-1)
+                                    _t_tok = _t_lp.gather(-1, _gids.unsqueeze(-1)).squeeze(-1)
+                                    _mix_prob = ((1 - onpolicy_mixed_alpha) * _s_tok.exp()
+                                                + onpolicy_mixed_alpha * _t_tok.exp()).clamp(min=1e-10)
+                                    is_log_w = (_s_tok - _mix_prob.log()) * _gen_pos_mask
 
-                        with torch.no_grad():
-                            _gen_pos_mask = (gen_labels[:, 1:] != -100).float()
-                            # chunked over T: full-vocab fp32 log-softmax of an 8k rollout is ~5GiB per tensor
-                            _K = 100
-                            _ent_s, _ent_t, _ovl = [], [], []
-                            _Tm1 = s_out.logits.shape[1] - 1
-                            for _c0 in range(0, _Tm1, 1024):
-                                _c1 = min(_c0 + 1024, _Tm1)
-                                _sl = s_out.logits[:, _c0:_c1]
-                                _tl = t_out.logits[:, _c0:_c1]
-                                _s_logp = F.log_softmax(_sl / kd_temperature, dim=-1)
-                                _ent_s.append(-(_s_logp.exp() * _s_logp).sum(dim=-1))
-                                del _s_logp
-                                _t_logp = F.log_softmax(_tl / kd_temperature, dim=-1)
-                                _ent_t.append(-(_t_logp.exp() * _t_logp).sum(dim=-1))
-                                del _t_logp
-                                _s_top = _sl.topk(_K, dim=-1).indices
-                                _t_top = _tl.topk(_K, dim=-1).indices
-                                _ovl.append((_s_top.unsqueeze(-1) == _t_top.unsqueeze(-2)).any(dim=-1).float().mean(dim=-1))
-                            _s_ent = torch.cat(_ent_s, dim=1)
-                            _t_ent = torch.cat(_ent_t, dim=1)
-                            _overlap = torch.cat(_ovl, dim=1)
-                            _denom = _gen_pos_mask.sum().clamp(min=1)
-                            _s_ent_mean = (_s_ent * _gen_pos_mask).sum() / _denom
-                            _t_ent_mean = (_t_ent * _gen_pos_mask).sum() / _denom
-                            _overlap_mean = (_overlap * _gen_pos_mask).sum() / _denom
-
-                            is_log_w = None
-                            if use_mixed:
-                                _s_lp = F.log_softmax(s_out.logits[:, :-1].detach().float(), dim=-1)
-                                _t_lp = F.log_softmax(t_out.logits[:, :-1].float(), dim=-1)
-                                _gids  = gen_labels[:, 1:].clamp(min=0)
-                                _s_tok = _s_lp.gather(-1, _gids.unsqueeze(-1)).squeeze(-1)
-                                _t_tok = _t_lp.gather(-1, _gids.unsqueeze(-1)).squeeze(-1)
-                                _mix_prob = ((1 - onpolicy_mixed_alpha) * _s_tok.exp()
-                                            + onpolicy_mixed_alpha * _t_tok.exp()).clamp(min=1e-10)
-                                is_log_w = (_s_tok - _mix_prob.log()) * _gen_pos_mask
-
-                        if onpolicy_pg:
-                            pg = _pg_loss(s_out.logits, t_out.logits, gen_labels,
-                                          is_log_w=is_log_w,
-                                          old_s_logp=_s_tok if use_mixed else None,
-                                          cliprange=onpolicy_pg_cliprange,
-                                          gamma=onpolicy_pg_gamma,
-                                          reward_clip=pg_reward_clip,
-                                          reward_scale=pg_reward_scale)
-                            op_loss = onpolicy_lambda * op_kl + onpolicy_lambda * pg
-                        else:
-                            op_loss = onpolicy_lambda * op_kl
-                        if op_kl_prev is not None:
-                            op_loss = op_loss + prevmask_opkd_lambda * op_kl_prev
-                        op_loss = op_loss / (batch_size * grad_accum * onpolicy_grad_accum)
+                            if onpolicy_pg:
+                                pg = _pg_loss(s_out.logits, t_out.logits, gen_labels,
+                                              is_log_w=is_log_w,
+                                              old_s_logp=_s_tok if use_mixed else None,
+                                              cliprange=onpolicy_pg_cliprange,
+                                              gamma=onpolicy_pg_gamma,
+                                              reward_clip=pg_reward_clip,
+                                              reward_scale=pg_reward_scale)
+                                op_loss = onpolicy_lambda * op_kl + onpolicy_lambda * pg
+                            else:
+                                op_loss = onpolicy_lambda * op_kl
+                            if op_kl_prev is not None:
+                                op_loss = op_loss + prevmask_opkd_lambda * op_kl_prev
+                            op_loss = op_loss / (batch_size * grad_accum * onpolicy_grad_accum)
 
                     if torch.isnan(op_loss) or torch.isinf(op_loss):
                         logging.warning(f"NaN/Inf on-policy loss at step {step} micro {_op_i}, skipping")
                     else:
+                        _phase('opd_loss_compute')
                         op_loss.backward()
+                        _phase('opd_student_bwd')
                         accum_onpolicy += op_kl.item()
                         if op_kl_prev is not None:
                             _diag_kl_prev += op_kl_prev.item()
@@ -7476,6 +7713,7 @@ def globalprune_gmp(
             del _g_opkd_filter, _g_ntp_snap
             _g_opkd_filter = _g_ntp_snap = None
 
+        _phase('opd_rest')
         # ── Combined optimizer step (NTP + RL grads) ─────────────────────────
         # Use FSDP-aware clip_grad_norm_ so all ranks get the same global norm.
         # torch.nn.utils.clip_grad_norm_ on sharded params returns a LOCAL norm
@@ -7491,6 +7729,19 @@ def globalprune_gmp(
             optimizer.zero_grad()
         else:
             fisher.update()
+            if _vprime_snap is not None:
+                _b2 = optimizer.param_groups[0].get('betas', (0.9, 0.999))[1]
+                _ct = min(1.0, 1.0 / (grad_norm + 1e-6))  # clip_grad_norm_(max_norm=1.0) coefficient
+                for _pid, _g in _vprime_snap.items():
+                    _g2 = (_g.float() * _ct) ** 2
+                    _v = fisher._vprime.get(_pid)
+                    if _v is None:
+                        fisher._vprime[_pid] = _g2.mul_(1.0 - _b2)
+                    else:
+                        _v.mul_(_b2).add_(_g2, alpha=1.0 - _b2)
+                fisher._vprime_step += 1
+                if step % 64 == 0:
+                    logging.info(f"  [vprime] step={step} c_t={_ct:.4f} n={len(_vprime_snap)} vprime_step={fisher._vprime_step}")
             accum_grad_norm += grad_norm
             _srste_decay_step(maskmgr, step, total_steps, ste_enabled,
                               getattr(FLAGS, 'gmp_ste_decay', 0.0),
@@ -7585,10 +7836,12 @@ def globalprune_gmp(
         # needed. Falls back to fisher.importance() unchanged for any other
         # saliency mode (spa/wanda/magnitude/sqrt_fisher), which this
         # in-place path does not special-case.
+        _phase('optimizer_step')
         if (pgd_enabled and step > dense_warmup_steps and not math.isnan(grad_norm) and not math.isinf(grad_norm)
                 and step % pgd_interval == 0
                 and not (pgd_skip_growth_step and step % mask_interval == 0)
-                and (not pgd_post_target_only or tr_reached or fixed_mask or not tr_enabled)):
+                and (not pgd_post_target_only or tr_reached or fixed_mask or not tr_enabled)
+                and not _pgd_frozen[0]):
             _pgd_revivals = 0
             _pgd_prunings = 0
             _pgd_use_fsdp = _FSDP_AVAILABLE and fsdp_model is not None
@@ -8604,6 +8857,17 @@ def globalprune_gmp(
                     # applied) -- same invariant as TR's own search above --
                     # so the reference forward pass is cacheable across every
                     # _pgd_kl_at() call, including the extra kl_at_full call.
+                    if pgd_log_drift and not _pgd_use_fsdp and is_main_process and _drift_state['lp'] is not None:
+                        if _drift_state['batch'] is _pgd_kl_cal_batch:
+                            with torch.no_grad():
+                                _dkl, _ = _tr_kl_forward_and_score(model, _pgd_kl_cal_batch['input_ids'].to(device),
+                                                                   _pgd_kl_cal_batch['attention_mask'].to(device),
+                                                                   _drift_state['lp'], _drift_state['valid'],
+                                                                   tr_kl_reduce, tr_kl_quantile)
+                            logging.info(f"  [pgd_drift] KL(post-proj@{_drift_state['step']} || pre-proj@{step}) = {_dkl:.6f} (weights only, budget={pgd_kl_budget})")
+                            if use_wandb:
+                                wandb.log({'pgd/drift_kl_weights': _dkl, 'pgd/drift_steps': step - _drift_state['step']}, step=step)
+                        _drift_state['lp'] = None
                     _pgd_kl_ref_cache = {}
                     _pgd_kl_at_calls = [0]
                     _pgd_kl_at_time = [0.0]
@@ -8631,6 +8895,20 @@ def globalprune_gmp(
                         _pgd_topk_time[0] += _t_topk1 - _t_call0
                         _cand_masks = {_n: (maskmgr.masks[_n] & ~_sel[_n]) if _n in _pgd_imps else maskmgr.masks[_n]
                                        for _n in maskmgr.named_params}
+                        if _os_kldbg.environ.get('GMP_PGD_KL_DEBUG') and k <= 63:
+                            _picked = []
+                            for _n in _pgd_imps:
+                                _m = _sel[_n] & maskmgr.masks[_n]
+                                _c = int(_m.sum())
+                                if _c:
+                                    _w = maskmgr.named_params[_n].data[_m].float()
+                                    _im = _pgd_imps[_n][_m].float()
+                                    _picked.append((float(_w.abs().max()), _n, _c, float(_im.max())))
+                            _picked.sort(reverse=True)
+                            _id_kl, _ = _compute_tr_kl(model, _pgd_kl_cal_batch, dict(maskmgr.masks), maskmgr, str(device),
+                                                       kl_reduce=tr_kl_reduce, kl_quantile=tr_kl_quantile, ref_cache=_pgd_kl_ref_cache)
+                            logging.info(f"  [pgd_kl_dbg] identity-candidate KL (nothing pruned, same path)={_id_kl:.6g} hook={bool(_TR_KL_USE_HOOK[0])}")
+                            logging.info(f"  [pgd_kl_dbg] k={k} newly-pruned total={sum(p[2] for p in _picked)} top by |w|: " + '; '.join(f'{p[1]} n={p[2]} max|w|={p[0]:.4g} max_imp={p[3]:.3g}' for p in _picked[:4]))
                         _kl, _ = _compute_tr_kl(fsdp_model if fsdp_model is not None else model,
                                                  _pgd_kl_cal_batch, _cand_masks, maskmgr, str(device),
                                                  kl_reduce=tr_kl_reduce, kl_quantile=tr_kl_quantile,
@@ -8652,6 +8930,11 @@ def globalprune_gmp(
                         _pgd_fwd_time[0] += _t_call2 - _t_topk1
                         _pgd_kl_at_calls[0] += 1
                         _pgd_kl_at_time[0] += _t_call2 - _t_call0
+                        if _os_kldbg.environ.get('GMP_PGD_KL_DEBUG'):
+                            _nb = _pgd_kl_cal_batch['input_ids'].shape
+                            logging.info(f"  [pgd_kl_dbg] step={step} k={k} kl={_kl:.6g} batch={tuple(_nb)} "
+                                         f"valid={int(_pgd_kl_cal_batch['attention_mask'][:, 1:].sum())} "
+                                         f"cache_has_old={'old_lp' in _pgd_kl_ref_cache} train_mode={model.training}")
                         return _kl
 
                     # Warm-started search: instead of always bisecting the full
@@ -8832,7 +9115,24 @@ def globalprune_gmp(
                     # ranks and deadlocking (reproduced live: rank0 stuck here
                     # forever while other ranks race ahead). Call it once, here,
                     # unconditionally on every rank, and reuse the value below.
+                    if pgd_log_drift and not _pgd_use_fsdp and is_main_process and _pgd_kl_cal_batch is not None:
+                        maskmgr.apply(fsdp_model)  # realise the new mask in param.data now (the chain's own apply() below is then a no-op re-zero)
+                        with torch.no_grad(), torch.amp.autocast('cuda', dtype=torch.bfloat16):
+                            _dids = _pgd_kl_cal_batch['input_ids'].to(device)
+                            _datt = _pgd_kl_cal_batch['attention_mask'].to(device)
+                            _dlog = model(input_ids=_dids, attention_mask=_datt).logits.detach()
+                            _drift_state['lp'] = torch.cat([F.log_softmax(_dlog[:, _a:min(_a + 2048, _dlog.shape[1] - 1), :], dim=-1)
+                                                            for _a in range(0, _dlog.shape[1] - 1, 2048)], dim=1)
+                            del _dlog
+                        _drift_state['valid'] = (_pgd_kl_cal_batch['labels'][:, 1:].to(device) != -100) if 'labels' in _pgd_kl_cal_batch else (_datt[:, 1:] == 1)
+                        _drift_state['batch'] = _pgd_kl_cal_batch
+                        _drift_state['step'] = step
                     _pgd_post_sparsity = maskmgr.current_sparsity()
+                    if pgd_freeze_after_target and not _pgd_frozen[0] and _pgd_post_sparsity >= final_sparsity - 1e-4:
+                        _pgd_frozen[0] = True
+                        logging.info(f"  [pgd_freeze] target {final_sparsity} reached at step {step} (sparsity {_pgd_post_sparsity:.4f}): mask frozen, no further PGD projections")
+                        if use_wandb and is_main_process:
+                            wandb.log({'pgd/frozen_step': step}, step=step)
                     logging.info(f"  [pgd_kl_budget] applied revivals={_pgd_revivals} prunings={_pgd_prunings} "
                                  f"post_sparsity={_pgd_post_sparsity:.4f} (step={step})")
                     if pgd_recovery_diag and pgd_grow_to_target and not _pgd_use_fsdp and is_main_process \
@@ -9087,6 +9387,30 @@ def globalprune_gmp(
         if step > dense_warmup_steps:
             maskmgr.apply(fsdp_model)
 
+        # --gmp_log_step_drift: KL(model at end of step t-1 || model at end of step t)
+        # on the same screening batch, EVERY step (after this step's mask re-zero, i.e.
+        # the exact model the next forward sees). Steps with step % pgd_interval == 0
+        # also contain a mask projection; all other steps are weight-update-only drift.
+        if step_drift_log and not is_fsdp and is_main_process and _pgd_kl_cal_batch is not None:
+            _sdb = _pgd_kl_cal_batch
+            with torch.no_grad(), torch.amp.autocast('cuda', dtype=torch.bfloat16):
+                _sd_ids = _sdb['input_ids'].to(device)
+                _sd_att = _sdb['attention_mask'].to(device)
+                _sd_log = model(input_ids=_sd_ids, attention_mask=_sd_att).logits.detach()
+            _sd_lp = torch.cat([F.log_softmax(_sd_log[:, _a:min(_a + 2048, _sd_log.shape[1] - 1), :].float(), dim=-1)
+                                for _a in range(0, _sd_log.shape[1] - 1, 2048)], dim=1)
+            del _sd_log
+            _sd_valid = (_sdb['labels'][:, 1:].to(device) != -100) if 'labels' in _sdb else (_sd_att[:, 1:] == 1)
+            if _step_drift['lp'] is not None and _step_drift['batch'] is _sdb and _sd_valid.any():
+                _sd_kl_tok = F.kl_div(_sd_lp, _step_drift['lp'], log_target=True, reduction='none').sum(dim=-1)
+                _sd_kl = _sd_kl_tok[_sd_valid].float().mean().item()
+                _sd_proj = int(pgd_enabled and step % pgd_interval == 0 and not _pgd_frozen[0])
+                logging.info(f"  [step_drift] step={step} KL(end@{_step_drift['step']} || end@{step}) = {_sd_kl:.6f} proj_step={_sd_proj}")
+                if use_wandb:
+                    wandb.log({'drift/step_kl': _sd_kl, 'drift/proj_step': _sd_proj}, step=step)
+            _step_drift.update(lp=_sd_lp, batch=_sdb, step=step)
+            del _sd_lp
+
         # periodic logging
         if step % log_interval == 0:
             real_sparsity = maskmgr.current_sparsity()
@@ -9127,6 +9451,15 @@ def globalprune_gmp(
                     log_dict.update({k: v / log_interval for k, v in accum_ca_ipo_diag.items()})
                 if use_offline_ipo:
                     log_dict["train/offline_ipo_loss"] = accum_offline_ipo
+            _phase('pgd_and_rest')
+            if _PH_ON:
+                _ph['n'] += 1
+                if _ph['n'] % 32 == 0:
+                    _tot = sum(_ph['acc'].values())
+                    logging.info(f"  [phase_timing] steps={_ph['n']} (up to step {step}) total={_tot:.1f}s " + ' '.join(f'{k}={v:.1f}s({100*v/_tot:.0f}%)' for k, v in sorted(_ph['acc'].items(), key=lambda x: -x[1]))
+                                 + f" peak_alloc={torch.cuda.max_memory_allocated()/1e9:.1f}GB peak_reserved={torch.cuda.max_memory_reserved()/1e9:.1f}GB")
+                    _ph['acc'] = {}
+                    torch.cuda.reset_peak_memory_stats()
             logging.info(f"Step {step}/{total_steps} | loss={accum_loss:.4f} | "
                          f"sparsity={real_sparsity:.3f} | lr={scheduler.get_last_lr()[0]:.2e}"
                          + (f" | dpo_loss={accum_dpo_loss:.4f} acc={accum_dpo_acc:.3f} "

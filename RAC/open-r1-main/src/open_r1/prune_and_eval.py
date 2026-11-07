@@ -218,6 +218,7 @@ def main():
                              "(what every other baseline in this project reports). official = "
                              "32768/38912 Qwen3-protocol budgets plus aime24/aime25; several "
                              "times slower, only for final-table numbers.")
+    parser.add_argument("--prune_only", action="store_true", help="Stop after saving (+push) and the PPL eval: no zero-shot, no lighteval -- run eval_full.py separately.")
     parser.add_argument("--nsamples", type=int, default=128)
     parser.add_argument("--seqlen", type=int, default=2048)
     parser.add_argument("--seed", type=int, default=42)
@@ -377,6 +378,10 @@ def main():
     # ── 3. PPL eval ───────────────────────────────────────────────────────────
     ppl_metrics = eval_ppl(model, tokenizer, args.seqlen)
     wandb.log(ppl_metrics)
+    if args.prune_only:
+        logger.info(f"--prune_only: done after PPL {ppl_metrics}")
+        wandb.finish()
+        return
 
     # ── 4. Zero-shot eval ────────────────────────────────────────────────────
     zs_metrics = eval_zero_shot(model, tokenizer, limit=zs_limit)
