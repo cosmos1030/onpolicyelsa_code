@@ -35,6 +35,18 @@ try:
 except ImportError:
     _FSDP_AVAILABLE = False
 
+def _memlog(tag, step=None):
+    """GMP_MEM_DEBUG=1: log this rank's CUDA allocation at a named point of the first
+    steps (sizing the 32B multi-node layout); resets the peak counter after each call."""
+    if not _os_kldbg.environ.get('GMP_MEM_DEBUG') or not torch.cuda.is_available():
+        return
+    if step is not None and step > 3:
+        return
+    logging.info(f"[mem] {tag} step={step} alloc={torch.cuda.memory_allocated() / 2**30:.2f}GiB "
+                 f"peak_since_last={torch.cuda.max_memory_allocated() / 2**30:.2f}GiB")
+    torch.cuda.reset_peak_memory_stats()
+
+
 try:
     from torch.distributed.tensor import DTensor, Replicate
     _DTENSOR_AVAILABLE = True
@@ -1756,7 +1768,7 @@ class FisherAccumulator:
             return None
         if _DTENSOR_AVAILABLE and isinstance(v, DTensor):
             v = v.redistribute(placements=[Replicate()]).to_local()
-        f = v.float()
+        f = v.float().to(param.device)  # Adam state may sit on CPU (--gmp_offload_optimizer_fwd)
         step = st.get('step', self._step)
         if torch.is_tensor(step):
             step = step.item()
@@ -1820,6 +1832,7 @@ class FisherAccumulator:
             v = v.redistribute(placements=[Replicate()]).to_local()
         if _DTENSOR_AVAILABLE and isinstance(m, DTensor):
             m = m.redistribute(placements=[Replicate()]).to_local()
+        v, m = v.to(param.device), m.to(param.device)  # Adam state may sit on CPU (--gmp_offload_optimizer_fwd)
         step = st.get('step', self._step)
         if torch.is_tensor(step):
             step = step.item()
@@ -2874,6 +2887,74 @@ def _fused_topk_distill(model, teacher_model, input_ids, attention_mask, labels,
                 fused_topk_cfg=cfg)
     return out.loss, out.ntp, out.kd, t_mass
 
+
+
+class _ChunkedNTPKDLoss(torch.autograd.Function):
+    """ntp_w * CE(student, labels) + kd_w * forward-KL(teacher || student) over the full vocab,
+    both averaged over the shifted positions with labels != -100 -- the same values as HF's
+    out.loss and _kl_loss(topk=0) -- but autograd keeps only the bf16 (B,T,V) student/teacher
+    logits. The usual path saves several fp32 (B,T,V) tensors (logits.float(), log-softmaxes,
+    teacher probs) that dominate a 32B rank's memory at seqlen 8192; here backward recomputes
+    softmaxes chunk by chunk and writes d loss / d logits directly:
+        CE: softmax(s) - onehot(y)        KL: (softmax(s/T) - softmax(t/T)) / T
+    `parts` receives the unweighted means ('ntp', 'kd') for logging."""
+
+    @staticmethod
+    def forward(ctx, s_logits, t_logits, labels, ntp_w, kd_w, temperature, chunk, parts):
+        y = labels[:, 1:]
+        valid = y != -100
+        denom = valid.sum().clamp(min=1).float()
+        ntp_sum = s_logits.new_zeros((), dtype=torch.float32)
+        kd_sum = s_logits.new_zeros((), dtype=torch.float32)
+        T1 = s_logits.shape[1] - 1
+        with torch.no_grad():
+            for a in range(0, T1, chunk):
+                b = min(a + chunk, T1)
+                v = valid[:, a:b]
+                if not v.any():
+                    continue
+                s = s_logits[:, a:b].float()[v]
+                t = t_logits[:, a:b].float()[v]
+                if ntp_w:
+                    ntp_sum += F.cross_entropy(s, y[:, a:b][v], reduction='sum')
+                if kd_w:
+                    s_lp = F.log_softmax(s / temperature, dim=-1)
+                    t_lp = F.log_softmax(t / temperature, dim=-1)
+                    kd_sum += F.kl_div(s_lp, t_lp, log_target=True, reduction='sum')
+                del s, t
+        ctx.save_for_backward(s_logits, t_logits, labels)
+        ctx.ntp_w, ctx.kd_w, ctx.temperature, ctx.chunk = float(ntp_w), float(kd_w), float(temperature), int(chunk)
+        parts['ntp'] = (ntp_sum / denom).item()
+        parts['kd'] = (kd_sum / denom).item()
+        return (ctx.ntp_w * ntp_sum + ctx.kd_w * kd_sum) / denom
+
+    @staticmethod
+    def backward(ctx, g):
+        s_logits, t_logits, labels = ctx.saved_tensors
+        y = labels[:, 1:]
+        valid = y != -100
+        scale = g.float() / valid.sum().clamp(min=1).float()
+        T, T1 = ctx.temperature, s_logits.shape[1] - 1
+        grad = torch.zeros_like(s_logits)  # last position predicts nothing -> zero grad
+        for a in range(0, T1, ctx.chunk):
+            b = min(a + ctx.chunk, T1)
+            v = valid[:, a:b]
+            if not v.any():
+                continue
+            s = s_logits[:, a:b].float()[v]
+            gs = torch.zeros_like(s)
+            if ctx.ntp_w:
+                gs += ctx.ntp_w * torch.softmax(s, dim=-1)
+                gs.scatter_add_(1, y[:, a:b][v].unsqueeze(1),
+                                torch.full((s.shape[0], 1), -ctx.ntp_w, device=s.device, dtype=s.dtype))
+            if ctx.kd_w:
+                t = t_logits[:, a:b].float()[v]
+                gs += (ctx.kd_w / T) * (torch.softmax(s / T, dim=-1) - torch.softmax(t / T, dim=-1))
+                del t
+            gc = grad[:, a:b]
+            gc[v] = (gs * scale).to(grad.dtype)
+            del s, gs
+        return grad, None, None, None, None, None, None, None
 
 def _kl_loss(s_logits, t_logits, labels, temperature, topk, reverse=False, chunk_size=0,
              prune_opd=False, prune_opd_drop=0.01, prune_opd_wbase=0.5,
@@ -4937,6 +5018,9 @@ def globalprune_gmp(
     kd_temperature = getattr(FLAGS, 'gmp_kd_temperature', 2.0)
     fused_topk_k     = int(getattr(FLAGS, 'gmp_fused_topk_k', 0) or 0)  # >0: NTP+KD and OPD via fused lm_head + teacher-top-K forward KL
     fused_topk_chunk = int(getattr(FLAGS, 'gmp_fused_topk_chunk', 1024) or 1024)
+    offload_opt_fwd  = bool(getattr(FLAGS, 'gmp_offload_optimizer_fwd', False))  # Adam state on CPU outside optimizer.step()
+    chunked_ntpkd    = bool(getattr(FLAGS, 'gmp_chunked_ntpkd_loss', False))  # exact NTP+KD keeping only bf16 logits
+    chunked_ntpkd_chunk = int(getattr(FLAGS, 'gmp_chunked_ntpkd_chunk', 1024) or 1024)
     kd_topk        = getattr(FLAGS, 'gmp_kd_topk', 0)
     kl_chunk_size  = getattr(FLAGS, 'gmp_kl_chunk_size', 0)  # 0=disabled, see _kl_loss
     kd_only        = getattr(FLAGS, 'gmp_kd_only', False)
@@ -5224,6 +5308,13 @@ def globalprune_gmp(
         if _bad:
             raise ValueError(f'--gmp_fused_topk_k is not implemented together with: {_bad}')
         logging.info(f'[fused_topk] NTP+KD and OPD via fused lm_head, teacher top-{fused_topk_k} forward KL (verl forward_kl_topk), chunk={fused_topk_chunk}')
+    if chunked_ntpkd:
+        _bad = {'no KD term': not use_kd, 'kd_topk': kd_topk > 0, 'hidden loss': use_hidden,
+                'blockwise': blockwise_enabled, 'ntp_slm': ntp_slm_ratio > 0, 'fused_topk': fused_topk_k > 0}
+        _bad = [k for k, v in _bad.items() if v]
+        if _bad:
+            raise ValueError(f'--gmp_chunked_ntpkd_loss is not implemented together with: {_bad}')
+        logging.info(f'[chunked_ntpkd] exact NTP + full-vocab KD, bf16 logits only, chunk={chunked_ntpkd_chunk}')
     # Teacher-gen KD (forward KL, prompts pre-generated once from data_path)
     # and on-policy/OPD (reverse KL, live student rollouts from gmp_prompt_path)
     # draw from independently-configurable prompt sources and don't share any
@@ -6284,6 +6375,7 @@ def globalprune_gmp(
         _ph['gpk'] = max(_ph['gpk'], _pk)
         torch.cuda.reset_peak_memory_stats()
         _ph['t'] = _now
+    _memlog('before training loop', 0)
     while step < total_steps:
         _phase('between_steps')
         # periodic checkpoint: taken at the TOP of the body so the previous step's
@@ -6342,6 +6434,8 @@ def globalprune_gmp(
 
         # ── NTP + offline KD micro-steps ──────────────────────────────────────
         else:
+          if offload_opt_fwd:
+              _offload_optimizer_state(optimizer)
           for micro_step in range(grad_accum):
             batch = next(data_iter)
             batch = {k: v.to(device) for k, v in batch.items()}
@@ -6367,6 +6461,8 @@ def globalprune_gmp(
                 # (~5GB at seqlen 8192) until `out` is dropped -- that extra residency OOMed
                 # the single-GPU sidecar's wake_up().
                 _slm_on = ntp_slm_ratio > 0 and use_kd and not (hidden_only or kd_only)
+                if chunked_ntpkd:
+                    fwd_inputs.pop('labels', None)  # NTP comes from _ChunkedNTPKDLoss, not HF's fp32 loss graph
                 if _slm_on:
                     fwd_inputs.pop('labels', None)
                 _phase('ntpkd_data_prep')
@@ -6399,52 +6495,63 @@ def globalprune_gmp(
                             )
                         _phase('ntpkd_teacher_fwd')
 
-                        if use_hidden:
-                            if hidden_layers == "anneal_all_to_final":
-                                h_loss = _hidden_loss_layerwise(
-                                    out.hidden_states[1:], t_out.hidden_states[1:],
-                                    batch['labels'], batch['attention_mask'],
-                                    mode=hidden_mode, mask_mode=hidden_mask,
-                                    step=step, total_steps=total_steps,
-                                )
-                            else:
-                                h_loss = _hidden_loss(
-                                    out.hidden_states[-1], t_out.hidden_states[-1],
-                                    batch['labels'], batch['attention_mask'],
-                                    mode=hidden_mode, mask_mode=hidden_mask,
-                                )
-                            accum_kd += h_loss.item() / grad_accum
-                        if use_kd:
-                            kl, kd_diag = _kl_loss(out.logits, t_out.logits, batch['labels'],
-                                                   kd_temperature, kd_topk, chunk_size=kl_chunk_size)
-                            accum_kd += kl.item() / grad_accum
-                            for k, v in kd_diag.items():
-                                accum_diag[k] = accum_diag.get(k, 0.0) + v
-                            accum_diag_n += 1
-
-                        if _slm_on:
-                            ntp_loss, slm_diag = _slm_ntp_loss(out.logits, t_out.logits, batch['labels'],
-                                                               ntp_slm_ratio, chunk_size=kl_chunk_size or 1024)
-                            for k, v in slm_diag.items():
-                                accum_diag[k] = accum_diag.get(k, 0.0) + v
-
-                        # build total loss
-                        aux = (hidden_lambda * h_loss if use_hidden else ntp_loss.new_tensor(0.0)) + \
-                              (kd_lambda * kl if use_kd else ntp_loss.new_tensor(0.0))
-                        skip_ntp = (hidden_only or kd_only)
-                        if skip_ntp:
-                            loss = aux / grad_accum
+                        if chunked_ntpkd:
+                            # exact NTP + full-vocab KD with only the bf16 logits kept for backward
+                            _ck_parts = {}
+                            loss = _ChunkedNTPKDLoss.apply(
+                                out.logits, t_out.logits, batch['labels'],
+                                0.0 if (hidden_only or kd_only) else ntp_lambda, kd_lambda, kd_temperature,
+                                chunked_ntpkd_chunk, _ck_parts) / grad_accum
+                            accum_kd += _ck_parts['kd'] / grad_accum
+                            if not (hidden_only or kd_only):
+                                accum_ntp += _ck_parts['ntp'] / grad_accum
                         else:
-                            loss = (ntp_lambda * ntp_loss + aux) / grad_accum
-                        if not skip_ntp:
-                            accum_ntp += ntp_loss.item() / grad_accum
+                            if use_hidden:
+                                if hidden_layers == "anneal_all_to_final":
+                                    h_loss = _hidden_loss_layerwise(
+                                        out.hidden_states[1:], t_out.hidden_states[1:],
+                                        batch['labels'], batch['attention_mask'],
+                                        mode=hidden_mode, mask_mode=hidden_mask,
+                                        step=step, total_steps=total_steps,
+                                    )
+                                else:
+                                    h_loss = _hidden_loss(
+                                        out.hidden_states[-1], t_out.hidden_states[-1],
+                                        batch['labels'], batch['attention_mask'],
+                                        mode=hidden_mode, mask_mode=hidden_mask,
+                                    )
+                                accum_kd += h_loss.item() / grad_accum
+                            if use_kd:
+                                kl, kd_diag = _kl_loss(out.logits, t_out.logits, batch['labels'],
+                                                       kd_temperature, kd_topk, chunk_size=kl_chunk_size)
+                                accum_kd += kl.item() / grad_accum
+                                for k, v in kd_diag.items():
+                                    accum_diag[k] = accum_diag.get(k, 0.0) + v
+                                accum_diag_n += 1
 
-                        if blockwise_enabled:
-                            _sq_anchors = _squarehead_anchor_layers(len(out.hidden_states), _block_size)
-                            _sq_loss = _squarehead_loss(out.hidden_states, t_out.hidden_states,
-                                                         _sq_anchors, batch['attention_mask'])
-                            loss = loss + blockwise_hardness * _sq_loss / grad_accum
-                            accum_blockwise += _sq_loss.item() / grad_accum
+                            if _slm_on:
+                                ntp_loss, slm_diag = _slm_ntp_loss(out.logits, t_out.logits, batch['labels'],
+                                                                   ntp_slm_ratio, chunk_size=kl_chunk_size or 1024)
+                                for k, v in slm_diag.items():
+                                    accum_diag[k] = accum_diag.get(k, 0.0) + v
+
+                            # build total loss
+                            aux = (hidden_lambda * h_loss if use_hidden else ntp_loss.new_tensor(0.0)) + \
+                                  (kd_lambda * kl if use_kd else ntp_loss.new_tensor(0.0))
+                            skip_ntp = (hidden_only or kd_only)
+                            if skip_ntp:
+                                loss = aux / grad_accum
+                            else:
+                                loss = (ntp_lambda * ntp_loss + aux) / grad_accum
+                            if not skip_ntp:
+                                accum_ntp += ntp_loss.item() / grad_accum
+
+                            if blockwise_enabled:
+                                _sq_anchors = _squarehead_anchor_layers(len(out.hidden_states), _block_size)
+                                _sq_loss = _squarehead_loss(out.hidden_states, t_out.hidden_states,
+                                                             _sq_anchors, batch['attention_mask'])
+                                loss = loss + blockwise_hardness * _sq_loss / grad_accum
+                                accum_blockwise += _sq_loss.item() / grad_accum
                     else:
                         loss = ntp_lambda * ntp_loss / grad_accum
                         accum_ntp += ntp_loss.item() / grad_accum
@@ -6523,6 +6630,7 @@ def globalprune_gmp(
                         if is_fsdp and micro_step < grad_accum - 1
                         else nullcontext())
             _phase('ntpkd_loss_compute')
+            _memlog(f'fwd micro{micro_step}', step)
             import os as _os_dbg
             if _os_dbg.environ.get('GMP_ANOMALY_DEBUG'):
                 with _bwd_ctx, torch.autograd.detect_anomaly():
@@ -6531,6 +6639,7 @@ def globalprune_gmp(
                 with _bwd_ctx:
                     loss.backward()
             _phase('ntpkd_student_bwd')
+            _memlog(f'bwd micro{micro_step}', step)
             accum_loss += loss.item()
 
         # anchored KD contributes to the NTP optimizer step
@@ -7819,7 +7928,11 @@ def globalprune_gmp(
             _srste_decay_step(maskmgr, step, total_steps, ste_enabled,
                               getattr(FLAGS, 'gmp_ste_decay', 0.0),
                               getattr(FLAGS, 'gmp_ste_decay_warmup', -1))
+            if offload_opt_fwd:
+                _reload_optimizer_state(optimizer, device)
+            _memlog('before opt.step', step)
             optimizer.step()
+            _memlog('after opt.step', step)
             # after the Adam update, so the shrink never reaches exp_avg_sq
             if qmgr is not None:
                 # Baseline for the overhead ratio the rebuttal needs: seconds

@@ -537,6 +537,7 @@ def main(argv):
             gmp_use_fsdp = getattr(FLAGS, 'gmp_use_fsdp', False)
             if gmp_use_fsdp and is_distributed:
                 from torch.distributed.fsdp import (
+                    CPUOffload,
                     FullyShardedDataParallel as FSDP,
                     MixedPrecision,
                     ShardingStrategy,
@@ -610,8 +611,11 @@ def main(argv):
                         ),
                         sharding_strategy=ShardingStrategy.FULL_SHARD,
                         device_id=torch.cuda.current_device(),
+                        # forward-only module: its shards can live in CPU memory and be copied in per layer
+                        cpu_offload=CPUOffload(offload_params=getattr(FLAGS, 'gmp_teacher_cpu_offload', False)),
                     )
-                    logging.info(f"[rank {local_rank}] Teacher wrapped with FSDP (--gmp_teacher_fsdp)")
+                    logging.info(f"[rank {local_rank}] Teacher wrapped with FSDP (--gmp_teacher_fsdp, "
+                                 f"cpu_offload={getattr(FLAGS, 'gmp_teacher_cpu_offload', False)})")
                 elif gmp_use_fsdp and is_distributed:
                     gmp_teacher = gmp_teacher.to(torch.bfloat16)
                     logging.info(f"[rank {local_rank}] Teacher kept as plain model (no FSDP) — no NCCL needed for eval-only teacher")
@@ -1122,6 +1126,10 @@ if __name__ == '__main__':
     flags.DEFINE_bool('gmp_fixed_mask', False, 'Fix mask from pre-pruned model weights (for sparse SFT). Skips Fisher-based mask updates.')
     flags.DEFINE_bool('gmp_random_cot_ntp', False, 'Use random seqlen-token windows from CoT (no prompt masking) instead of MixedTextDataset.')
     flags.DEFINE_bool('gmp_use_fsdp', False, 'Wrap GMP model with FSDP for multi-GPU training (requires torchrun / accelerate launch).')
+    flags.DEFINE_bool('gmp_offload_optimizer_fwd', False, 'Keep AdamW exp_avg/exp_avg_sq on CPU during the forward/backward passes and move them to the GPU only for optimizer.step() (32B on 2 GH200 nodes: frees ~2x the bf16 param shard per rank; GH200 C2C makes the copies cheap).')
+    flags.DEFINE_bool('gmp_chunked_ntpkd_loss', False, 'Compute NTP + full-vocab forward-KL KD with a custom autograd function that keeps only the bf16 student/teacher logits for backward and recomputes softmaxes per token chunk (same loss values as out.loss + _kl_loss(topk=0); no fp32 (T,V) copies).')
+    flags.DEFINE_integer('gmp_chunked_ntpkd_chunk', 1024, 'Token chunk size of --gmp_chunked_ntpkd_loss (peak ~ chunk x vocab x 4B per fp32 buffer).')
+    flags.DEFINE_bool('gmp_teacher_cpu_offload', False, 'With --gmp_teacher_fsdp: keep the teacher shards in CPU memory (FSDP CPUOffload) and copy them in per layer for each forward.')
     flags.DEFINE_bool('gmp_teacher_fsdp', False, 'With --gmp_use_fsdp: also FSDP-shard the frozen teacher instead of a full bf16 copy per rank (needed for 32B).')
     flags.DEFINE_bool('gmp_pgd', False, 'Enable PGD projection after each optimizer step: re-project mask using Fisher saliency (v_t*w^2), logging pgd/revivals and pgd/prunings.')
     flags.DEFINE_bool('gmp_pgd_post_target_only', False, 'Only let PGD reproject once TR-GMP growth has reached final_sparsity (or immediately, for a fixed-mask/no-growth run) -- isolates whether PGD churn during the active growth ramp helps or hurts, vs. only ever running PGD as post-target maintenance. False (default) = PGD fires from step 1 onward as before, including during growth.')
