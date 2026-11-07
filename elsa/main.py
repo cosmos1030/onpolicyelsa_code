@@ -194,6 +194,9 @@ def main(argv):
     arguments = FLAGS.flag_values_dict()
     world_size = int(os.environ.get("WORLD_SIZE", 1))
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    # global rank: the "main process" checks below must mean rank 0 of the whole job, not
+    # local rank 0 of every node (multi-node 32B runs); local_rank still picks the CUDA device.
+    rank = int(os.environ.get("RANK", 0))
     is_distributed = world_size > 1
 
     _teacher_model_path = getattr(FLAGS, 'gmp_teacher_model', None) or FLAGS.model
@@ -265,7 +268,7 @@ def main(argv):
         _vllm_max_new = getattr(FLAGS, 'gmp_onpolicy_max_new_tokens', 256)
         _vllm_temp = getattr(FLAGS, 'gmp_onpolicy_temp', 0.6)
 
-        if local_rank == 0:
+        if rank == 0:
             from lib.vllm_proc import launch_vllm_server as _launch_vllm
             # vLLM runs as a fully independent OS process (subprocess.Popen,
             # not a multiprocessing.Process child) with CUDA_VISIBLE_DEVICES
@@ -306,7 +309,7 @@ def main(argv):
             logging.info(f"[rank {local_rank}] waiting for rank 0 vLLM via dist.barrier")
         # barrier: rank 1 waits here until rank 0 finishes vLLM launch
         dist.barrier()
-        if local_rank != 0:
+        if rank != 0:
             logging.info(f"[rank {local_rank}] vLLM barrier passed — proceeding")
 
     if _use_singlegpu_opkd_sidecar:
@@ -351,7 +354,7 @@ def main(argv):
         _opd_max_prompt = getattr(FLAGS, 'kd_max_prompt_len', 512)
         _opd_max_new = getattr(FLAGS, 'opd_vllm_max_tokens', 256)
         _vllm_cuda_dev = str(world_size)
-        if local_rank == 0:
+        if rank == 0:
             from lib.vllm_proc import launch_vllm_server as _launch_vllm_opd
             logging.info(
                 f"[rank 0] OPD: launching vLLM server on GPU {_vllm_cuda_dev} "
@@ -372,10 +375,10 @@ def main(argv):
             logging.info(f"[rank {local_rank}] OPD: waiting for rank 0 vLLM via dist.barrier")
         if is_distributed:
             dist.barrier()
-            if local_rank != 0:
+            if rank != 0:
                 logging.info(f"[rank {local_rank}] OPD vLLM barrier passed — proceeding")
 
-    if FLAGS.wandb and local_rank == 0:
+    if FLAGS.wandb and rank == 0:
         if getattr(FLAGS, 'do_grpo_opkd', False):
             group = "grpo_opkd"
         elif getattr(FLAGS, 'do_gmp', False):
@@ -420,7 +423,7 @@ def main(argv):
             run_name += f"_{FLAGS.run_name_suffix}"
         wandb.run.name = run_name
     else:
-        if local_rank == 0:
+        if rank == 0:
             logging.info('\n' + '\n'.join([f'{k} = {v}' for k, v in arguments.items()]))
 
 
@@ -439,7 +442,7 @@ def main(argv):
         assert FLAGS.sparsity_ratio == 0.5, "sparsity ratio must be 0.5 for structured N:M sparsity"
         prune_n, prune_m = map(int, FLAGS.sparsity_type.split(":"))
 
-    if local_rank == 0:
+    if rank == 0:
         logging.info(f"loading llm model {FLAGS.model}")
 
     # gmp_batch_size>1 + gradient checkpointing hits a flash-attn 2.8.3 backward
@@ -587,13 +590,29 @@ def main(argv):
             if getattr(FLAGS, 'gmp_kd_lambda', 0.0) > 0 or getattr(FLAGS, 'gmp_hidden_lambda', 0.0) > 0 or getattr(FLAGS, 'gmp_onpolicy_kd_lambda', 0.0) > 0 or getattr(FLAGS, 'gmp_anchor_kd_lambda', 0.0) > 0 or getattr(FLAGS, 'gmp_teacher_seqkd', False) or getattr(FLAGS, 'gmp_blockwise_squarehead', False):
                 print(f"[DBG main] rank={local_rank} get_llm teacher start", flush=True)
                 gmp_teacher = get_llm(_teacher_model_path, FLAGS.seqlen)
-                print(f"[DBG main] rank={local_rank} get_llm teacher done, .to(device)", flush=True)
-                gmp_teacher.to(device)
-                print(f"[DBG main] rank={local_rank} teacher to(device) done", flush=True)
+                _teacher_fsdp = getattr(FLAGS, 'gmp_teacher_fsdp', False) and gmp_use_fsdp and is_distributed
+                if not _teacher_fsdp:
+                    print(f"[DBG main] rank={local_rank} get_llm teacher done, .to(device)", flush=True)
+                    gmp_teacher.to(device)
+                    print(f"[DBG main] rank={local_rank} teacher to(device) done", flush=True)
                 gmp_teacher.eval()
                 for p in gmp_teacher.parameters():
                     p.requires_grad_(False)
-                if gmp_use_fsdp and is_distributed:
+                if _teacher_fsdp:
+                    # 32B: a full bf16 teacher per rank (64GB) does not fit next to the student
+                    # shard, so shard it like the student. Every teacher forward becomes an FSDP
+                    # collective -- fine on the training path, where all ranks call it in lockstep.
+                    gmp_teacher = FSDP(
+                        gmp_teacher,
+                        auto_wrap_policy=functools.partial(
+                            transformer_auto_wrap_policy,
+                            transformer_layer_cls={type(gmp_teacher.model.layers[0])},
+                        ),
+                        sharding_strategy=ShardingStrategy.FULL_SHARD,
+                        device_id=torch.cuda.current_device(),
+                    )
+                    logging.info(f"[rank {local_rank}] Teacher wrapped with FSDP (--gmp_teacher_fsdp)")
+                elif gmp_use_fsdp and is_distributed:
                     gmp_teacher = gmp_teacher.to(torch.bfloat16)
                     logging.info(f"[rank {local_rank}] Teacher kept as plain model (no FSDP) — no NCCL needed for eval-only teacher")
             # DPO dense model: reuse teacher if loaded, else load separately
@@ -663,7 +682,7 @@ def main(argv):
         _train_time_sec = time.time() - _t_train_start
         logging.info(f"Training time: {_train_time_sec/3600:.2f}h")
 
-    if local_rank == 0:
+    if rank == 0:
         logging.info("Pruning finished")
 
     if is_distributed:
@@ -687,7 +706,7 @@ def main(argv):
             _sentinel = None
             if getattr(FLAGS, 'eval_zero_shot', False) and saved_pruned_model_path:
                 _sentinel = os.path.join(saved_pruned_model_path, ".zeroshot_done")
-                if local_rank == 0:
+                if rank == 0:
                     del model
                     import gc as _gc; _gc.collect(); torch.cuda.empty_cache()
                     _eval_model = get_llm(saved_pruned_model_path, FLAGS.seqlen)
@@ -723,7 +742,7 @@ def main(argv):
             # Trainer already saved via FSDP-aware save_model; both ranks destroy PG together.
             dist.destroy_process_group()
             import gc as _gc; _gc.collect(); torch.cuda.empty_cache()
-            if local_rank == 0 and saved_pruned_model_path:
+            if rank == 0 and saved_pruned_model_path:
                 model = get_llm(saved_pruned_model_path, FLAGS.seqlen)
         elif _uses_fsdp:
             # FSDP used but model not saved — just tear down process group.
@@ -735,7 +754,7 @@ def main(argv):
         else:
             state_dict_options = StateDictOptions(full_state_dict=True, cpu_offload=True)
             full_state = get_model_state_dict(model, options=state_dict_options)
-            if local_rank == 0:
+            if rank == 0:
                 model = get_llm(FLAGS.model, FLAGS.seqlen)
                 model.load_state_dict(full_state)
             dist.destroy_process_group()
@@ -745,7 +764,7 @@ def main(argv):
 
 
     if FLAGS.do_distill:
-        if local_rank == 0:
+        if rank == 0:
             logging.info("--- Starting On-Policy Distillation Phase ---")
         # 1. 여기서 티처 모델을 직접 로드합니다. (원본 Dense 모델)
         # 메모리 효율을 위해 bfloat16을 권장하며, GPU 장치(device)로 이동시킵니다.
@@ -760,7 +779,7 @@ def main(argv):
         del teacher_model
         torch.cuda.empty_cache()
 
-    if local_rank == 0 and model is not None:
+    if rank == 0 and model is not None:
 
         if "gemma-2-27b" in FLAGS.model:
             logging.info("gemma-2-27b model detected. Casting to torch.bfloat16 for stability.")
@@ -937,7 +956,7 @@ def main(argv):
                 wandb.log({"math500_pass@1": bench_metrics["lighteval/math500"]})
 
         # Write eval context for SLURM-level lighteval (when eval_math500=false and FSDP)
-        if not FLAGS.eval_math500 and saved_pruned_model_path and is_distributed and local_rank == 0:
+        if not FLAGS.eval_math500 and saved_pruned_model_path and is_distributed and rank == 0:
             import json as _json
             _ctx = {
                 "saved_model_path": saved_pruned_model_path,
@@ -1103,6 +1122,7 @@ if __name__ == '__main__':
     flags.DEFINE_bool('gmp_fixed_mask', False, 'Fix mask from pre-pruned model weights (for sparse SFT). Skips Fisher-based mask updates.')
     flags.DEFINE_bool('gmp_random_cot_ntp', False, 'Use random seqlen-token windows from CoT (no prompt masking) instead of MixedTextDataset.')
     flags.DEFINE_bool('gmp_use_fsdp', False, 'Wrap GMP model with FSDP for multi-GPU training (requires torchrun / accelerate launch).')
+    flags.DEFINE_bool('gmp_teacher_fsdp', False, 'With --gmp_use_fsdp: also FSDP-shard the frozen teacher instead of a full bf16 copy per rank (needed for 32B).')
     flags.DEFINE_bool('gmp_pgd', False, 'Enable PGD projection after each optimizer step: re-project mask using Fisher saliency (v_t*w^2), logging pgd/revivals and pgd/prunings.')
     flags.DEFINE_bool('gmp_pgd_post_target_only', False, 'Only let PGD reproject once TR-GMP growth has reached final_sparsity (or immediately, for a fixed-mask/no-growth run) -- isolates whether PGD churn during the active growth ramp helps or hurts, vs. only ever running PGD as post-target maintenance. False (default) = PGD fires from step 1 onward as before, including during growth.')
     flags.DEFINE_string('gmp_milestone_steps', '', "Comma-separated OPTIMIZER STEPS at which to save an extra HF model directory mid-run, e.g. '512,1024,1536'. --gmp_milestone_sparsities triggers on sparsity crossings, which never fire in a fixed-mask run (sparsity is constant), so this is the step-keyed equivalent: it is what lets a sparse-training run be evaluated as a TRAJECTORY (512/1024/1536/2048) instead of only at its endpoint. Each directory is a normal save_pretrained output, so it is scored with the identical lighteval path via b200_scripts/resume_eval_lighteval.sh.")

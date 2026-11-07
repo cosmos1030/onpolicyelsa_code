@@ -221,7 +221,8 @@ $TORCHRUN --nproc_per_node=2 --master_port=${MASTER_PORT} main.py \
     --wandb=true \
     --wandb_project=${WANDB_PROJECT} \
     --seed=42 \
-    --run_name_suffix="pgd_grow2target_klbudget${KL_BUDGET}_lr${LR}_pgdi${PGD_INTERVAL}_${PRUNING_SCOPE}scope${TAG_SUFFIX:-}_olmo3_b200fsdp2"
+    --run_name_suffix="pgd_grow2target_klbudget${KL_BUDGET}_lr${LR}_pgdi${PGD_INTERVAL}_${PRUNING_SCOPE}scope${TAG_SUFFIX:-}_olmo3_b200fsdp2" \
+    ${EXTRA_ARGS:-}
 
 EXIT_CODE=$?
 echo "=== main.py EXIT: $EXIT_CODE ==="

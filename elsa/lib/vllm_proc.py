@@ -196,7 +196,8 @@ def launch_vllm_server(model_path, cuda_device_str, gpu_mem, max_len,
     """
     addr = str(pathlib.Path(tempfile.gettempdir()) / f'vllm_server_{uuid.uuid4().hex}.sock')
     authkey = uuid.uuid4().hex
-    log_path = str(pathlib.Path(tempfile.gettempdir()) / f'vllm_server_{os.getpid()}.log')
+    # VLLM_SERVER_LOG_DIR: keep the server log on shared storage when node-local /tmp vanishes with the job
+    log_path = str(pathlib.Path(os.environ.get('VLLM_SERVER_LOG_DIR') or tempfile.gettempdir()) / f'vllm_server_{os.getpid()}.log')
     script = str(pathlib.Path(__file__).parent / 'vllm_server_standalone.py')
     logging.info(f"[vllm_proc] launching standalone vLLM server on GPU(s) {cuda_device_str} "
                  f"(tp_size={tensor_parallel_size}): log={log_path}")
