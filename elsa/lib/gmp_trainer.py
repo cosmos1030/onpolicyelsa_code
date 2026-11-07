@@ -9464,7 +9464,9 @@ def globalprune_gmp(
                          f"sparsity={real_sparsity:.3f} | lr={scheduler.get_last_lr()[0]:.2e}"
                          + (f" | dpo_loss={accum_dpo_loss:.4f} acc={accum_dpo_acc:.3f} "
                             f"margin={accum_dpo_margin:.4f}" if use_dpo else "")
-                         + (f" | offline_ipo={accum_offline_ipo:.4f}" if use_offline_ipo else ""))
+                         + (f" | offline_ipo={accum_offline_ipo:.4f}" if use_offline_ipo else "")
+                         + (f" | max_alloc={torch.cuda.max_memory_allocated() / 2**30:.1f}GiB"
+                            if torch.cuda.is_available() else ""))
 
             if use_wandb and wandb.run is not None and is_main_process:
                 wandb.log(log_dict, step=step)

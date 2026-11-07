@@ -1,3 +1,4 @@
+import os
 import torch
 import torch.nn as nn
 import logging
@@ -43,7 +44,9 @@ def get_llm(
     Returns:
         model: AutoModelForCausalLM, the model loaded from huggingface hub.
     """
-    attn_impl = attn_implementation or ("flash_attention_2" if torch.cuda.is_available() else "sdpa")
+    # ELSA_ATTN_IMPL=sdpa: machines with no flash-attn build (KISTI hangang GH200/aarch64 has no wheel)
+    attn_impl = (attn_implementation or os.environ.get("ELSA_ATTN_IMPL")
+                 or ("flash_attention_2" if torch.cuda.is_available() else "sdpa"))
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         low_cpu_mem_usage=True,
