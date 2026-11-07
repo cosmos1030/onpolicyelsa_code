@@ -2784,16 +2784,69 @@ def _teacher_topk_logp(t_hidden, t_weight, k, temperature, chunk):
     return torch.cat(idxs, 0), torch.cat(vals, 0)
 
 
+def _fused_head_forward(self, input_ids=None, attention_mask=None, *args,
+                        fused_topk_labels=None, fused_topk_teacher_idx=None,
+                        fused_topk_teacher_logp=None, fused_topk_cfg=None, **kwargs):
+    """Replacement CausalLM.forward, following verl (verl/models/transformers/
+    monkey_patch.py patch_forward_with_backends, which assigns
+    model.__class__.forward, and dense_common.forward_with_torch_backend): the
+    fused lm_head loss runs INSIDE the model's own forward, so when the model
+    is FSDP-wrapped the root unit's params (embed/norm/lm_head) are already
+    all-gathered by FSDP's pre-forward and gradients go back through FSDP's
+    normal post-backward reduce-scatter. Extra inputs are ordinary forward
+    kwargs as in verl; under FSDP MixedPrecision the root pre-forward casts
+    the float teacher log-probs to bf16 (accepted: the full-vocab path's
+    teacher logits are bf16 already).
+
+    Without fused_topk_labels this is the original forward (the teacher
+    shares the class and never passes them)."""
+    if fused_topk_labels is None:
+        return type(self)._orig_forward_before_fused(self, input_ids, attention_mask, *args, **kwargs)
+    ntp_w, kd_w, temperature, chunk = fused_topk_cfg
+    kw = {} if attention_mask is None else {'attention_mask': attention_mask}
+    h = self.model(input_ids=input_ids, **kw).last_hidden_state                # (B, T, D)
+    sel = fused_topk_labels[:, 1:] != -100
+    hs = h[:, :-1][sel]
+    if hs.shape[0] == 0:
+        return FusedTopKOutput(loss=h.sum() * 0.0, ntp=0.0, kd=0.0)
+    parts = {}
+    total = _FusedLMHeadTopKKL.apply(hs, self.lm_head.weight, fused_topk_labels[:, 1:][sel],
+                                     fused_topk_teacher_idx, fused_topk_teacher_logp.float(),
+                                     float(ntp_w), float(kd_w), float(temperature), int(chunk), parts)
+    return FusedTopKOutput(loss=total, ntp=parts['ntp'], kd=parts['kd'])
+
+
+from dataclasses import dataclass as _dataclass
+from transformers.utils import ModelOutput as _ModelOutput
+
+
+@_dataclass
+class FusedTopKOutput(_ModelOutput):
+    loss: torch.Tensor = None
+    ntp: float = 0.0
+    kd: float = 0.0
+
+
+def install_fused_head_forward(model):
+    """Class-level patch, as verl does. Installing it lazily after FSDP
+    wrapping is fine: FSDP calls the wrapped module through Module.__call__,
+    which looks forward up on the class at call time."""
+    cls = type(model)
+    if getattr(cls, '_orig_forward_before_fused', None) is None:
+        cls._orig_forward_before_fused = cls.forward
+        cls.forward = _fused_head_forward
+
+
 def _fused_topk_distill(model, teacher_model, input_ids, attention_mask, labels, k,
                         ntp_w, kd_w, temperature, chunk=1024):
-    """Student/teacher body forwards + fused lm_head losses on the shifted
-    valid positions. Returns (weighted_loss_tensor, ntp_mean, kd_mean,
-    teacher_topk_mass_mean). Single-GPU (non-FSDP) HF CausalLM only."""
+    """Teacher top-k (plain, unsharded teacher -- same as the non-fused FSDP
+    path) + student fused lm_head loss on the shifted valid positions, the
+    student going through model(...) so FSDP handles its params. Works for a
+    plain HF CausalLM and for an FSDP-wrapped one. Returns
+    (weighted_loss_tensor, ntp_mean, kd_mean, teacher_topk_mass_mean)."""
+    install_fused_head_forward(getattr(model, '_fsdp_wrapped_module', model))
     kw = {} if attention_mask is None else {'attention_mask': attention_mask}
-    h = model.model(input_ids=input_ids, **kw).last_hidden_state            # (B, T, D)
     sel = labels[:, 1:] != -100
-    hs = h[:, :-1][sel]
-    ys = labels[:, 1:][sel]
     with torch.no_grad():
         th = teacher_model.model(input_ids=input_ids, **kw).last_hidden_state
         ths = th[:, :-1][sel]
@@ -2801,13 +2854,10 @@ def _fused_topk_distill(model, teacher_model, input_ids, attention_mask, labels,
         t_idx, t_logp = _teacher_topk_logp(ths, teacher_model.lm_head.weight, k, temperature, chunk)
         del ths
         t_mass = t_logp.exp().sum(-1).mean().item() if t_logp.numel() else 0.0
-    if hs.shape[0] == 0:
-        z = h.sum() * 0.0
-        return z, 0.0, 0.0, t_mass
-    parts = {}
-    total = _FusedLMHeadTopKKL.apply(hs, model.lm_head.weight, ys, t_idx, t_logp,
-                                     float(ntp_w), float(kd_w), float(temperature), int(chunk), parts)
-    return total, parts['ntp'], parts['kd'], t_mass
+    out = model(input_ids=input_ids, attention_mask=attention_mask,
+                fused_topk_labels=labels, fused_topk_teacher_idx=t_idx, fused_topk_teacher_logp=t_logp,
+                fused_topk_cfg=(float(ntp_w), float(kd_w), float(temperature), int(chunk)))
+    return out.loss, out.ntp, out.kd, t_mass
 
 
 def _kl_loss(s_logits, t_logits, labels, temperature, topk, reverse=False, chunk_size=0,
@@ -5150,7 +5200,7 @@ def globalprune_gmp(
                      "until block_size reaches its max (SquareHead-only training + Fisher importance until then)")
     use_teacher_gen_kd_flag = getattr(FLAGS, 'gmp_teacher_gen_kd', False)
     if fused_topk_k > 0:
-        _bad = {'fsdp': is_fsdp, 'hidden loss': use_hidden, 'blockwise': blockwise_enabled,
+        _bad = {'hidden loss': use_hidden, 'blockwise': blockwise_enabled,
                 'ntp_slm': ntp_slm_ratio > 0, 'teacher_gen_kd': use_teacher_gen_kd,
                 'onpolicy_reverse_kl': onpolicy_reverse_kl, 'onpolicy_dynkl_topk': onpolicy_dynkl_topk > 0,
                 'prevmask_opkd': prevmask_opkd_lambda > 0, 'prune_opd': opkd_prune_opd,
@@ -6202,14 +6252,22 @@ def globalprune_gmp(
         step = _load_train_ckpt(_resume_from)
 
     _PH_ON = bool(_os_kldbg.environ.get('GMP_PHASE_TIMING'))
-    _ph = {'t': None, 'acc': {}, 'n': 0}
+    _ph = {'t': None, 'acc': {}, 'n': 0, 'pk': {}, 'gpk': 0.0}
     def _phase(name):
+        # Times the segment that just ENDED as `name`, and (same attribution)
+        # records the allocator's peak during that segment: max_memory_allocated
+        # is read and then reset at every marker, so 'pk' says which phase sets
+        # the run's peak VRAM ('gpk' keeps the overall max).
         if not _PH_ON:
             return
         torch.cuda.synchronize()
         _now = time.time()
         if _ph['t'] is not None:
             _ph['acc'][name] = _ph['acc'].get(name, 0.0) + _now - _ph['t']
+        _pk = torch.cuda.max_memory_allocated() / 1e9
+        _ph['pk'][name] = max(_ph['pk'].get(name, 0.0), _pk)
+        _ph['gpk'] = max(_ph['gpk'], _pk)
+        torch.cuda.reset_peak_memory_stats()
         _ph['t'] = _now
     while step < total_steps:
         _phase('between_steps')
@@ -7837,11 +7895,21 @@ def globalprune_gmp(
         # saliency mode (spa/wanda/magnitude/sqrt_fisher), which this
         # in-place path does not special-case.
         _phase('optimizer_step')
+        # PGD event VRAM cost (rebuttal: does mask screening raise peak VRAM?).
+        # Same measurement as the quant [cost] line: allocated bytes at the event
+        # boundary, peak reset there, so peak-base is exactly what the projection
+        # (importance, threshold search, screening forwards, mask build) adds on
+        # top of the steady-state footprint at that moment.
+        _pgd_mem_base = torch.cuda.memory_allocated() / 1e9
+        _pgd_mem_t0 = time.time()
+        torch.cuda.reset_peak_memory_stats()
+        _pgd_mem_ran = False
         if (pgd_enabled and step > dense_warmup_steps and not math.isnan(grad_norm) and not math.isinf(grad_norm)
                 and step % pgd_interval == 0
                 and not (pgd_skip_growth_step and step % mask_interval == 0)
                 and (not pgd_post_target_only or tr_reached or fixed_mask or not tr_enabled)
                 and not _pgd_frozen[0]):
+            _pgd_mem_ran = True
             _pgd_revivals = 0
             _pgd_prunings = 0
             _pgd_use_fsdp = _FSDP_AVAILABLE and fsdp_model is not None
@@ -9322,6 +9390,14 @@ def globalprune_gmp(
                 wandb.log({"pgd/revivals": _pgd_revivals, "pgd/prunings": _pgd_prunings}, step=step)
 
         # ── Gradient conflict measurement (OPKD vs IPO on same sequence) ──────
+        if _pgd_mem_ran:
+            _pgd_mem_peak = torch.cuda.max_memory_allocated() / 1e9
+            logging.info(f"  [pgd][mem] step={step} base={_pgd_mem_base:.2f}GB peak={_pgd_mem_peak:.2f}GB "
+                         f"delta={_pgd_mem_peak - _pgd_mem_base:+.2f}GB sec={time.time() - _pgd_mem_t0:.2f} "
+                         f"sparsity={maskmgr.current_sparsity():.4f}")
+            if use_wandb and is_main_process:
+                wandb.log({"pgd/mem_base_gb": _pgd_mem_base, "pgd/mem_peak_gb": _pgd_mem_peak,
+                           "pgd/mem_delta_gb": _pgd_mem_peak - _pgd_mem_base}, step=step)
         if (measure_grad_conflict and not filter_grad_conflict
                 and _measure_generated is not None
                 and _measure_pair is not None and is_main_process):
@@ -9457,9 +9533,12 @@ def globalprune_gmp(
                 if _ph['n'] % 32 == 0:
                     _tot = sum(_ph['acc'].values())
                     logging.info(f"  [phase_timing] steps={_ph['n']} (up to step {step}) total={_tot:.1f}s " + ' '.join(f'{k}={v:.1f}s({100*v/_tot:.0f}%)' for k, v in sorted(_ph['acc'].items(), key=lambda x: -x[1]))
-                                 + f" peak_alloc={torch.cuda.max_memory_allocated()/1e9:.1f}GB peak_reserved={torch.cuda.max_memory_reserved()/1e9:.1f}GB")
+                                 + f" peak_alloc={_ph['gpk']:.1f}GB peak_reserved={torch.cuda.max_memory_reserved()/1e9:.1f}GB")
+                    logging.info(f"  [phase_peak] steps={_ph['n']} (up to step {step}) peak allocated GB by phase: "
+                                 + ' '.join(f'{k}={v:.2f}' for k, v in sorted(_ph['pk'].items(), key=lambda x: -x[1])))
                     _ph['acc'] = {}
-                    torch.cuda.reset_peak_memory_stats()
+                    _ph['pk'] = {}
+                    _ph['gpk'] = 0.0
             logging.info(f"Step {step}/{total_steps} | loss={accum_loss:.4f} | "
                          f"sparsity={real_sparsity:.3f} | lr={scheduler.get_last_lr()[0]:.2e}"
                          + (f" | dpo_loss={accum_dpo_loss:.4f} acc={accum_dpo_acc:.3f} "
