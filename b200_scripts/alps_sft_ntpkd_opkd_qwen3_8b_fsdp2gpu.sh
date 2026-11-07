@@ -167,7 +167,8 @@ $TORCHRUN --nproc_per_node=2 --master_port=${MASTER_PORT} main.py \
     --wandb=true \
     --wandb_project=${WANDB_PROJECT} \
     --seed=42 \
-    --run_name_suffix="alpssft8b_${SPARSITY_TAG}_lr${LR}${TAG_SUFFIX:-}_$(basename "$DATA_PATH" .jsonl)_b200fsdp2"
+    --run_name_suffix="alpssft8b_${SPARSITY_TAG}_lr${LR}${TAG_SUFFIX:-}_$(basename "$DATA_PATH" .jsonl)_b200fsdp2" \
+    ${EXTRA_ARGS:-}
 
 EXIT_CODE=$?
 echo "=== main.py EXIT: $EXIT_CODE ==="

@@ -337,7 +337,10 @@ def run_lighteval_bench(
         # CUDA graphs by default (lighteval_patched_runner reads ELSA_VLLM_CUDA_GRAPH; same math,
         # ~25-30% faster decode). Callers that set it explicitly keep their choice; a failed
         # graph run (e.g. capture OOM next to a live trainer) is retried once in eager mode.
-        os.environ.setdefault("ELSA_VLLM_CUDA_GRAPH", "1")
+        # tp_size>1: vLLM custom all-reduce fails during graph capture here
+        # (custom_all_reduce.cuh "invalid argument"), so only default graphs on for tp 1.
+        if tp_size == 1:
+            os.environ.setdefault("ELSA_VLLM_CUDA_GRAPH", "1")
         rc, elapsed = _run_lighteval(model_path, task_str, out_dir, max_tok, gpu_util, ms, ctx_len, tp_size=tp_size, seed=seed)
         if rc != 0 and os.environ.get("ELSA_VLLM_CUDA_GRAPH") == "1":
             logger.warning(f"[lighteval_bench] {name} failed with CUDA graphs (rc={rc}); retrying eager")
