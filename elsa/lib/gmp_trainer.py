@@ -336,6 +336,15 @@ def _cubic_sparsity(step, total_steps, final_sparsity, warmup_steps=0):
     return final_sparsity * (1.0 - (1.0 - min(t / T, 1.0)) ** 3)
 
 
+def _linear_sparsity(step, total_steps, final_sparsity, warmup_steps=0):
+    """Linear schedule (rebuttal): s_t = s_final * (t-warmup)/(T-warmup)."""
+    if step < warmup_steps:
+        return 0.0
+    t = step - warmup_steps
+    T = max(total_steps - warmup_steps, 1)
+    return final_sparsity * min(t / T, 1.0)
+
+
 def _cosine_sparsity(step, total_steps, final_sparsity, warmup_steps=0):
     """Cosine schedule: s_t = s_final * 0.5 * (1 - cos(pi * (t-warmup)/(T-warmup))).
     Slower start/end than cubic, steepest in the middle of the ramp."""
@@ -3129,7 +3138,8 @@ def globalprune_gmp(
     tr_kl_quantile  = getattr(FLAGS, 'gmp_tr_kl_quantile', 0.95)
     cubic_log_kl    = getattr(FLAGS, 'gmp_cubic_log_kl', False)  # diagnostic-only KL before/after each cubic mask update
     growth_schedule = getattr(FLAGS, 'gmp_growth_schedule', 'cubic')  # non-TR fixed schedule: 'cubic' or 'cosine'
-    _schedule_fn = _cosine_sparsity if growth_schedule == 'cosine' else _cubic_sparsity
+    _schedule_fn = {'cosine': _cosine_sparsity, 'linear': _linear_sparsity}.get(growth_schedule, _cubic_sparsity)
+    schedule_update_interval = getattr(FLAGS, 'gmp_schedule_update_interval', 0)
     use_wandb      = getattr(FLAGS, 'wandb', False) and is_main_process
     ntp_lambda     = getattr(FLAGS, 'gmp_ntp_lambda', 1.0)
     kd_lambda      = getattr(FLAGS, 'gmp_kd_lambda', 0.0)
@@ -3191,6 +3201,10 @@ def globalprune_gmp(
     pgd_kl_bisect_iters = max(1, getattr(FLAGS, 'gmp_pgd_kl_bisect_iters', 6))
     pgd_skip_growth_step = getattr(FLAGS, 'gmp_pgd_skip_growth_step', False)  # skip PGD on the exact step growth just fired, so the model trains at least one step under the mask growth decided before PGD can touch it again
     pgd_post_target_only = getattr(FLAGS, 'gmp_pgd_post_target_only', False)  # isolate PGD's post-target-maintenance role from its during-growth-ramp role -- see gate check at the main PGD condition below
+    pgd_freeze_after_target = getattr(FLAGS, 'gmp_pgd_freeze_after_target', False)
+    pgd_save_reach_mask = getattr(FLAGS, 'gmp_save_reach_mask', '')
+    _pgd_frozen = [False]
+    _pgd_reach_done = [False]
     pgd_interval = max(1, getattr(FLAGS, 'gmp_pgd_interval', 1))  # only run PGD's reprojection every Nth step (default 1 = every step, prior behavior) -- decouples PGD's own cadence from mask_interval's growth cadence
     pgd_grow_to_target = getattr(FLAGS, 'gmp_pgd_grow_to_target', False)  # PGD-driven growth (no separate TR-GMP growth): _pgd_desired targets final_sparsity directly (instead of matching current keep-count), and revive is no longer forced equal to prune -- revive saturates at min(k, revive_cand) while prune keeps going up to k, so whenever prune_cand > revive_cand (current sparsity < target) the self-KL-gated bisection alone drives net sparsity growth, at whatever pace the budget allows. Once current sparsity reaches target, prune_cand/revive_cand naturally converge and it degrades to pure polish/maintenance -- no separate at-target branch needed (unlike the N:M pre/post-target split). Intended for --gmp_tr_enabled=false + --sparsity_type=unstructured (not yet supported for N:M, which additionally needs group-structure-aware growth); only affects the unstructured gmp_pgd_kl_budget branch below.
     if pgd_grow_to_target:
@@ -4165,6 +4179,15 @@ def globalprune_gmp(
             torch.cuda.empty_cache()
 
         # periodic mask update (freeze mask after pruning_end_steps)
+        # Rebuttal: extra fixed-schedule mask updates between mask_interval
+        # boundaries (only cubic/cosine/linear runs: no TR, no PGD, no fixed mask).
+        if (schedule_update_interval > 0 and step % schedule_update_interval == 0
+                and step % mask_interval != 0 and not tr_enabled and not pgd_enabled
+                and not fixed_mask and dense_warmup_steps < step <= pruning_end_steps):
+            current_sparsity = _schedule_fn(step, pruning_end_steps, final_sparsity, dense_warmup_steps)
+            maskmgr.update(fisher, current_sparsity, fsdp_model)
+            if is_main_process:
+                logging.info(f"  [sched_update] step={step} sparsity={current_sparsity:.4f} ({growth_schedule}, every {schedule_update_interval})")
         if step % mask_interval == 0:
             # NOTE: _refresh_pgd_kl_cal_batch() used to be called right here,
             # BEFORE the vLLM wake below -- this was the one extra GPU
@@ -5117,7 +5140,8 @@ def globalprune_gmp(
         if (pgd_enabled and step > dense_warmup_steps and not math.isnan(grad_norm) and not math.isinf(grad_norm)
                 and step % pgd_interval == 0
                 and not (pgd_skip_growth_step and step % mask_interval == 0)
-                and (not pgd_post_target_only or tr_reached or fixed_mask or not tr_enabled)):
+                and (not pgd_post_target_only or tr_reached or fixed_mask or not tr_enabled)
+                and not _pgd_frozen[0]):
             _pgd_revivals = 0
             _pgd_prunings = 0
             _pgd_use_fsdp = _FSDP_AVAILABLE and fsdp_model is not None
@@ -5899,6 +5923,27 @@ def globalprune_gmp(
 
             if use_wandb and is_main_process:
                 wandb.log({"pgd/revivals": _pgd_revivals, "pgd/prunings": _pgd_prunings}, step=step)
+
+            # Rebuttal (revival ablation): latch on first reach of final_sparsity.
+            if (pgd_freeze_after_target or pgd_save_reach_mask) and not _pgd_reach_done[0]:
+                _pgd_post_sparsity = maskmgr.current_sparsity()
+                if _pgd_post_sparsity >= final_sparsity - 1e-4:
+                    _pgd_reach_done[0] = True
+                    if pgd_freeze_after_target:
+                        _pgd_frozen[0] = True
+                        logging.info(f"  [pgd_freeze] target {final_sparsity} reached at step {step} (sparsity {_pgd_post_sparsity:.4f}): mask frozen, no further PGD projections")
+                    else:
+                        logging.info(f"  [pgd_reach] target {final_sparsity} reached at step {step} (sparsity {_pgd_post_sparsity:.4f})")
+                    if use_wandb and is_main_process:
+                        wandb.log({'pgd/reach_step': step}, step=step)
+                    if pgd_save_reach_mask and is_main_process:
+                        import numpy as _np, os as _os_rm
+                        _os_rm.makedirs(_os_rm.path.dirname(pgd_save_reach_mask) or '.', exist_ok=True)
+                        _dump = {'step': step, 'sparsity': _pgd_post_sparsity, 'masks': {}}
+                        for _n, _m in maskmgr.masks.items():
+                            _dump['masks'][_n] = (tuple(_m.shape), _np.packbits(_m.detach().to('cpu', torch.uint8).numpy().ravel().astype(bool)))
+                        torch.save(_dump, pgd_save_reach_mask)
+                        logging.info(f"  [pgd_reach] saved reach mask ({len(_dump['masks'])} params) -> {pgd_save_reach_mask}")
 
         # ── Gradient conflict measurement (OPKD vs IPO on same sequence) ──────
         if (measure_grad_conflict and not filter_grad_conflict
