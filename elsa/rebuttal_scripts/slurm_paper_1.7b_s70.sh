@@ -43,28 +43,39 @@ git -C $WT diff --stat
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 if ! curl -s --connect-timeout 10 https://api.wandb.ai/healthz > /dev/null 2>&1; then echo "ERROR: No internet on $(hostname)."; exit 1; fi
 cd $WT
-$PYTHON main.py \
-    --model="$MODEL" \
-    --dataset=mixed_cot \
-    --data_path=/home1/doyoonkim/projects/elsa/data/ot3_fineweb_40k_qwen3_nostrip_8192.jsonl \
-    --sparsity_ratio=${SPARSITY:-0.7} --sparsity_type=unstructured --do_gmp=true --steps=2048 \
-    --gmp_batch_size=1 --gmp_grad_accum=8 --lr=1e-4 --lr_scheduler=cosine --lr_warmup_steps=256 \
-    --gmp_warmup_ratio=0.05 --gmp_mask_interval=32 --gmp_fisher_beta=0.999 --gmp_saliency=fisher \
-    --gmp_pruning_scope=global --seqlen=8192 --gmp_gradient_checkpointing=true --gmp_max_prompt_len=512 \
-    --gmp_kd_only=false --gmp_kl_chunk_size=256 --kd_nsamples=0 \
-    --gmp_ntp_lambda=0.33 --gmp_kd_lambda=0.33 --gmp_onpolicy_kd_lambda=0.33 \
-    --gmp_onpolicy_kd_interval=32 --gmp_onpolicy_max_new_tokens=512 --gmp_opkd_prev_mask_teacher=false \
-    --gmp_opkd_vllm_gpu_mem=0.15 \
-    --gmp_prompt_path=/home1/doyoonkim/projects/elsa/data/ot3_fineweb_200k_qwen3_opdprompts.jsonl \
-    --gmp_tr_enabled=false --gmp_pruning_end_ratio=0.0 --gmp_pgd=true --gmp_pgd_grow_to_target=true \
-    --gmp_pgd_kl_budget=0.02 --gmp_pgd_kl_calib_size=4 --gmp_pgd_interval=8 \
-    --gmp_pgd_freeze_after_target=${FREEZE} --gmp_save_reach_mask="$REACH_MASK" \
-    --gmp_save_path=/home1/doyoonkim/projects/elsa/models --save_model=true --push_to_hub=false \
-    --eval_math500=false --eval_full_bench=true --eval_zero_shot=false \
-    --wandb=true --wandb_project=reasoning_qwen3_1.7b_nostrip8192 \
-    ${EXTRA_FLAGS:-} \
-    --run_name_suffix=${RUN_TAG}_pgd_grow2target_klbudget0.02_lr1e-4_pgdi8_globalscope_ot3_fineweb_40k_qwen3_nostrip_8192 \
-    --seed=42
-EXIT_CODE=$?
+# In-job retry: the 5a6cb61/5068c4c in-process path dies at random in loss.backward()
+# (SIGSEGV, exit 139; see project_backward_segfault_flaky). Same flags/seed/allocator,
+# restarted from scratch on the same allocation; stop once the final model was saved.
+ATTEMPT_LOG=$(mktemp)
+for ATTEMPT in 1 2 3 4; do
+  echo "=== attempt $ATTEMPT ==="
+  $PYTHON main.py \
+      --model="$MODEL" \
+      --dataset=mixed_cot \
+      --data_path=/home1/doyoonkim/projects/elsa/data/ot3_fineweb_40k_qwen3_nostrip_8192.jsonl \
+      --sparsity_ratio=${SPARSITY:-0.7} --sparsity_type=unstructured --do_gmp=true --steps=2048 \
+      --gmp_batch_size=1 --gmp_grad_accum=8 --lr=1e-4 --lr_scheduler=cosine --lr_warmup_steps=256 \
+      --gmp_warmup_ratio=0.05 --gmp_mask_interval=32 --gmp_fisher_beta=0.999 --gmp_saliency=fisher \
+      --gmp_pruning_scope=global --seqlen=8192 --gmp_gradient_checkpointing=true --gmp_max_prompt_len=512 \
+      --gmp_kd_only=false --gmp_kl_chunk_size=256 --kd_nsamples=0 \
+      --gmp_ntp_lambda=0.33 --gmp_kd_lambda=0.33 --gmp_onpolicy_kd_lambda=0.33 \
+      --gmp_onpolicy_kd_interval=32 --gmp_onpolicy_max_new_tokens=512 --gmp_opkd_prev_mask_teacher=false \
+      --gmp_opkd_vllm_gpu_mem=0.15 \
+      --gmp_prompt_path=/home1/doyoonkim/projects/elsa/data/ot3_fineweb_200k_qwen3_opdprompts.jsonl \
+      --gmp_tr_enabled=false --gmp_pruning_end_ratio=0.0 --gmp_pgd=true --gmp_pgd_grow_to_target=true \
+      --gmp_pgd_kl_budget=0.02 --gmp_pgd_kl_calib_size=4 --gmp_pgd_interval=8 \
+      --gmp_pgd_freeze_after_target=${FREEZE} --gmp_save_reach_mask="$REACH_MASK" \
+      --gmp_save_path=/home1/doyoonkim/projects/elsa/models --save_model=true --push_to_hub=false \
+      --eval_math500=false --eval_full_bench=true --eval_zero_shot=false \
+      --wandb=true --wandb_project=reasoning_qwen3_1.7b_nostrip8192 \
+      ${EXTRA_FLAGS:-} \
+      --run_name_suffix=${RUN_TAG}_pgd_grow2target_klbudget0.02_lr1e-4_pgdi8_globalscope_ot3_fineweb_40k_qwen3_nostrip_8192 \
+      --seed=42 2>&1 | tee "$ATTEMPT_LOG"
+  EXIT_CODE=${PIPESTATUS[0]}
+  if [ $EXIT_CODE -eq 0 ] || grep -qa "Saved pruned model" "$ATTEMPT_LOG"; then break; fi
+  if [ $EXIT_CODE -ne 139 ]; then echo "non-segfault failure ($EXIT_CODE), not retrying"; break; fi
+  echo "=== SIGSEGV on attempt $ATTEMPT (last: $(grep -a "Step [0-9]*/" "$ATTEMPT_LOG" | tail -1 | grep -o "Step [0-9]*/[0-9]*")), retrying ==="
+  sleep 20
+done
 echo "=== main.py EXIT: $EXIT_CODE ==="
 exit $EXIT_CODE
