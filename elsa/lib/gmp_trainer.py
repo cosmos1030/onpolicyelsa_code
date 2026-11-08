@@ -336,6 +336,15 @@ def _cubic_sparsity(step, total_steps, final_sparsity, warmup_steps=0):
     return final_sparsity * (1.0 - (1.0 - min(t / T, 1.0)) ** 3)
 
 
+def _linear_sparsity(step, total_steps, final_sparsity, warmup_steps=0):
+    """Linear schedule (rebuttal): s_t = s_final * (t-warmup)/(T-warmup)."""
+    if step < warmup_steps:
+        return 0.0
+    t = step - warmup_steps
+    T = max(total_steps - warmup_steps, 1)
+    return final_sparsity * min(t / T, 1.0)
+
+
 def _cosine_sparsity(step, total_steps, final_sparsity, warmup_steps=0):
     """Cosine schedule: s_t = s_final * 0.5 * (1 - cos(pi * (t-warmup)/(T-warmup))).
     Slower start/end than cubic, steepest in the middle of the ramp."""
@@ -3956,7 +3965,8 @@ def globalprune_gmp(
     tr_kl_quantile  = getattr(FLAGS, 'gmp_tr_kl_quantile', 0.95)
     cubic_log_kl    = getattr(FLAGS, 'gmp_cubic_log_kl', False)  # diagnostic-only KL before/after each cubic mask update
     growth_schedule = getattr(FLAGS, 'gmp_growth_schedule', 'cubic')  # non-TR fixed schedule: 'cubic' or 'cosine'
-    _schedule_fn = _cosine_sparsity if growth_schedule == 'cosine' else _cubic_sparsity
+    _schedule_fn = {'cosine': _cosine_sparsity, 'linear': _linear_sparsity}.get(growth_schedule, _cubic_sparsity)
+    schedule_update_interval = getattr(FLAGS, 'gmp_schedule_update_interval', 0)
     use_wandb      = getattr(FLAGS, 'wandb', False) and is_main_process
     ntp_lambda     = getattr(FLAGS, 'gmp_ntp_lambda', 1.0)
     kd_lambda      = getattr(FLAGS, 'gmp_kd_lambda', 0.0)
@@ -5237,6 +5247,15 @@ def globalprune_gmp(
             torch.cuda.empty_cache()
 
         # periodic mask update (freeze mask after pruning_end_steps)
+        # Rebuttal: extra fixed-schedule mask updates between mask_interval
+        # boundaries (only cubic/cosine/linear runs: no TR, no PGD, no fixed mask).
+        if (schedule_update_interval > 0 and step % schedule_update_interval == 0
+                and step % mask_interval != 0 and not tr_enabled and not pgd_enabled
+                and not fixed_mask and dense_warmup_steps < step <= pruning_end_steps):
+            current_sparsity = _schedule_fn(step, pruning_end_steps, final_sparsity, dense_warmup_steps)
+            maskmgr.update(fisher, current_sparsity, fsdp_model)
+            if is_main_process:
+                logging.info(f"  [sched_update] step={step} sparsity={current_sparsity:.4f} ({growth_schedule}, every {schedule_update_interval})")
         if step % mask_interval == 0:
             # NOTE: _refresh_pgd_kl_cal_batch() used to be called right here,
             # BEFORE the vLLM wake below -- this was the one extra GPU
