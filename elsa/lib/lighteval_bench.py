@@ -329,6 +329,13 @@ def run_lighteval_bench(
                   for name, task_str, max_tok, ctx_len, keys in base]
     if only_tasks is not None:
         benchmarks = [b for b in benchmarks if b[0] in only_tasks]
+    # ELSA_EVAL_SKIP_TASKS=gpqa,... drops benchmarks from an in-job eval, which
+    # has no task-selection flag of its own (e.g. gpqa is not in the paper's
+    # four-task average and costs ~45 min per 4B model).
+    _skip = {t.strip() for t in os.environ.get("ELSA_EVAL_SKIP_TASKS", "").split(",") if t.strip()}
+    if _skip:
+        logger.info(f"[lighteval_bench] skipping {sorted(_skip)} (ELSA_EVAL_SKIP_TASKS)")
+        benchmarks = [b for b in benchmarks if b[0] not in _skip]
 
     metrics = {}
     for name, task_str, max_tok, ctx_len, ms, correct_keys in benchmarks:

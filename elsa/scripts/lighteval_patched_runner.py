@@ -165,6 +165,27 @@ def _patch_orphan_reasoning_close():
     _ut.remove_reasoning_tags.__code__ = _remove_reasoning_tags.__code__
 
 
+def _patch_custom_all_reduce():
+    """Force vllm.LLM(disable_custom_all_reduce=True). On log-master's H200 NVL
+    node, tensor_parallel_size=2 evals died in vLLM's custom all-reduce
+    ('custom_all_reduce.cuh:453 invalid argument' during CUDA-graph capture), and
+    the eager retry then hung in rendezvous (DistStoreError, 1/2 clients) -- every
+    benchmark of 8B FSDP runs 60976/60977 failed this way (2026-11-07). Custom AR
+    is only a faster all-reduce kernel; NCCL computes the same sums, so scores are
+    unaffected. Set ELSA_VLLM_CUSTOM_AR=1 to keep vLLM's default."""
+    if os.environ.get("ELSA_VLLM_CUSTOM_AR", "0") == "1":
+        return
+    import vllm
+    _orig_init = vllm.LLM.__init__
+
+    def _init(self, *args, **kwargs):
+        kwargs.setdefault("disable_custom_all_reduce", True)
+        return _orig_init(self, *args, **kwargs)
+
+    vllm.LLM.__init__ = _init
+    print("[lighteval_patched_runner] custom all-reduce disabled", flush=True)
+
+
 def _patch_cuda_graphs():
     """lighteval 0.12 hard-codes enforce_eager=True when it builds vllm.LLM, so every
     eval so far ran without CUDA graphs (decode-bound, GPU util 60-75%). Opt-in:
@@ -237,6 +258,7 @@ _disable_sample_cache()
 _patch_avg_at_n()
 _patch_ifeval_json()
 _patch_orphan_reasoning_close()
+_patch_custom_all_reduce()
 _patch_cuda_graphs()
 _patch_parallel_lcb()
 

@@ -3350,7 +3350,11 @@ def _sync_opkd_weights_to_vllm(model: nn.Module, vllm_engine) -> None:
     # with only o_proj/down_proj/norms/embeddings tracking training. Verified on
     # 1.7B: after zeroing layer 0 in HF, qkv_proj and gate_up_proj were
     # unchanged in vLLM. The sidecar/FSDP paths already used load_weights().
-    vllm_model.load_weights([(name, param.data) for name, param in model.named_parameters()])
+    # --gmp_opkd_legacy_partial_sync reproduces the pre-fix behaviour on purpose
+    # (see lib/vllm_proc.legacy_partial_sync_filter).
+    from lib.vllm_proc import legacy_partial_sync_filter
+    vllm_model.load_weights(legacy_partial_sync_filter(
+        [(name, param.data) for name, param in model.named_parameters()]))
 
 
 def _opkd_flatten_pool_batches(pool_batches: list) -> tuple:
@@ -4937,6 +4941,10 @@ def globalprune_gmp(
     """
     import os as _os_dbg
     print(f"[DBG gmp_train ENTER] pid={_os_dbg.getpid()}", flush=True)
+    if getattr(FLAGS, 'gmp_opkd_legacy_partial_sync', False):
+        _os_dbg.environ['GMP_OPKD_LEGACY_PARTIAL_SYNC'] = '1'
+        logging.warning("--gmp_opkd_legacy_partial_sync: OPD rollouts use the pre-856f814 partial "
+                        "weight sync (q/k/v/gate/up frozen at load time in vLLM)")
     device = next(model.parameters()).device
     named_params = _find_linear_weights(model)
     named_shapes = _find_linear_shapes(model)
@@ -5677,6 +5685,19 @@ def globalprune_gmp(
                                   pruning_scope=getattr(FLAGS, 'gmp_pruning_scope', 'global'),
                                   ste=ste_enabled, named_shapes=named_shapes)
     maskmgr.obs_saliency = getattr(FLAGS, 'gmp_saliency', 'fisher') == 'obs'
+    # Wanda/OBS scores are in per-layer output-error units -- one global threshold across layers is
+    # meaningless. Unstructured PGD ranks them within each layer (see _pgd_layer_rank); the
+    # schedule-driven paths need --gmp_pruning_scope=layer.
+    _pgd_layer_rank = ((getattr(FLAGS, 'gmp_saliency', 'fisher') in ('wanda', 'obs')
+                        or getattr(FLAGS, 'gmp_pgd_layer_rank', False)) and prune_n == 0
+                       and not getattr(FLAGS, 'gmp_pgd_raw_global_rank', False))
+    _wanda_cal_id = [None]   # id() of the KL-calibration batch the Wanda scaler was last refreshed for
+    if (_pgd_layer_rank and not getattr(FLAGS, 'gmp_pgd', False)
+            and getattr(FLAGS, 'gmp_pruning_scope', 'global') == 'global'):
+        raise ValueError('--gmp_saliency=wanda/obs (unstructured, no PGD) requires --gmp_pruning_scope=layer')
+    if _pgd_layer_rank and getattr(FLAGS, 'gmp_pgd', False):
+        logging.info(f"--gmp_saliency={FLAGS.gmp_saliency}: PGD ranks scores within each layer "
+                     f"(uniform per-layer allocation under the global KL-bisected k)")
     # Used by _param_block_group (gmp_pruning_scope='block') to fold a
     # leftover/remainder tail of decoder layers into the last FULL group
     # instead of letting it form its own small orphan group -- e.g. 28
@@ -5692,6 +5713,29 @@ def globalprune_gmp(
         maskmgr.apply(fsdp_model)
         logging.info(f"  mask seeded from checkpoint zeros: sparsity="
                      f"{maskmgr.current_sparsity():.4f} (fixed={fixed_mask})")
+    # ── Iterative one-shot pruning (--gmp_oneshot_method) ─────────────────
+    # SparseGPT/ALPS applied to the current student at fixed stage steps,
+    # fixed mask (re-read from the zeros) in between. See lib/iterative_oneshot.py.
+    _oneshot = None
+    _oneshot_done = set()
+    _oneshot_force_refill = False
+    _oneshot_method = str(getattr(FLAGS, 'gmp_oneshot_method', '') or '')
+    if _oneshot_method:
+        from lib.iterative_oneshot import OneShotStager, cubic_sparsities
+        if is_fsdp or not fixed_mask or tr_enabled:
+            raise ValueError("--gmp_oneshot_method needs single-GPU, --gmp_fixed_mask=true, "
+                             "--gmp_tr_enabled=false")
+        _os_steps = [int(s) for s in str(FLAGS.gmp_oneshot_stage_steps).split(',') if s.strip()]
+        _os_sps = [float(s) for s in str(getattr(FLAGS, 'gmp_oneshot_stage_sparsities', '') or '').split(',') if s.strip()]
+        if not _os_sps:
+            _os_sps = cubic_sparsities(final_sparsity, len(_os_steps))
+        _oneshot = OneShotStager(_oneshot_method, _os_steps, _os_sps, tokenizer, FLAGS.data_path,
+                                 nsamples=FLAGS.gmp_oneshot_calib_nsamples,
+                                 seqlen=FLAGS.gmp_oneshot_calib_seqlen,
+                                 seed=FLAGS.gmp_oneshot_calib_seed,
+                                 alps_rho=FLAGS.gmp_oneshot_alps_rho)
+        logging.info(f"  [oneshot] {_oneshot_method} stages: " +
+                     ", ".join(f"step {a}->{b:.4f}" for a, b in zip(_os_steps, _os_sps)))
     if ste_enabled:
         install_ste_forward_hooks(model, maskmgr)
     # ── Gradual quantization (opt-in, --gmp_quant_bits > 0) ────────────────
@@ -6698,6 +6742,30 @@ def globalprune_gmp(
 
         step += 1
 
+        # Iterative one-shot stage. `step` is now the number of the optimizer
+        # update this iteration performs (1-based), and the rollout refill
+        # below fires on this same value (step % onpolicy_interval == 0), so a
+        # stage at k > 0 prunes right before update k and before that step's
+        # refill. Stage k = 0 runs before update 1; the initial pool was drawn
+        # before the loop from the unpruned model, so force a refill.
+        _os_key = 0 if step == 1 else step
+        if _oneshot is not None and _os_key in _oneshot.plan and _os_key not in _oneshot_done:
+            _offload_optimizer_state(optimizer)
+            _os_t, _os_a, _os_sec = _oneshot.run(model, _os_key, device)
+            _reload_optimizer_state(optimizer, device)
+            maskmgr.init_from_weights()
+            maskmgr.apply(fsdp_model)
+            _oneshot_done.add(_os_key)
+            if step % onpolicy_interval != 0:
+                _oneshot_force_refill = True
+            logging.info(f"  [oneshot] stage {_os_key} (before update {step}): {_oneshot_method} "
+                         f"target {_os_t:.4f} achieved {_os_a:.4f} mask {maskmgr.current_sparsity():.4f} "
+                         f"({_os_sec:.0f}s){' + forced rollout refill' if _oneshot_force_refill else ''}")
+            if use_wandb:
+                wandb.log({'oneshot/target_sparsity': _os_t, 'oneshot/achieved_sparsity': _os_a,
+                           'oneshot/mask_sparsity': maskmgr.current_sparsity(),
+                           'oneshot/stage_seconds': _os_sec}, step=step)
+
         def _refresh_pgd_kl_cal_batch():
             # Prefer real OPKD rollouts, matching _tr_mask_update's own
             # calibration-source choice (see the "Use OPKD rollouts as
@@ -6796,12 +6864,30 @@ def globalprune_gmp(
         # Full input covariance for the row re-fit: its own, larger batch (a 6144-wide
         # down_proj needs far more than the KL screen's 4x512 tokens), refreshed on the
         # same cadence. Single-process only -- under FSDP param.data is a flat shard.
-        if ((pgd_nm_refit or getattr(FLAGS, 'gmp_saliency', 'fisher') == 'obs')
-                and getattr(maskmgr, 'prune_m', 0) > 0 and fsdp_model is None
+        # (--gmp_saliency=obs needs the same covariance for unstructured PGD too, hence
+        # the prune_m gate applies only to the re-fit.)
+        if ((pgd_nm_refit and getattr(maskmgr, 'prune_m', 0) > 0
+                or getattr(FLAGS, 'gmp_saliency', 'fisher') == 'obs')
+                and fsdp_model is None
                 and _pgd_kl_cal_batch is not None and getattr(maskmgr, '_full_cov', None) is None):
+            _rf_t0 = time.time()
             _rf_batch = _pgd_kl_calib_batch(refit_calib_iter, pgd_nm_refit_calib, pgd_nm_refit_seqlen, str(device))
             maskmgr.capture_full_cov(model, _rf_batch, str(device))
             del _rf_batch
+            if getattr(FLAGS, 'gmp_saliency', 'fisher') == 'obs':
+                logging.info(f"[obs saliency] H^-1 diagonal refreshed at step {step} "
+                             f"({pgd_nm_refit_calib}x{pgd_nm_refit_seqlen} tok, {time.time() - _rf_t0:.1f}s)")
+        # Wanda scaler for unstructured PGD: same documents and the same refresh cadence
+        # as the OBS covariance (once per KL-calibration-batch refresh = every mask_interval).
+        if (getattr(fisher, 'saliency', None) == 'wanda' and pgd_enabled and fsdp_model is None
+                and _pgd_kl_cal_batch is not None and _wanda_cal_id[0] != id(_pgd_kl_cal_batch)):
+            _wd_t0 = time.time()
+            _wd_batch = _pgd_kl_calib_batch(refit_calib_iter, pgd_nm_refit_calib, pgd_nm_refit_seqlen, str(device))
+            fisher.capture_wanda_stats(model, _wd_batch, str(device))
+            del _wd_batch
+            _wanda_cal_id[0] = id(_pgd_kl_cal_batch)
+            logging.info(f"[wanda saliency] activation norms refreshed at step {step} "
+                         f"({pgd_nm_refit_calib}x{pgd_nm_refit_seqlen} tok, {time.time() - _wd_t0:.1f}s)")
 
         _saliency_diag_step = getattr(FLAGS, 'gmp_saliency_diag_step', 0)
         if _saliency_diag_step > 0 and step == _saliency_diag_step and is_main_process:
@@ -7133,6 +7219,25 @@ def globalprune_gmp(
             else:
                 current_sparsity = 0.0 if step <= dense_warmup_steps else _schedule_fn(
                     min(step, pruning_end_steps), pruning_end_steps, final_sparsity, dense_warmup_steps)
+                if step <= pruning_end_steps and getattr(fisher, 'saliency', None) in ('wanda', 'obs'):
+                    # Layer-output saliencies need their statistics from the CURRENT
+                    # model before each scheduled update; nothing on this (cubic,
+                    # tr_enabled=false, pgd=false) path captured them, so importance()
+                    # silently fell back to w^2. Calibration: training documents
+                    # (--gmp_pgd_refit_calib_source=train), gmp_pgd_nm_refit_calib_size
+                    # x gmp_pgd_nm_refit_seqlen tokens.
+                    if fsdp_model is not None:
+                        raise NotImplementedError('--gmp_saliency=wanda/obs on the cubic path is single-GPU only')
+                    _sal_t0 = time.time()
+                    _sal_b = _pgd_kl_calib_batch(refit_calib_iter, pgd_nm_refit_calib, pgd_nm_refit_seqlen, str(device))
+                    if fisher.saliency == 'wanda':
+                        fisher.capture_wanda_stats(model, _sal_b, str(device))
+                    else:
+                        maskmgr.capture_full_cov(model, _sal_b, str(device))   # fills _OBS_HINV
+                        maskmgr._full_cov = None
+                    del _sal_b
+                    logging.info(f"[cubic saliency] {fisher.saliency} statistics captured at step {step} "
+                                 f"({pgd_nm_refit_calib}x{pgd_nm_refit_seqlen} tok, {time.time() - _sal_t0:.1f}s)")
                 if step <= pruning_end_steps:
                     if cubic_log_kl:
                         # Diagnostic only (--gmp_cubic_log_kl): unlike TR-GMP,
@@ -7321,7 +7426,8 @@ def globalprune_gmp(
         _opd_live = step >= opd_start_step and (_opd_target_hit or not opd_after_target)
         if (opd_start_step > 0 or opd_after_target) and not _delay_global_signal:
             onpolicy_lambda = _onpolicy_lambda_cfg if _opd_live else 0.0
-        if use_onpolicy and _opd_live and not tr_enabled and step % onpolicy_interval == 0:
+        if use_onpolicy and _opd_live and not tr_enabled and (step % onpolicy_interval == 0 or _oneshot_force_refill):
+            _oneshot_force_refill = False
             _in_fsdp_refill3 = fsdp_model is not None and _FSDP_AVAILABLE
             _fsdp_sync_ctx3 = (FSDP.summon_full_params(fsdp_model, writeback=False, offload_to_cpu=True, rank0_only=True)
                                if _in_fsdp_refill3 else nullcontext())
@@ -8074,7 +8180,8 @@ def globalprune_gmp(
             # 경로(tr_enabled=false)는 거기를 지나지 않으므로 _wanda_scaler 가 비어
             # 있고, importance() 가 조용히 w^2(=magnitude)로 폴백해 "wanda 로 돌렸다"
             # 는 로그만 남은 채 전혀 다른 실험이 된다. 여기서 직접 잡는다.
-            if getattr(fisher, 'saliency', None) == 'wanda':
+            if getattr(fisher, 'saliency', None) == 'wanda' and _wanda_cal_id[0] is None:
+                # (single-process runs capture from training documents above instead)
                 if _opkd_refilled_pre_mask and _opkd_standalone_pool:
                     _wanda_b = _opkd_pool_to_batch(_opkd_standalone_pool, str(device))
                 else:
@@ -8112,6 +8219,22 @@ def globalprune_gmp(
                         _t = _buf
                 else:
                     _t = fisher.importance(_n, _p)
+                if _pgd_layer_rank and _t.numel() > 0 and getattr(maskmgr, 'prune_n', 0) == 0:
+                    # Wanda/OBS scores are per-layer output-error units, so a single
+                    # global threshold over them is meaningless. Replace each score by
+                    # its within-layer rank percentile: the global top-k machinery
+                    # (KL bisection over k, prune/revive) is unchanged, and a global
+                    # threshold on percentiles keeps every layer at the same sparsity
+                    # (SparseGPT/Wanda's uniform per-layer allocation).
+                    _fl = _t.reshape(-1)
+                    _rk = torch.empty(_fl.numel(), device=_fl.device, dtype=torch.float32)
+                    _rk[torch.argsort(_fl)] = torch.arange(1, _fl.numel() + 1, device=_fl.device,
+                                                           dtype=torch.float32) / _fl.numel()
+                    if _pgd_fast_path and _t is _pgd_scratch.get(_n):
+                        _t.copy_(_rk.view_as(_t))      # keep the persistent buffer (no new allocation kept)
+                    else:
+                        _t = _rk.view_as(_t)
+                    del _fl, _rk
                 if _t.numel() > 0:
                     _pgd_imps[_n] = _t
 

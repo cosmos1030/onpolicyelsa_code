@@ -55,6 +55,32 @@ import torch.multiprocessing as _torch_mp
 _torch_mp.set_sharing_strategy('file_system')
 
 
+# ─── Legacy partial weight sync (reproduction switch) ─────────────────────────
+# Before 856f814 (2026-10-09) the single-GPU in-process OPKD path synced the
+# student into vLLM by HF-name matching, which never reached Qwen3's packed
+# qkv_proj / gate_up_proj: the rollout engine's q/k/v/gate/up stayed at their
+# load-time values while o_proj/down_proj/norms/embeddings tracked training.
+# Every paper-era 4B/8B ALPS+training run used that path. Setting
+# GMP_OPKD_LEGACY_PARTIAL_SYNC=1 (main.py --gmp_opkd_legacy_partial_sync)
+# drops exactly those five projections from every sync on ANY engine path, so a
+# new run reproduces the paper's rollout condition (e.g. an lr sweep that has
+# to line up with a paper-era number).
+_LEGACY_SKIP = ('.q_proj.', '.k_proj.', '.v_proj.', '.gate_proj.', '.up_proj.')
+_legacy_logged = [False]
+
+
+def legacy_partial_sync_filter(items):
+    """items: list of (name, tensor). Unchanged unless the legacy switch is on."""
+    if os.environ.get('GMP_OPKD_LEGACY_PARTIAL_SYNC') != '1':
+        return items
+    kept = [(n, t) for n, t in items if not any(s in n for s in _LEGACY_SKIP)]
+    if not _legacy_logged[0]:
+        logging.warning(f"[legacy_partial_sync] syncing {len(kept)}/{len(items)} params into vLLM "
+                        f"(q/k/v/gate/up left at load-time values, pre-856f814 behaviour)")
+        _legacy_logged[0] = True
+    return kept
+
+
 # ─── Fake output objects (match vLLM's CompletionOutput interface) ───────────
 
 class _FakeOutputItem:
@@ -128,6 +154,7 @@ class VLLMServerAdapter:
             state_dict = {k: v for k, v in state_dict.items() if not any(d in k for d in _drop)}
             logging.info(f"[sync_bug_emulation] syncing {len(state_dict)}/{_n0} params "
                          f"(q/k/v/gate/up left at load-time values)")
+        state_dict = dict(legacy_partial_sync_filter(list(state_dict.items())))
         self._conn.send(('sync_weights', state_dict))
         result = self._recv_with_alive_check()
         if result != 'synced':

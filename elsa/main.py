@@ -1124,6 +1124,23 @@ if __name__ == '__main__':
     # GMP (BEST-style)
     flags.DEFINE_bool('do_gmp', False, 'Use BEST-style gradual magnitude pruning with Fisher importance.')
     flags.DEFINE_bool('gmp_fixed_mask', False, 'Fix mask from pre-pruned model weights (for sparse SFT). Skips Fisher-based mask updates.')
+    flags.DEFINE_enum('gmp_oneshot_method', '', ['', 'sparsegpt', 'alps'],
+                      'Iterative one-shot pruning baseline (lib/iterative_oneshot.py): at each step in '
+                      '--gmp_oneshot_stage_steps, prune the current student with SparseGPT or ALPS to the next '
+                      'stage sparsity, then train with a fixed mask until the next stage. Needs '
+                      '--gmp_fixed_mask=true (dense start), --gmp_tr_enabled=false, single GPU. Empty = off.')
+    flags.DEFINE_bool('gmp_opkd_legacy_partial_sync', False,
+                      'Reproduce the pre-856f814 rollout condition: never sync q/k/v/gate/up into the OPD vLLM '
+                      'engine (they stay at load-time values), on any engine path. Only for runs that must line '
+                      'up with paper-era single-GPU in-process numbers. See lib/vllm_proc.py.')
+    flags.DEFINE_string('gmp_oneshot_stage_steps', '', 'Comma-separated optimizer steps at which a one-shot stage runs.')
+    flags.DEFINE_string('gmp_oneshot_stage_sparsities', '',
+                        'Comma-separated per-stage target sparsities (increasing). Empty = cubic ramp '
+                        's_k = sparsity_ratio * (1 - (1 - k/K)^3), k = 1..K.')
+    flags.DEFINE_integer('gmp_oneshot_calib_nsamples', 128, 'One-shot stage calibration windows (fixed corpus, --data_path).')
+    flags.DEFINE_integer('gmp_oneshot_calib_seqlen', 2048, 'One-shot stage calibration window length.')
+    flags.DEFINE_integer('gmp_oneshot_calib_seed', 42, 'Seed for drawing the calibration windows (drawn once, reused every stage).')
+    flags.DEFINE_float('gmp_oneshot_alps_rho', 300.0, 'ALPS ADMM rho for --gmp_oneshot_method=alps (paper ALPS baseline value).')
     flags.DEFINE_bool('gmp_random_cot_ntp', False, 'Use random seqlen-token windows from CoT (no prompt masking) instead of MixedTextDataset.')
     flags.DEFINE_bool('gmp_use_fsdp', False, 'Wrap GMP model with FSDP for multi-GPU training (requires torchrun / accelerate launch).')
     flags.DEFINE_bool('gmp_offload_optimizer_fwd', False, 'Keep AdamW exp_avg/exp_avg_sq on CPU during the forward/backward passes and move them to the GPU only for optimizer.step() (32B on 2 GH200 nodes: frees ~2x the bf16 param shard per rank; GH200 C2C makes the copies cheap).')
@@ -1253,6 +1270,8 @@ if __name__ == '__main__':
                       'freezes the mask, so there was no way to start from a pruned checkpoint '
                       '(e.g. ALPS 2:4) and let PGD keep refining WHICH weights survive. Without '
                       'this the mask starts all-ones and the checkpoint\'s sparsity is thrown away.')
+    flags.DEFINE_bool('gmp_pgd_layer_rank', False, 'Unstructured PGD: replace every saliency score by its within-layer rank percentile before the global top-k / KL bisection, so all layers keep the same sparsity (SparseGPT/Wanda-style uniform allocation). Always on for --gmp_saliency=wanda/obs, whose scores are not comparable across layers; set true to give fisher/magnitude the same allocation as a control.')
+    flags.DEFINE_bool('gmp_pgd_raw_global_rank', False, 'Unstructured PGD: rank the raw saliency scores globally across layers, also for --gmp_saliency=wanda/obs (overrides the forced within-layer rank). Rebuttal control: global Wanda.')
     flags.DEFINE_enum('gmp_saliency', 'fisher', ['fisher', 'magnitude', 'spa', 'sqrt_fisher', 'wanda', 'obs'],
                       'Importance score for GMP pruning: fisher=F_hat*w^2 (Adam 2nd moment), magnitude=w^2, '
                       'spa=h*u^2 where u is the next unconstrained Adam iterate and h=sqrt(v_hat)+eps '
