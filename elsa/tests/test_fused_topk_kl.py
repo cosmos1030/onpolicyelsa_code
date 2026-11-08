@@ -1,6 +1,6 @@
 """Check _FusedLMHeadTopKKL against plain autograd on materialized logits."""
-import sys, torch, torch.nn.functional as F
-sys.path.insert(0, '/home1/doyoonkim/projects/elsa')
+import os, sys, torch, torch.nn.functional as F
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))  # elsa/
 from lib.gmp_trainer import _FusedLMHeadTopKKL, _teacher_topk_logp
 torch.manual_seed(0)
 dev = 'cuda'

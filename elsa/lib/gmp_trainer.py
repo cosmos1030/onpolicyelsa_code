@@ -353,6 +353,15 @@ def _cubic_sparsity(step, total_steps, final_sparsity, warmup_steps=0):
     return final_sparsity * (1.0 - (1.0 - min(t / T, 1.0)) ** 3)
 
 
+def _linear_sparsity(step, total_steps, final_sparsity, warmup_steps=0):
+    """Linear schedule (rebuttal): s_t = s_final * (t-warmup)/(T-warmup)."""
+    if step < warmup_steps:
+        return 0.0
+    t = step - warmup_steps
+    T = max(total_steps - warmup_steps, 1)
+    return final_sparsity * min(t / T, 1.0)
+
+
 def _cosine_sparsity(step, total_steps, final_sparsity, warmup_steps=0):
     """Cosine schedule: s_t = s_final * 0.5 * (1 - cos(pi * (t-warmup)/(T-warmup))).
     Slower start/end than cubic, steepest in the middle of the ramp."""
@@ -516,6 +525,11 @@ def _pgd_kth_smallest(tensors, r, dev, use_fsdp):
     Requires 1 <= r <= total element count."""
     if use_fsdp:
         import torch.distributed as _dist
+        if _os_kldbg.environ.get('GMP_PGD_BRACKET_FSDP') == '1':
+            got = _pgd_kth_smallest_bracket_fsdp(tensors, r, dev)
+            _PGD_KTH_STATS[got is None] += 1
+            if got is not None:
+                return got
     else:
         got = _pgd_kth_smallest_bracket(tensors, r)
         _PGD_KTH_STATS[got is None] += 1
@@ -594,6 +608,69 @@ def _pgd_kth_smallest_bracket(tensors, r):
     if lt_b - le_a > _PGD_KTH_GATHER_MAX:
         return None
     inner = torch.cat([v[(v > a) & (v < b)].reshape(-1) for v in tensors()])
+    return torch.kthvalue(inner, r - le_a).values.item()
+
+
+def _gather_padded(x, dev):
+    """all_gather a 1-D fp32 tensor whose length differs per rank: pad with +inf to
+    the max length (padding sorts after every finite value, so callers that only
+    look at the first `n_finite` order statistics are unaffected)."""
+    import torch.distributed as _dist
+    n = torch.tensor([x.numel()], dtype=torch.long, device=dev)
+    _dist.all_reduce(n, op=_dist.ReduceOp.MAX)
+    buf = torch.full((int(n.item()),), math.inf, dtype=torch.float32, device=dev)
+    buf[:x.numel()] = x
+    out = [torch.empty_like(buf) for _ in range(_dist.get_world_size())]
+    _dist.all_gather(out, buf)
+    return torch.cat(out)
+
+
+def _pgd_kth_smallest_bracket_fsdp(tensors, r, dev):
+    """FSDP version of _pgd_kth_smallest_bracket (GMP_PGD_BRACKET_FSDP=1): same
+    sample -> bracket -> count -> exact-inner-kthvalue scheme over every rank's
+    shards. Every branch depends only on all-gathered / all-reduced values, so all
+    ranks take the same path and issue the same collectives (a rank-local hit/miss
+    decision would desync them). Returns the exact r-th smallest or None (all
+    ranks agree) to fall back to the radix passes."""
+    import torch.distributed as _dist
+    ws = _dist.get_world_size()
+    sizes = [v.numel() for v in tensors.__self__._imps.values()] \
+        if isinstance(getattr(tensors, '__self__', None), _PGDLogVals) else [v.numel() for v in tensors()]
+    n_t = torch.tensor([sum(sizes)], dtype=torch.long, device=dev)
+    _dist.all_reduce(n_t, op=_dist.ReduceOp.SUM)
+    n_total = int(n_t.item())
+    stride = max(1, n_total // _PGD_KTH_SAMPLE)
+    while stride > 1 and (stride % 2 == 0 or stride % 3 == 0):
+        stride += 1
+    loc = [v.reshape(-1)[stride // 2::stride].float() for v in tensors()]
+    loc = torch.cat(loc) if loc else torch.empty(0, device=dev)
+    samp = _gather_padded(loc, dev)
+    s = int(torch.isfinite(samp).sum().item()) if not torch.isinf(loc).any() else samp.numel()
+    samp = samp.sort().values
+    del loc
+    if s == 0:
+        return None
+    q = (r - 0.5) / n_total
+    m = 8.0 * math.sqrt(s * q * (1.0 - q)) + 64 * ws
+    i_a, i_b = int(q * s - m), int(q * s + m)
+    a = samp[i_a].item() if i_a >= 0 else -math.inf
+    b = samp[i_b].item() if i_b < s else math.inf
+    del samp
+    cnt = torch.zeros(4, dtype=torch.long, device=dev)
+    for v in tensors():
+        cnt += torch.stack([(v < a).sum(), (v <= a).sum(), (v < b).sum(), (v <= b).sum()])
+    _dist.all_reduce(cnt, op=_dist.ReduceOp.SUM)
+    lt_a, le_a, lt_b, le_b = cnt.tolist()
+    if r <= lt_a or r > le_b:
+        return None
+    if r <= le_a:
+        return a
+    if r > lt_b:
+        return b
+    if lt_b - le_a > _PGD_KTH_GATHER_MAX:
+        return None
+    inner = [v[(v > a) & (v < b)].reshape(-1).float() for v in tensors()]
+    inner = _gather_padded(torch.cat(inner) if inner else torch.empty(0, device=dev), dev)
     return torch.kthvalue(inner, r - le_a).values.item()
 
 
@@ -2845,9 +2922,10 @@ from transformers.utils import ModelOutput as _ModelOutput
 
 @_dataclass
 class FusedTopKOutput(_ModelOutput):
+    # ModelOutput requires every field after the first to default to None
     loss: torch.Tensor = None
-    ntp: float = 0.0
-    kd: float = 0.0
+    ntp: float = None
+    kd: float = None
 
 
 @_dataclass
@@ -3271,6 +3349,18 @@ def _pg_loss(s_logits, t_logits, gen_labels, is_log_w=None, old_s_logp=None,
     return loss
 
 
+def _log_opt_move(what, optimizer, t0):
+    """GMP_MEM_DEBUG: cost of one Adam-state CPU<->GPU move (first few calls only)."""
+    if not _os_kldbg.environ.get('GMP_MEM_DEBUG'):
+        return
+    _log_opt_move.n = getattr(_log_opt_move, 'n', 0) + 1
+    if _log_opt_move.n > 8:
+        return
+    gb = sum(v.numel() * v.element_size() for st in optimizer.state.values()
+             for k, v in st.items() if k in ('exp_avg', 'exp_avg_sq')) / 2**30
+    logging.info(f"[mem] optimizer {what}: {gb:.2f}GiB in {time.time() - t0:.2f}s")
+
+
 def _offload_optimizer_state(optimizer) -> None:
     """Move AdamW's exp_avg/exp_avg_sq (bf16, same size as the model itself --
     ~32GB for 8B params) to CPU in-place, freeing that GPU memory for the
@@ -3279,21 +3369,40 @@ def _offload_optimizer_state(optimizer) -> None:
     already None between steps via zero_grad(); only optimizer state is big
     enough here to matter). Single-GPU path only -- FSDP shards this
     per-rank already and isn't what's tight on memory."""
+    if _os_kldbg.environ.get('GMP_MEM_DEBUG'):
+        torch.cuda.synchronize()  # time the copies, not the optimizer kernels still in flight
+    _t0 = time.time()
+    # reuse one pinned CPU buffer per state tensor: device->pageable copies run at ~8GiB/s
+    # here (2.5-3s per step for a 32B rank's 17.5GiB), pinned ones at full link speed
+    pinned = optimizer.__dict__.setdefault('_elsa_pinned', {})
     for state in optimizer.state.values():
         for key in ('exp_avg', 'exp_avg_sq'):
             if key in state and state[key].is_cuda:
-                state[key] = state[key].to('cpu', non_blocking=True)
+                t = state[key]
+                buf = pinned.get((id(state), key))
+                if buf is None or buf.shape != t.shape or buf.dtype != t.dtype:
+                    buf = torch.empty(t.shape, dtype=t.dtype, device='cpu', pin_memory=True)
+                    pinned[(id(state), key)] = buf
+                buf.copy_(t, non_blocking=True)
+                state[key] = buf
     torch.cuda.synchronize()
     torch.cuda.empty_cache()
+    _log_opt_move('offload', optimizer, _t0)
 
 
 def _reload_optimizer_state(optimizer, device) -> None:
     """Undo _offload_optimizer_state after the vLLM rollout + sleep finishes,
     moving exp_avg/exp_avg_sq back onto GPU before the next optimizer.step()."""
+    if _os_kldbg.environ.get('GMP_MEM_DEBUG'):
+        torch.cuda.synchronize()
+    _t0 = time.time()
     for state in optimizer.state.values():
         for key in ('exp_avg', 'exp_avg_sq'):
             if key in state and not state[key].is_cuda:
                 state[key] = state[key].to(device, non_blocking=True)
+    if _os_kldbg.environ.get('GMP_MEM_DEBUG'):
+        torch.cuda.synchronize()
+        _log_opt_move('reload', optimizer, _t0)
     torch.cuda.synchronize()
 
 
@@ -5019,7 +5128,8 @@ def globalprune_gmp(
     tr_kl_quantile  = getattr(FLAGS, 'gmp_tr_kl_quantile', 0.95)
     cubic_log_kl    = getattr(FLAGS, 'gmp_cubic_log_kl', False)  # diagnostic-only KL before/after each cubic mask update
     growth_schedule = getattr(FLAGS, 'gmp_growth_schedule', 'cubic')  # non-TR fixed schedule: 'cubic' or 'cosine'
-    _schedule_fn = _cosine_sparsity if growth_schedule == 'cosine' else _cubic_sparsity
+    _schedule_fn = {'cosine': _cosine_sparsity, 'linear': _linear_sparsity}.get(growth_schedule, _cubic_sparsity)
+    schedule_update_interval = getattr(FLAGS, 'gmp_schedule_update_interval', 0)
     use_wandb      = getattr(FLAGS, 'wandb', False) and is_main_process
     ntp_lambda     = getattr(FLAGS, 'gmp_ntp_lambda', 1.0)
     kd_lambda      = getattr(FLAGS, 'gmp_kd_lambda', 0.0)
@@ -5027,6 +5137,11 @@ def globalprune_gmp(
     fused_topk_k     = int(getattr(FLAGS, 'gmp_fused_topk_k', 0) or 0)  # >0: NTP+KD and OPD via fused lm_head + teacher-top-K forward KL
     fused_topk_chunk = int(getattr(FLAGS, 'gmp_fused_topk_chunk', 1024) or 1024)
     offload_opt_fwd  = bool(getattr(FLAGS, 'gmp_offload_optimizer_fwd', False))  # Adam state on CPU outside optimizer.step()
+    fsdp_sync_every_micro = bool(getattr(FLAGS, 'gmp_fsdp_sync_every_micro', False))
+    if (offload_opt_fwd and int(getattr(FLAGS, 'gmp_ckpt_every_steps', 0) or 0) > 0 and is_fsdp
+            and not getattr(FLAGS, 'gmp_ckpt_sharded', False)):
+        raise ValueError('--gmp_offload_optimizer_fwd keeps Adam state on CPU, which FSDP.optim_state_dict cannot gather: '
+                         'use --gmp_ckpt_sharded or --gmp_ckpt_every_steps=0')
     chunked_ntpkd    = bool(getattr(FLAGS, 'gmp_chunked_ntpkd_loss', False))  # exact NTP+KD keeping only bf16 logits
     chunked_ntpkd_chunk = int(getattr(FLAGS, 'gmp_chunked_ntpkd_chunk', 1024) or 1024)
     kd_topk        = getattr(FLAGS, 'gmp_kd_topk', 0)
@@ -5093,7 +5208,9 @@ def globalprune_gmp(
     pgd_kl_share = getattr(FLAGS, 'gmp_pgd_kl_share', False)  # cheaper alternative to pgd_kl_budget: derive this window's swap_frac from TR-GMP's own measured KL headroom (no extra forward passes) instead of a fresh per-step self-KL measurement
     _pgd_dynamic_swap_frac = 0.0  # set at each mask_interval boundary when pgd_kl_share=true (see near _tr_mask_update call)
     pgd_kl_calib_size = max(1, getattr(FLAGS, 'gmp_pgd_kl_calib_size', 4))
-    pgd_kl_calib_seqlen = max(1, getattr(FLAGS, 'gmp_pgd_kl_calib_seqlen', 512))
+    # <=0: no truncation -- screen on whole sequences (rollouts: prompt + full response)
+    pgd_kl_calib_seqlen = getattr(FLAGS, 'gmp_pgd_kl_calib_seqlen', 0)
+    pgd_kl_calib_seqlen = pgd_kl_calib_seqlen if pgd_kl_calib_seqlen > 0 else None
     pgd_screen_source   = getattr(FLAGS, 'gmp_pgd_screen_source', 'prompt')
     pgd_kl_bisect_iters = max(1, getattr(FLAGS, 'gmp_pgd_kl_bisect_iters', 6))
     pgd_skip_growth_step = getattr(FLAGS, 'gmp_pgd_skip_growth_step', False)  # skip PGD on the exact step growth just fired, so the model trains at least one step under the mask growth decided before PGD can touch it again
@@ -5308,10 +5425,10 @@ def globalprune_gmp(
     use_teacher_gen_kd_flag = getattr(FLAGS, 'gmp_teacher_gen_kd', False)
     if fused_topk_k > 0:
         _bad = {'hidden loss': use_hidden, 'blockwise': blockwise_enabled,
-                'ntp_slm': ntp_slm_ratio > 0, 'teacher_gen_kd': use_teacher_gen_kd,
+                'ntp_slm': ntp_slm_ratio > 0, 'teacher_gen_kd': use_teacher_gen_kd_flag,
                 'onpolicy_reverse_kl': onpolicy_reverse_kl, 'onpolicy_dynkl_topk': onpolicy_dynkl_topk > 0,
                 'prevmask_opkd': prevmask_opkd_lambda > 0, 'prune_opd': opkd_prune_opd,
-                'opd_token_select': opd_tok_select != 'none', 'onpolicy_pg': onpolicy_pg}
+                'opd_token_select': (getattr(FLAGS, 'gmp_opd_token_select', 'none') or 'none') != 'none', 'onpolicy_pg': onpolicy_pg}
         _bad = [k for k, v in _bad.items() if v]
         if _bad:
             raise ValueError(f'--gmp_fused_topk_k is not implemented together with: {_bad}')
@@ -5576,12 +5693,21 @@ def globalprune_gmp(
         # FSDP: summon_full_params is a collective — all ranks must enter together.
         # Rank 0 then sends the gathered CPU state_dict to the vLLM subprocess.
         _in_fsdp = (fsdp_model is not None and _FSDP_AVAILABLE)
+        # --gmp_skip_initial_vllm_sync: the sidecar was built from the same checkpoint the student
+        # was loaded from and nothing has touched the weights yet, so the initial 2x-model-size
+        # gather + send (minutes at 32B) is a no-op. Never skipped when resuming.
+        _skip_init_sync = (getattr(FLAGS, 'gmp_skip_initial_vllm_sync', False)
+                           and not getattr(FLAGS, 'gmp_resume_from', ''))
+        if _skip_init_sync:
+            logging.info("  OPKD vLLM: initial weight sync skipped (--gmp_skip_initial_vllm_sync, fresh start)")
         _fsdp_ctx = (FSDP.summon_full_params(fsdp_model, writeback=False, offload_to_cpu=True, rank0_only=True)
-                     if _in_fsdp else nullcontext())
+                     if _in_fsdp and not _skip_init_sync else nullcontext())
         with _fsdp_ctx:
             if is_main_process and _opkd_vllm_engine is not None:
                 _opkd_vllm_wake(_opkd_vllm_engine)
-                if hasattr(_opkd_vllm_engine, 'sync_weights'):
+                if _skip_init_sync:
+                    pass
+                elif hasattr(_opkd_vllm_engine, 'sync_weights'):
                     _sd = {n: p.data.cpu() for n, p in model.named_parameters()}
                     logging.info("  OPKD vLLM: syncing weights (initial pool, FSDP→subprocess)")
                     _opkd_vllm_engine.sync_weights(_sd)
@@ -5664,7 +5790,10 @@ def globalprune_gmp(
                      f"momentum={FLAGS.gmp_pgd_momentum})")
     else:
         _beta2 = float(getattr(FLAGS, 'gmp_adam_beta2', 0.999))
-        optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.0, betas=(0.9, _beta2))
+        # --gmp_adam_foreach=false: per-parameter AdamW update (same math) instead of the default
+        # multi-tensor path, whose temporaries span every parameter at once (OOMs 32B on 2 nodes)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.0, betas=(0.9, _beta2),
+                                      foreach=bool(getattr(FLAGS, 'gmp_adam_foreach', True)))
         logging.info(f"  Base optimizer: AdamW betas=(0.9, {_beta2})")
     logging.info(f"[rank {local_rank}] optimizer created")
     _fisher_source = getattr(FLAGS, 'gmp_fisher_source', 'adam')
@@ -6042,14 +6171,15 @@ def globalprune_gmp(
         refit_calib_iter = _infinite(DataLoader(train_dataset, batch_size=1, shuffle=True, collate_fn=_collate_fn,
                                                 generator=torch.Generator().manual_seed(1234)))
 
-    # --gmp_pgd_screen_source=train: screening sequences from the training
-    # documents (OT3 question + teacher CoT), own shuffled pass so the training
-    # batch order is untouched; FineWeb rows (no chat template) are skipped.
+    # --gmp_pgd_screen_source=train: off-policy screening sequences from the training documents
+    # (OT3 question + teacher CoT), shaped like a rollout: the whole prompt up to and including
+    # <think>, then the CoT cut at gmp_onpolicy_max_new_tokens. Own shuffled pass so the training
+    # batch order is untouched; FineWeb rows (no <think>) are skipped.
     screen_train_iter = None
     if pgd_screen_source == 'train':
         screen_train_iter = _infinite(DataLoader(train_dataset, batch_size=1, shuffle=True, collate_fn=_collate_fn,
                                                  generator=torch.Generator().manual_seed(4321)))
-    _im_start_id = tokenizer.convert_tokens_to_ids('<|im_start|>')
+    _think_id = tokenizer.convert_tokens_to_ids('<think>')
 
     # Anchor KD: separate iterator over CoT dataset (batch_size=1)
     anchor_iter = None
@@ -6320,6 +6450,11 @@ def globalprune_gmp(
         if is_distributed:
             _dist.barrier()
 
+    ckpt_sharded = bool(getattr(FLAGS, 'gmp_ckpt_sharded', False))
+
+    def _shard_path(_main_p):
+        return _main_p.replace('.pt', f'_shard_rank{_dist.get_rank() if is_distributed else 0}.pt')
+
     def _fsdp_sd_ctx():
         from torch.distributed.fsdp import StateDictType, FullStateDictConfig, FullOptimStateDictConfig
         return FSDP.state_dict_type(fsdp_model, StateDictType.FULL_STATE_DICT,
@@ -6343,23 +6478,41 @@ def globalprune_gmp(
         torch.save({'masks': {k: v.detach().cpu() for k, v in maskmgr.masks.items()},
                     'quant': _qst,
                     'step': _st, 'world_size': world_size}, _mask_p)
-        if is_fsdp:
+        if is_fsdp and ckpt_sharded:
+            # --gmp_ckpt_sharded: every rank writes its own parameter shards and Adam state
+            # (no gather, so it also works with CPU-resident Adam state); _main_p becomes a
+            # small index that rank 0 writes once all shards are on disk.
+            torch.save({'params': {n: p.data.detach().cpu() for n, p in fsdp_model.named_parameters()},
+                        'optim': {n: {k: (v.detach().cpu() if torch.is_tensor(v) else v)
+                                      for k, v in optimizer.state[p].items()}
+                                  for n, p in fsdp_model.named_parameters() if p in optimizer.state},
+                        'step': _st, 'world_size': world_size}, _shard_path(_main_p))
+            if is_distributed:
+                _dist.barrier()
+            _msd = _osd = None
+            if is_main_process:
+                torch.save({'sharded': True, 'sched': scheduler.state_dict(),
+                            'step': _st, 'world_size': world_size}, _main_p)
+        elif is_fsdp:
             with _fsdp_sd_ctx():
                 _msd = fsdp_model.state_dict()
                 _osd = FSDP.optim_state_dict(fsdp_model, optimizer)
         else:
             _msd, _osd = model.state_dict(), optimizer.state_dict()
-        if is_main_process:
+        if is_main_process and not (is_fsdp and ckpt_sharded):
             torch.save({'model': _msd, 'optim': _osd, 'sched': scheduler.state_dict(),
                         'step': _st, 'world_size': world_size}, _main_p)
+        if is_main_process:
             logging.info(f"[ckpt] saved step={_st} -> {_main_p}")
             # Retention: one checkpoint is ~56 GB for 8B (model bf16 + Adam moments +
             # one mask shard per rank), so keep only the newest _ckpt_keep of them.
             # Deleting happens AFTER the new one is fully written, so a kill mid-save
             # still leaves the previous complete checkpoint on disk.
             _keep = max(1, int(getattr(FLAGS, 'gmp_ckpt_keep', 1)))
+            # one entry per checkpoint: only the stepNNNNNN.pt index/main file, not the
+            # per-rank _masks_/_shard_ files that share its prefix
             _steps_on_disk = sorted(int(_f[4:10]) for _f in _os_ck.listdir(_ckpt_dir)
-                                    if _f.startswith('step') and _f.endswith('.pt') and 'masks' not in _f)
+                                    if re.fullmatch(r'step\d{6}\.pt', _f))
             for _old in _steps_on_disk[:-_keep]:
                 for _f in _os_ck.listdir(_ckpt_dir):
                     if _f.startswith(f'step{_old:06d}'):
@@ -6391,7 +6544,16 @@ def globalprune_gmp(
             # _store() compacts checkpoints written before single-GPU grids were compact
             qmgr.scales = {_k: qmgr._store(_k, _v.to(device)) for _k, _v in _qst['scales'].items()}
             qmgr.zeros = {_k: qmgr._store(_k, _v.to(device)) for _k, _v in _qst['zeros'].items()}
-        if is_fsdp:
+        if is_fsdp and _ck.get('sharded'):
+            _sh = torch.load(_shard_path(_main_p), map_location='cpu', weights_only=False)
+            with torch.no_grad():
+                for n, p in fsdp_model.named_parameters():
+                    p.data.copy_(_sh['params'][n].to(p.device))
+                    if n in _sh['optim']:
+                        optimizer.state[p] = {k: (v.to(p.device) if torch.is_tensor(v) and k != 'step' else v)
+                                              for k, v in _sh['optim'][n].items()}
+            del _sh
+        elif is_fsdp:
             with _fsdp_sd_ctx():
                 fsdp_model.load_state_dict(_ck['model'])
                 optimizer.load_state_dict(FSDP.optim_state_dict_to_load(fsdp_model, optimizer, _ck['optim']))
@@ -6679,8 +6841,11 @@ def globalprune_gmp(
             if torch.isnan(loss) or torch.isinf(loss):
                 logging.warning(f"NaN/Inf loss at micro_step {micro_step}, skipping")
                 continue
+            # no_sync() keeps every rank's gradient UNSHARDED until the last micro-step (the
+            # full model's grads per rank, ~65GB at 32B); --gmp_fsdp_sync_every_micro
+            # reduce-scatters each micro-step instead (same summed gradient, more traffic)
             _bwd_ctx = (model.no_sync()
-                        if is_fsdp and micro_step < grad_accum - 1
+                        if is_fsdp and micro_step < grad_accum - 1 and not fsdp_sync_every_micro
                         else nullcontext())
             _phase('ntpkd_loss_compute')
             _memlog(f'fwd micro{micro_step}', step)
@@ -6776,26 +6941,29 @@ def globalprune_gmp(
             # the TR growth check it's meant to share a trust-region budget
             # with.
             if is_main_process and pgd_screen_source == 'train':
-                _seqs, _skipped = [], 0
-                while len(_seqs) < pgd_kl_calib_size:
-                    _ids = next(screen_train_iter)['input_ids'][:, :pgd_kl_calib_seqlen]
-                    if (_ids == _im_start_id).any():
-                        _seqs.append(_ids)
-                    else:
+                _cot_len = getattr(FLAGS, 'gmp_onpolicy_max_new_tokens', 2048)
+                _pool_items, _skipped = [], 0
+                while len(_pool_items) < pgd_kl_calib_size:
+                    _ids = next(screen_train_iter)['input_ids']
+                    _pos = (_ids[0] == _think_id).nonzero()
+                    if len(_pos) == 0:
                         _skipped += 1
-                _ids = torch.cat([F.pad(x, (0, pgd_kl_calib_seqlen - x.shape[1])) for x in _seqs], 0)
-                _att = torch.cat([F.pad(torch.ones_like(x), (0, pgd_kl_calib_seqlen - x.shape[1])) for x in _seqs], 0)
-                # same trailing pad column as the rollout source: FA2 under train() misbehaves on
-                # a fully unpadded batch (every OT3 doc is >= 512 tokens)
-                _batch = {'input_ids': torch.cat([_ids, _ids.new_zeros(_ids.shape[0], 1)], 1).to(device),
-                          'attention_mask': torch.cat([_att, _att.new_zeros(_att.shape[0], 1)], 1).to(device)}
-                logging.info(f"  [pgd_screen] train docs (OT3 question + teacher CoT): {len(_seqs)} seqs x <= "
-                             f"{pgd_kl_calib_seqlen} tok, valid={int(_att.sum())}, skipped {_skipped} non-chat rows (step={step})")
+                        continue
+                    _plen = int(_pos[0]) + 1
+                    _pool_items.append({'full_seq': _ids[:, :_plen + _cot_len], 'prompt_len': _plen})
+                _batch = _opkd_pool_to_batch(_pool_items, str(device))
+                # same trailing pad column as the rollout source (FA2 under train() on unpadded batches)
+                _b, _t = _batch['input_ids'].shape
+                _batch = {'input_ids': torch.cat([_batch['input_ids'], _batch['input_ids'].new_zeros(_b, 1)], 1),
+                          'attention_mask': torch.cat([_batch['attention_mask'], _batch['attention_mask'].new_zeros(_b, 1)], 1)}
+                logging.info(f"  [pgd_screen] train docs: {len(_pool_items)} seqs, prompt "
+                             f"{[it['prompt_len'] for it in _pool_items]} + CoT <= {_cot_len} tok, "
+                             f"skipped {_skipped} non-chat rows (step={step})")
             elif is_main_process:
                 if (_opkd_refilled_pre_mask or pgd_screen_source == 'rollout') and _opkd_standalone_pool:
                     _n_cal = min(pgd_kl_calib_size, len(_opkd_standalone_pool))
                     if pgd_screen_source == 'rollout':
-                        logging.info(f"  [pgd_screen] rollout pool: {_n_cal} seqs x <= {pgd_kl_calib_seqlen} tok (pool size {len(_opkd_standalone_pool)}, step={step})")
+                        logging.info(f"  [pgd_screen] rollout pool: {_n_cal} seqs x <= {pgd_kl_calib_seqlen or 'full'} tok (pool size {len(_opkd_standalone_pool)}, step={step})")
                     if pgd_screen_source == 'rollout':
                         _pool_items = [
                             {'full_seq': item['full_seq'][:, :pgd_kl_calib_seqlen], 'prompt_len': item['prompt_len']}
@@ -6979,6 +7147,15 @@ def globalprune_gmp(
 
         _phase('ntpkd_rest')
         # periodic mask update (freeze mask after pruning_end_steps)
+        # Rebuttal: extra fixed-schedule mask updates between mask_interval
+        # boundaries (only cubic/cosine/linear runs: no TR, no PGD, no fixed mask).
+        if (schedule_update_interval > 0 and step % schedule_update_interval == 0
+                and step % mask_interval != 0 and not tr_enabled and not pgd_enabled
+                and not fixed_mask and dense_warmup_steps < step <= pruning_end_steps):
+            current_sparsity = _schedule_fn(step, pruning_end_steps, final_sparsity, dense_warmup_steps)
+            maskmgr.update(fisher, current_sparsity, fsdp_model)
+            if is_main_process:
+                logging.info(f"  [sched_update] step={step} sparsity={current_sparsity:.4f} ({growth_schedule}, every {schedule_update_interval})")
         if step % mask_interval == 0:
             # NOTE: _refresh_pgd_kl_cal_batch() used to be called right here,
             # BEFORE the vLLM wake below -- this was the one extra GPU
@@ -8064,6 +8241,10 @@ def globalprune_gmp(
             _memlog('before opt.step', step)
             optimizer.step()
             _memlog('after opt.step', step)
+            if offload_opt_fwd:
+                # back to CPU before the mask/PGD work that follows the update (saliency reads
+                # exp_avg_sq through fisher_factor, which moves it to the param's device per tensor)
+                _offload_optimizer_state(optimizer)
             # after the Adam update, so the shrink never reaches exp_avg_sq
             if qmgr is not None:
                 # Baseline for the overhead ratio the rebuttal needs: seconds
@@ -9653,7 +9834,15 @@ def globalprune_gmp(
                                    "pgd/total_flips": _pgd_total_flips}, step=step)
                 maskmgr.apply(fsdp_model)
                 del _pgd_imps, _pgd_desired
+                # this event's per-weight scratch (bool / fp32 dicts over every prunable weight) is
+                # function-local and otherwise stays alive until the next event: ~30GB/rank at 32B,
+                # enough to OOM the following optimizer.step()
+                _revive_cand = _prune_cand = _cand_masks = _sel = _sel_p = _sel_r = None
+                _sel_prune = _sel_revive = _prune_vals = _pgd_kl_ref_cache = _dbg_all = None
+                import gc as _gc_pgd
+                _gc_pgd.collect()
                 torch.cuda.empty_cache()
+                _memlog('after pgd event', 0)
 
                 # sum revival/pruning counts across ranks (FSDP only)
                 if _pgd_use_fsdp:
@@ -9959,7 +10148,10 @@ def globalprune_gmp(
     if is_fsdp and do_save:
         if is_main_process:
             saved_path = f"{FLAGS.gmp_save_path}/{_run_tag(FLAGS)}_{_save_stamp()}"
-        with FSDP.summon_full_params(fsdp_model, writeback=False, recurse=True):
+        # gather onto rank 0's CPU only: unsharding the whole model on every GPU (65GB at 32B)
+        # does not fit next to the training state
+        with FSDP.summon_full_params(fsdp_model, writeback=False, recurse=True,
+                                     offload_to_cpu=True, rank0_only=True):
             if is_main_process:
                 model.save_pretrained(saved_path)
         if is_main_process:

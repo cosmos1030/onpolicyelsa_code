@@ -17,7 +17,7 @@ CK=$U/ckpt/scout32b_s70
 mkdir -p $CK $U/models_out
 export MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -1) MASTER_PORT=29513
 echo "nodes: $SLURM_JOB_NODELIST master=$MASTER_ADDR resume=${RESUME_FROM:-none}"
-srun --ntasks-per-node=1 --kill-on-bad-exit=1 bash $U/jobs/node_launch.sh \
+srun --ntasks-per-node=1 --cpus-per-task=$SLURM_CPUS_ON_NODE --kill-on-bad-exit=1 bash $U/jobs/node_launch.sh \
     --model=$U/models/Qwen3-32B --dataset=mixed_cot \
     --data_path=$U/data/ot3_fineweb_40k_qwen3_nostrip_8192.jsonl \
     --gmp_prompt_path=$U/data/ot3_fineweb_200k_qwen3_opdprompts.jsonl \

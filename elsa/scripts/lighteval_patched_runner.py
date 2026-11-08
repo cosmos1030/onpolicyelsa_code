@@ -254,15 +254,105 @@ def _patch_parallel_lcb():
     print(f"[lighteval_patched_runner] LCB scoring parallel over problems (workers={n_workers})", flush=True)
 
 
+def _skip_tinybenchmarks_download():
+    """tinyBenchmarks' metric fetches tinyBenchmarks.pkl into its own package dir as soon as the task
+    registry loads, which raises on a read-only env (hangang runs lighteval from a squashfs image).
+    None of our tasks use it, so that one fetch answers 404 and its download() writes nothing."""
+    import requests
+
+    _get = requests.get
+
+    def get(url, *args, **kwargs):
+        if "tinyBenchmarks.pkl" in str(url):
+            r = requests.models.Response()
+            r.status_code = 404
+            return r
+        return _get(url, *args, **kwargs)
+
+    requests.get = get
+
+
+def _allow_vllm_0_10_2():
+    """lighteval 0.12 pins vllm<0.10.2, but 0.10.2 is the earliest vLLM with an aarch64 wheel (hangang
+    GH200), so VLLMModel refuses to start. Relax that one pin in the metadata lighteval checks against."""
+    import functools
+    from collections import defaultdict
+
+    from lighteval.utils import imports
+    from packaging.requirements import Requirement
+
+    orig = imports.required_dependencies
+    vllm_req = Requirement("vllm>=0.10.0")
+
+    @functools.lru_cache()
+    def required_dependencies():
+        deps, by_extra = orig()
+        deps = {k: (vllm_req if k == "vllm" else r) for k, r in deps.items()}
+        by_extra = defaultdict(list, {e: [vllm_req if r.name == "vllm" else r for r in rs]
+                                      for e, rs in by_extra.items()})
+        return deps, by_extra
+
+    imports.required_dependencies = required_dependencies
+    imports.is_package_available.cache_clear()
+
+
+_skip_tinybenchmarks_download()
+_allow_vllm_0_10_2()
 _disable_sample_cache()
 _patch_avg_at_n()
 _patch_ifeval_json()
 _patch_orphan_reasoning_close()
+def _patch_vllm_prompt_token_ids():
+    """vLLM 0.10.2 removed LLM.generate(prompt_token_ids=...), which lighteval 0.12 still calls
+    (VLLMModel._generate, data_parallel_size=1 path). Pass the same ids as TokensPrompt dicts."""
+    import vllm
+    _orig_generate = vllm.LLM.generate
+
+    def generate(self, prompts=None, *args, prompt_token_ids=None, **kwargs):
+        if prompt_token_ids is not None:
+            prompts = [{"prompt_token_ids": ids} for ids in prompt_token_ids]
+        return _orig_generate(self, prompts, *args, **kwargs)
+
+    vllm.LLM.generate = generate
+
+
+def _skip_tp_cleanup():
+    """Pipeline._run_model calls VLLMModel.cleanup() right after generation, before any metric is
+    computed. At tensor_parallel_size>1 (vLLM 0.10.2, multiproc executor) destroy_model_parallel()
+    there never returns: on hangang both 32B evals sat at 0% GPU for 5-7h with nothing written. Skip
+    it when tp>1 -- the process exits right after saving results, so nothing needs tearing down."""
+    from lighteval.models.vllm.vllm_model import VLLMModel
+    _orig_cleanup = VLLMModel.cleanup
+
+    def cleanup(self):
+        if getattr(self, "tensor_parallel_size", 1) > 1:
+            print("[lighteval_patched_runner] tp>1: skipping VLLMModel.cleanup()", flush=True)
+            return
+        return _orig_cleanup(self)
+
+    VLLMModel.cleanup = cleanup
+
+
 _patch_custom_all_reduce()
 _patch_cuda_graphs()
+_patch_vllm_prompt_token_ids()
+_skip_tp_cleanup()
 _patch_parallel_lcb()
 
 from lighteval.__main__ import app  # noqa: E402
 
 if __name__ == "__main__":
-    sys.exit(app())
+    # os._exit, not sys.exit: with cleanup skipped, interpreter shutdown would wait on vLLM's still-live
+    # worker processes; results and details are already on disk by the time app() returns
+    try:
+        rc = app()
+    except SystemExit as e:
+        rc = e.code
+    sys.stdout.flush()
+    sys.stderr.flush()
+    # os._exit skips multiprocessing's atexit that would reap the TP workers, so kill them here or they
+    # keep holding GPU memory into the next task
+    import psutil
+    for child in psutil.Process().children(recursive=True):
+        child.kill()
+    os._exit(rc if isinstance(rc, int) else (0 if rc is None else 1))

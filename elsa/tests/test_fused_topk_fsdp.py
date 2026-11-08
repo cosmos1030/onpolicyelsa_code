@@ -10,7 +10,7 @@ then compares loss and per-parameter grads of a few parameters, including the
 (tied) lm_head/embedding and a decoder layer, against the FSDP run.
 """
 import os, sys, functools, torch, torch.nn.functional as F, torch.distributed as dist
-sys.path.insert(0, '/home1/doyoonkim/projects/elsa')
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))  # elsa/
 from transformers import AutoModelForCausalLM
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, MixedPrecision, ShardingStrategy
 from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
@@ -43,7 +43,7 @@ if rank == 0:
 B, T = 2, 384
 from transformers import AutoTokenizer
 tok = AutoTokenizer.from_pretrained(MODEL)
-txt = open('/home1/doyoonkim/projects/elsa/lib/gmp_trainer.py').read()[200000:260000]
+txt = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'lib', 'gmp_trainer.py')).read()[200000:260000]
 ids = tok(txt, return_tensors='pt').input_ids[:, :B * T].view(B, T).to(dev)
 attn = torch.ones_like(ids); attn[1, -50:] = 0
 labels = ids.clone(); labels[:, :100] = -100; labels[attn == 0] = -100
