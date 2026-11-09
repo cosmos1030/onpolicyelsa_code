@@ -5216,6 +5216,8 @@ def globalprune_gmp(
     pgd_skip_growth_step = getattr(FLAGS, 'gmp_pgd_skip_growth_step', False)  # skip PGD on the exact step growth just fired, so the model trains at least one step under the mask growth decided before PGD can touch it again
     pgd_post_target_only = getattr(FLAGS, 'gmp_pgd_post_target_only', False)  # isolate PGD's post-target-maintenance role from its during-growth-ramp role -- see gate check at the main PGD condition below
     pgd_freeze_after_target = getattr(FLAGS, 'gmp_pgd_freeze_after_target', False)
+    pgd_flip_trace = getattr(FLAGS, 'gmp_pgd_flip_trace', False)
+    _flip_state = {'on': False, 'event': 0, 'cnt': {}, 'last': {}}
     _pgd_frozen = [False]
     pgd_interval = max(1, getattr(FLAGS, 'gmp_pgd_interval', 1))  # only run PGD's reprojection every Nth step (default 1 = every step, prior behavior) -- decouples PGD's own cadence from mask_interval's growth cadence
     pgd_topk_impl = getattr(FLAGS, 'gmp_pgd_topk_impl', 'bisect')  # DIAGNOSTIC/A-B only (analysis phase, not a default): 'bisect' (default, unchanged 64-iter value-threshold search) or 'kthvalue' (torch.kthvalue on a one-time concat of the candidate pool instead) -- only wired into the unstructured gmp_pgd_kl_budget branch (where gmp_pgd_grow_to_target lives), non-FSDP only.
@@ -9624,6 +9626,7 @@ def globalprune_gmp(
                     _k_revive = min(_k_actual, _n_revive_cand)
                     _sel_revive = (_pgd_topk_mask(_pgd_imps, _revive_cand, _k_revive, True, _pgd_dev, _pgd_use_fsdp, _pgd_lo, _pgd_hi)
                                    if _k_revive > 0 else {n: torch.zeros_like(m) for n, m in maskmgr.masks.items()})
+                    _ft = dict(rev_back=0, prn_back=0, gap_sum=0, gap1=0) if (pgd_flip_trace and _flip_state['on']) else None
                     for _n in maskmgr.named_params:
                         _old = maskmgr.masks[_n]
                         _new = _old.clone()
@@ -9631,7 +9634,44 @@ def globalprune_gmp(
                             _new = (_new | _sel_revive[_n]) & ~_sel_prune[_n]
                         _pgd_revivals += int((_new & ~_old).sum().item())
                         _pgd_prunings += int((~_new & _old).sum().item())
+                        if _ft is not None:
+                            # flip trace: positions flipping now that already flipped since reach
+                            _flip = _new ^ _old
+                            _c = _flip_state['cnt'].get(_n)
+                            if _c is None:
+                                _c = _flip_state['cnt'][_n] = torch.zeros(_old.shape, dtype=torch.uint8, device=_old.device)
+                                _flip_state['last'][_n] = torch.zeros(_old.shape, dtype=torch.uint8, device=_old.device)
+                            _l = _flip_state['last'][_n]
+                            _prev = _flip & (_c > 0)
+                            _ft['rev_back'] += int((_prev & _new).sum().item())
+                            _ft['prn_back'] += int((_prev & ~_new).sum().item())
+                            if _prev.any():
+                                _gap = (_flip_state['event'] - _l[_prev].int())
+                                _ft['gap_sum'] += int(_gap.sum().item())
+                                _ft['gap1'] += int((_gap == 1).sum().item())
+                            _c[_flip] = torch.clamp(_c[_flip].int() + 1, max=255).to(torch.uint8)
+                            _l[_flip] = _flip_state['event'] % 256
                         maskmgr.masks[_n] = _new
+                    if _ft is not None:
+                        _ev = _flip_state['event']
+                        _hist = torch.zeros(7, dtype=torch.long)
+                        for _c in _flip_state['cnt'].values():
+                            _hist += torch.bincount(_c.clamp(max=6).flatten().long(), minlength=7).cpu()
+                        _back = _ft['rev_back'] + _ft['prn_back']
+                        logging.info(f"  [flip_trace] event={_ev} step={step} revivals={_pgd_revivals} prunings={_pgd_prunings} "
+                                     f"rev_back={_ft['rev_back']} prn_back={_ft['prn_back']} "
+                                     f"mean_gap={(_ft['gap_sum']/_back) if _back else 0:.2f} gap1={_ft['gap1']} "
+                                     f"flipcount_hist(0..6+)={_hist.tolist()}")
+                        if use_wandb and is_main_process:
+                            _d = {"flip/rev_back": _ft['rev_back'], "flip/prn_back": _ft['prn_back'],
+                                  "flip/rev_back_frac": _ft['rev_back'] / max(_pgd_revivals, 1),
+                                  "flip/prn_back_frac": _ft['prn_back'] / max(_pgd_prunings, 1),
+                                  "flip/mean_gap_events": (_ft['gap_sum'] / _back) if _back else 0.0,
+                                  "flip/gap1": _ft['gap1'], "flip/unique_flipped": int(_hist[1:].sum())}
+                            for _i in range(1, 7):
+                                _d[f"flip/n_flipped_{_i}{'+' if _i == 6 else ''}x"] = int(_hist[_i])
+                            wandb.log(_d, step=step)
+                        _flip_state['event'] += 1
                     # BUGFIX: current_sparsity() does a dist.all_reduce() under FSDP
                     # (world_size>1) -- calling it a second time from inside the
                     # is_main_process-only wandb block below (as this used to)
@@ -9653,6 +9693,9 @@ def globalprune_gmp(
                         _drift_state['batch'] = _pgd_kl_cal_batch
                         _drift_state['step'] = step
                     _pgd_post_sparsity = maskmgr.current_sparsity()
+                    if pgd_flip_trace and not _flip_state['on'] and _pgd_post_sparsity >= final_sparsity - 1e-4:
+                        _flip_state['on'] = True
+                        logging.info(f"  [flip_trace] target reached at step {step}: flip tracing starts from next projection")
                     if pgd_freeze_after_target and not _pgd_frozen[0] and _pgd_post_sparsity >= final_sparsity - 1e-4:
                         _pgd_frozen[0] = True
                         logging.info(f"  [pgd_freeze] target {final_sparsity} reached at step {step} (sparsity {_pgd_post_sparsity:.4f}): mask frozen, no further PGD projections")

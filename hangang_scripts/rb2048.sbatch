@@ -11,7 +11,7 @@
 #   s80: {cubic,linear} x reach step E {128,256,512,1024}, schedule applied every 8 steps (PGD off)
 #   scout: s70 SCOUT calib batch 2/8/16, same-code SCOUT references s70 / s80 (calib 4),
 #          s70 ablations: freeze after target, OPD loss off, off-policy (training doc) screening
-# usage: sbatch [--nodes=N] rb2048.sbatch <s80|scout|all>   (4 runs per node)
+# usage: sbatch [--nodes=N] rb2048.sbatch <s80|scout|flip|all>   (4 runs per node; flip = 2 runs, --nodes=1)
 #        rb2048_extra.sh <jobid> <node0>,<node1> s80        (same runs on idle nodes of another job)
 # Resubmit to continue: every run resumes from its newest 256-step checkpoint.
 U=/scratch/t512a04/users/doyoon
