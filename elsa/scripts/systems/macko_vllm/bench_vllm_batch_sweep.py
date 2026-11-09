@@ -29,17 +29,21 @@ def main():
     ap.add_argument("--length", type=int, default=2048)
     ap.add_argument("--gpu_util", type=float, default=0.85)
     ap.add_argument("--out", default="")
+    ap.add_argument("--sparse", action="store_true",
+                    help="load through the macko plug-in (backend from SPARSE_BACKEND)")
     a = ap.parse_args()
     batches = [int(x) for x in a.batches.split(",")]
 
     import torch
+    if a.sparse:
+        import macko_linear  # noqa: F401  registers quantization="macko"
     from vllm import LLM, SamplingParams
 
     print(f"gpu = {torch.cuda.get_device_name(0)}  length={a.length}")
     llm = LLM(model=a.model, dtype="float16",
               max_model_len=a.length + 64, gpu_memory_utilization=a.gpu_util,
               enforce_eager=False, max_num_seqs=max(batches),
-              disable_log_stats=True)
+              disable_log_stats=True, **({"quantization": "macko"} if a.sparse else {}))
 
     res = {}
     for B in batches:
