@@ -1992,10 +1992,43 @@ class EmpiricalFisherAccumulator:
             if grads:
                 self._fisher[n] = torch.stack(grads).mean(0)
 
+    def update_from_pool(self, model: 'nn.Module', pool_items: list, device: str):
+        """Empirical Fisher from on-policy rollouts: F_ii = mean_n (d log p(response_n) / d w_i)^2,
+        loss on the response tokens only (the part sampled from the current sparse model), one
+        sequence per backward. Kept as a running sum on the params' device, not a per-sample list."""
+        model.eval()
+        acc = {}
+        n_used = 0
+        for item in pool_items:
+            ids = item['full_seq'].to(device)
+            pl = int(item['prompt_len'])
+            if ids.shape[1] - pl < 1:
+                continue
+            model.zero_grad(set_to_none=True)
+            with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+                out = model(input_ids=ids)
+            logits = out.logits[0, pl - 1:-1, :].float()
+            F.cross_entropy(logits, ids[0, pl:]).backward()
+            del out, logits
+            for n, p in self.named_params.items():
+                if p.grad is not None:
+                    g2 = p.grad.detach().float().pow_(2)
+                    if n in acc:
+                        acc[n].add_(g2)
+                    else:
+                        acc[n] = g2
+            n_used += 1
+        model.zero_grad(set_to_none=True)
+        model.train()
+        if n_used:
+            self._fisher = {n: a.div_(n_used) for n, a in acc.items()}
+        return n_used
+
     def fisher_factor(self, param):
         for n, p in self.named_params.items():
             if p is param:
-                return self._fisher.get(n, None)
+                f = self._fisher.get(n, None)
+                return None if f is None else f.to(param.device)
         return None
 
     def importance(self, name, param):
@@ -3743,7 +3776,9 @@ def _tr_kl_forward_and_score(model, input_ids, attn_mask, old_lp, valid,
     if not valid.any():
         return 0.0, None
     _T = cand_logits.shape[1] - 1
-    _chunk = 2048
+    # 2048 tokens at the default 4-sequence screen; scaled down for larger screens so one [B, chunk, V]
+    # bf16 slice stays ~2.3GiB (16 full-length rollouts at 2048 needed 9.3GiB and OOMed a 95GB GH200)
+    _chunk = min(2048, max(256, 8192 // cand_logits.shape[0]))
     if _T > _chunk:
         _kl_chunks = []
         for _start in range(0, _T, _chunk):
@@ -3874,7 +3909,7 @@ def _compute_tr_kl_impl(model: nn.Module, cal_batch: dict, cand_masks: dict,
         # skipped on ref_cache hits), but old_logits + a full-size old_lp
         # briefly alive together is the same ~9GiB x2 spike either way.
         _T0 = old_logits.shape[1] - 1
-        _chunk0 = 2048
+        _chunk0 = min(2048, max(256, 8192 // old_logits.shape[0]))  # same batch scaling as the cand_lp chunks below
         if _T0 > _chunk0:
             _old_lp_chunks = []
             for _start in range(0, _T0, _chunk0):
@@ -3984,7 +4019,9 @@ def _compute_tr_kl_impl(model: nn.Module, cal_batch: dict, cand_masks: dict,
     # identical to (old_lp.exp() * (old_lp - cand_lp)).sum(-1) without
     # materializing exp()/subtract/multiply as separate tensors.
     _T = cand_logits.shape[1] - 1
-    _chunk = 2048
+    # 2048 tokens at the default 4-sequence screen; scaled down for larger screens so one [B, chunk, V]
+    # bf16 slice stays ~2.3GiB (16 full-length rollouts at 2048 needed 9.3GiB and OOMed a 95GB GH200)
+    _chunk = min(2048, max(256, 8192 // cand_logits.shape[0]))
     if _T > _chunk:
         _kl_chunks = []
         for _start in range(0, _T, _chunk):
@@ -5365,7 +5402,8 @@ def globalprune_gmp(
     pgd_log_drift = getattr(FLAGS, 'gmp_pgd_log_weight_drift', False)
     _drift_state = {'lp': None, 'valid': None, 'batch': None, 'step': None}
     step_drift_log = getattr(FLAGS, 'gmp_log_step_drift', False)
-    _step_drift = {'lp': None, 'batch': None, 'step': None}
+    _step_drift = {'lp': None, 'batch': None, 'step': None,
+                   'anchor': None, 'anchor_batch': None, 'anchor_step': None, 'floor': None}
     _pgd_recdiag_batch = None       # this window's fixed cache batch (resampled once per window)
     _pgd_recdiag_L_pre = None       # L(Q_t^-) measured at this window's open
     _pgd_recdiag_S = None           # L_post - L_pre for the currently-open window
@@ -5823,6 +5861,8 @@ def globalprune_gmp(
                         or getattr(FLAGS, 'gmp_pgd_layer_rank', False)) and prune_n == 0
                        and not getattr(FLAGS, 'gmp_pgd_raw_global_rank', False))
     _wanda_cal_id = [None]   # id() of the KL-calibration batch the Wanda scaler was last refreshed for
+    _empf_cal_id = [None]    # same, for the --gmp_fisher_source=opd_empirical refresh
+    _empf_nsamples = int(getattr(FLAGS, 'gmp_fisher_emp_nsamples', 32))
     if (_pgd_layer_rank and not getattr(FLAGS, 'gmp_pgd', False)
             and getattr(FLAGS, 'gmp_pruning_scope', 'global') == 'global'):
         raise ValueError('--gmp_saliency=wanda/obs (unstructured, no PGD) requires --gmp_pruning_scope=layer')
@@ -7047,6 +7087,16 @@ def globalprune_gmp(
             if getattr(FLAGS, 'gmp_saliency', 'fisher') == 'obs':
                 logging.info(f"[obs saliency] H^-1 diagonal refreshed at step {step} "
                              f"({pgd_nm_refit_calib}x{pgd_nm_refit_seqlen} tok, {time.time() - _rf_t0:.1f}s)")
+        # --gmp_fisher_source=opd_empirical under PGD: refresh the empirical Fisher from the current
+        # rollout pool (response tokens) once per KL-calibration-batch refresh (every mask_interval)
+        if (isinstance(fisher, EmpiricalFisherAccumulator) and pgd_enabled and fsdp_model is None
+                and _pgd_kl_cal_batch is not None and _empf_cal_id[0] != id(_pgd_kl_cal_batch)
+                and _opkd_standalone_pool):
+            _ef_t0 = time.time()
+            _ef_n = fisher.update_from_pool(model, _opkd_standalone_pool[:_empf_nsamples], str(device))
+            _empf_cal_id[0] = id(_pgd_kl_cal_batch)
+            logging.info(f"[empirical fisher] refreshed at step {step} from {_ef_n} rollouts "
+                         f"(response tokens, {time.time() - _ef_t0:.1f}s)")
         # Wanda scaler for unstructured PGD: same documents and the same refresh cadence
         # as the OBS covariance (once per KL-calibration-batch refresh = every mask_interval).
         if (getattr(fisher, 'saliency', None) == 'wanda' and pgd_enabled and fsdp_model is None
@@ -9985,13 +10035,52 @@ def globalprune_gmp(
                                 for _a in range(0, _sd_log.shape[1] - 1, 2048)], dim=1)
             del _sd_log
             _sd_valid = (_sdb['labels'][:, 1:].to(device) != -100) if 'labels' in _sdb else (_sd_att[:, 1:] == 1)
+            _sd_proj = int(pgd_enabled and step % pgd_interval == 0 and not _pgd_frozen[0])
+
+            def _sd_lp_on(_b):
+                with torch.no_grad(), torch.amp.autocast('cuda', dtype=torch.bfloat16):
+                    _l = model(input_ids=_b['input_ids'].to(device), attention_mask=_b['attention_mask'].to(device)).logits.detach()
+                _o = torch.cat([F.log_softmax(_l[:, _a:min(_a + 2048, _l.shape[1] - 1), :].float(), dim=-1)
+                                for _a in range(0, _l.shape[1] - 1, 2048)], dim=1)
+                del _l
+                return _o
+
+            def _sd_kl_of(_old, _new, _valid):
+                return F.kl_div(_new, _old, log_target=True, reduction='none').sum(dim=-1)[_valid].float().mean().item()
+
+            _sd_log = {}
+            # measurement floor: the same weights forwarded twice (bf16 kernels are not bitwise
+            # deterministic), so KLs near this value are indistinguishable from no change
+            if _step_drift['floor'] is None and _sd_valid.any():
+                _step_drift['floor'] = _sd_kl_of(_sd_lp, _sd_lp_on(_sdb), _sd_valid)
+                _sd_log['drift/floor_kl'] = _step_drift['floor']
             if _step_drift['lp'] is not None and _step_drift['batch'] is _sdb and _sd_valid.any():
-                _sd_kl_tok = F.kl_div(_sd_lp, _step_drift['lp'], log_target=True, reduction='none').sum(dim=-1)
-                _sd_kl = _sd_kl_tok[_sd_valid].float().mean().item()
-                _sd_proj = int(pgd_enabled and step % pgd_interval == 0 and not _pgd_frozen[0])
+                _sd_kl = _sd_kl_of(_step_drift['lp'], _sd_lp, _sd_valid)
                 logging.info(f"  [step_drift] step={step} KL(end@{_step_drift['step']} || end@{step}) = {_sd_kl:.6f} proj_step={_sd_proj}")
-                if use_wandb:
-                    wandb.log({'drift/step_kl': _sd_kl, 'drift/proj_step': _sd_proj}, step=step)
+                _sd_log.update({'drift/step_kl': _sd_kl, 'drift/proj_step': _sd_proj})
+            # cumulative drift since the last projection (weight updates the screen never sees), and at a
+            # projection step the whole projection-to-projection transition (those updates + the new mask);
+            # the anchor batch is re-forwarded when the screening batch was refreshed in between
+            if _step_drift['anchor'] is not None:
+                _ab = _step_drift['anchor_batch']
+                if _ab is _sdb:
+                    _sd_cum = _sd_kl_of(_step_drift['anchor'], _sd_lp, _sd_valid)
+                elif _sd_proj:
+                    _av = (_ab['labels'][:, 1:].to(device) != -100) if 'labels' in _ab else (_ab['attention_mask'][:, 1:].to(device) == 1)
+                    _sd_cum = _sd_kl_of(_step_drift['anchor'], _sd_lp_on(_ab), _av)
+                else:
+                    _sd_cum = None
+                if _sd_cum is not None:
+                    _sd_since = step - _step_drift['anchor_step']
+                    logging.info(f"  [cum_drift] step={step} KL(post-proj@{_step_drift['anchor_step']} || end@{step}) = {_sd_cum:.6f} "
+                                 f"steps={_sd_since} proj_step={_sd_proj}")
+                    _sd_log.update({'drift/cum_kl': _sd_cum, 'drift/steps_since_proj': _sd_since})
+                    if _sd_proj:
+                        _sd_log['drift/proj_to_proj_kl'] = _sd_cum
+            if use_wandb and _sd_log:
+                wandb.log(_sd_log, step=step)
+            if _sd_proj:
+                _step_drift.update(anchor=_sd_lp, anchor_batch=_sdb, anchor_step=step)
             _step_drift.update(lp=_sd_lp, batch=_sdb, step=step)
             del _sd_lp
 

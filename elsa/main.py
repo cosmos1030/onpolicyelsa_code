@@ -1286,7 +1286,8 @@ if __name__ == '__main__':
                       '(Wanda-style weight*activation-norm from a one-batch forward-hook snapshot -- '
                       'NOT comparable across layers, use with --gmp_pruning_scope=layer only).')
     flags.DEFINE_enum('gmp_fisher_source', 'adam', ['adam', 'opd_empirical'],
-                      'Fisher source for TR saliency: adam=exp_avg_sq (default), opd_empirical=grad^2 on OPD cal_batch.')
+                      'Fisher source for the saliency: adam=exp_avg_sq (default), opd_empirical=grad^2 -- TR path: on the OPD cal_batch; PGD path: mean over --gmp_fisher_emp_nsamples rollout-pool sequences (response tokens only), refreshed every gmp_mask_interval steps.')
+    flags.DEFINE_integer('gmp_fisher_emp_nsamples', 32, '--gmp_fisher_source=opd_empirical under PGD: rollouts per empirical Fisher refresh (one backward each).')
     flags.DEFINE_enum('gmp_pruning_scope', 'global', ['global', 'layer', 'block'],
                       'Pruning scope: global=single threshold across all layers, layer=per-layer threshold (each layer hits target sparsity exactly), block=per-block-of-layers threshold (each group of --gmp_blockwise_init_block/current block_size consecutive decoder layers gets its own independent threshold; only meaningful with --gmp_blockwise_squarehead=true, whose block_size this scope reuses -- non-layer params (embeddings, final norm) are pooled into their own group). Not yet implemented under FSDP.')
     flags.DEFINE_string('gmp_save_path', '/home1/doyoonkim/projects/elsa/models', 'Directory to save GMP pruned model.')
@@ -1329,7 +1330,7 @@ if __name__ == '__main__':
     flags.DEFINE_float('gmp_kd_temperature', 2.0, 'Temperature for GMP token-level KD.')
     flags.DEFINE_integer('gmp_kd_topk', 0, 'Top-K for KD KL divergence (0 = full vocab).')
     flags.DEFINE_integer('gmp_fused_topk_k', 0, 'If >0, compute NTP+KD and the OPD loss with a fused lm_head + loss (no (T,V) student/teacher logits are ever materialized) and replace the full-vocab forward KL with verl\'s forward_kl_topk: sum over the teacher\'s top-K of p (log p - log q), with q the full-vocab student softmax and p the full-vocab teacher softmax (neither renormalized). Single-GPU only.')
-    flags.DEFINE_boolean('gmp_log_step_drift', False, 'Diagnostic: every step, log KL(model at end of previous step || model at end of this step) on the PGD screening batch (log [step_drift], wandb drift/step_kl, drift/proj_step=1 on steps that also had a mask projection). One extra 4-sequence forward per step.')
+    flags.DEFINE_boolean('gmp_log_step_drift', False, 'Diagnostic: every step, log KL(model at end of previous step || model at end of this step) on the PGD screening batch (log [step_drift], wandb drift/step_kl, drift/proj_step=1 on steps that also had a mask projection), KL(right after the last projection || now) (drift/cum_kl; at a projection step also drift/proj_to_proj_kl = weight updates + new mask), and once the measurement floor (same weights forwarded twice, drift/floor_kl). One extra 4-sequence forward per step, ~15GB of cached log-probs at 4x2048 tokens.')
     flags.DEFINE_integer('gmp_fused_topk_chunk', 1024, 'Token chunk size of the fused lm_head loss (peak ~ chunk x vocab x 4B per fp32 buffer).')
     flags.DEFINE_integer('gmp_kl_chunk_size', 0, 'Chunk the sequence dimension into pieces of this many tokens when computing full-vocab KL loss (0 = disabled, compute the whole sequence at once). Full-vocab log-softmax tensors at seqlen=8192 are ~5GB each in fp32 regardless of GPU count (not FSDP-sharded) -- fits an 80GB card but OOMs a 40GB one; chunking trades a Python loop for a bounded peak at the same total FLOPs.')
     flags.DEFINE_bool('gmp_kd_only', False, 'Use KD loss only (no NTP loss).')
