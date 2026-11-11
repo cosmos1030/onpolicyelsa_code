@@ -23,7 +23,7 @@ export VLLM_USE_V1=0 VLLM_NO_USAGE_STATS=1 VLLM_HOST_IP=127.0.0.1
 # vLLM's CuMemAllocator asserts against expandable_segments; leave it unset.
 echo "NODE=$(hostname) JOB=$SLURM_JOB_ID"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
-cd /home1/doyoonkim/projects/elsa/scripts/systems/macko_vllm && export PYTHONPATH=$PWD:${PYTHONPATH:-} && export SPARSE_BACKEND=${BACKEND:-spinfer} MACKO_DROP_DENSE=1 && cd /home1/doyoonkim/projects/elsa
+cd /home1/doyoonkim/projects/elsa/scripts/systems/macko_vllm && export PYTHONPATH=$PWD:${PYTHONPATH:-} && export SPARSE_BACKEND=${BACKEND:-spinfer} MACKO_DROP_DENSE=1 MACKO_CPU_STAGE=${STAGE:-0} && cd /home1/doyoonkim/projects/elsa
 # MACKO 커널은 import 시점에 JIT 빌드된다: nvcc(gcc 14 허용하는 12.8)와 ninja 필요.
 export CUDA_HOME=/opt/ohpc/pub/apps/cuda/12.8
 export PATH="/home1/doyoonkim/miniconda3/envs/rac/bin:$CUDA_HOME/bin:$PATH"
@@ -33,7 +33,7 @@ export MACKO_SPMV_BUILD_DIRECTORY=/home1/doyoonkim/.cache/macko_build_${ARCH}
 mkdir -p "$MACKO_SPMV_BUILD_DIRECTORY"
 
 /home1/doyoonkim/miniconda3/envs/rac/bin/python scripts/systems/macko_vllm/bench_vllm_batch_sweep.py \
-    --model "$MODEL" $SPARSE --batches 1,2,4,8,16,32 --length 2048 \
+    --model "$MODEL" $SPARSE --batches ${BATCHES:-1,2,4,8,16,32} --length 2048 ${LENGTHS:+--lengths $LENGTHS} ${GPU_UTIL:+--gpu_util $GPU_UTIL} \
     --out "$OUTDIR/vllm_bsweep_8b_${TAG}_${SLURM_JOB_ID}.json"
 EXIT_CODE=$?
 echo "=== EXIT: $EXIT_CODE ==="; echo "##### END #####"; exit $EXIT_CODE

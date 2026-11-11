@@ -27,12 +27,14 @@ def main():
     ap.add_argument("--model", required=True)
     ap.add_argument("--batches", default="1,4,8,32")
     ap.add_argument("--length", type=int, default=2048)
+    ap.add_argument("--lengths", default="", help="comma list; overrides --length (paper: 512,2048,8192)")
     ap.add_argument("--gpu_util", type=float, default=0.85)
     ap.add_argument("--out", default="")
     ap.add_argument("--sparse", action="store_true",
                     help="load through the macko plug-in (backend from SPARSE_BACKEND)")
     a = ap.parse_args()
     batches = [int(x) for x in a.batches.split(",")]
+    lengths = [int(x) for x in a.lengths.split(",")] if a.lengths else [a.length]
 
     import torch
     if a.sparse:
@@ -41,29 +43,29 @@ def main():
 
     print(f"gpu = {torch.cuda.get_device_name(0)}  length={a.length}")
     llm = LLM(model=a.model, dtype="float16",
-              max_model_len=a.length + 64, gpu_memory_utilization=a.gpu_util,
+              max_model_len=max(lengths) + 64, gpu_memory_utilization=a.gpu_util,
               enforce_eager=False, max_num_seqs=max(batches),
               disable_log_stats=True, **({"quantization": "macko"} if a.sparse else {}))
 
     res = {}
-    for B in batches:
-        # Distinct prompts so nothing dedupes or shares a prefix cache entry.
+    for L in lengths:
+      for B in batches:
         prompts = [list(range(16 + i, 32 + i)) for i in range(B)]
-        sp = SamplingParams(temperature=0.0, max_tokens=a.length, ignore_eos=True)
+        sp = SamplingParams(temperature=0.0, max_tokens=L, ignore_eos=True)
         llm.generate(prompt_token_ids=prompts[:1],
-                     sampling_params=SamplingParams(temperature=0.0,
-                                                    max_tokens=8, ignore_eos=True))
+                     sampling_params=SamplingParams(temperature=0.0, max_tokens=8, ignore_eos=True))
         t0 = time.perf_counter()
         outs = llm.generate(prompt_token_ids=prompts, sampling_params=sp)
         dt = time.perf_counter() - t0
         tot = sum(len(o.outputs[0].token_ids) for o in outs)
-        res[B] = dict(batch=B, wall_sec=dt, total_tokens=tot,
-                      throughput_tok_s=tot / dt,
-                      per_seq_ms_per_token=dt * 1e3 / (tot / B))
-        print(f"  B={B:<4} {dt:7.2f}s  {tot:6d} tok  "
-              f"throughput {tot/dt:8.1f} tok/s  "
+        res[f"L{L}_B{B}"] = dict(length=L, batch=B, wall_sec=dt, total_tokens=tot,
+                                 throughput_tok_s=tot / dt, per_seq_ms_per_token=dt * 1e3 / (tot / B))
+        print(f"  L={L:<5} B={B:<4} {dt:7.2f}s {tot:6d} tok throughput {tot/dt:8.1f} tok/s "
               f"per-seq {dt*1e3/(tot/B):6.2f} ms/token", flush=True)
-
+    if a.out:
+        json.dump(res, open(a.out, "w"), indent=1)
+        print(f"wrote {a.out}")
+    return
     base = res[batches[0]]
     print(f"\n{'batch':<8}{'per-seq ms/tok':>16}{'vs B=1':>9}"
           f"{'throughput tok/s':>19}{'vs B=1':>9}")

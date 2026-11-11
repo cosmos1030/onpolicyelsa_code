@@ -498,6 +498,64 @@ class _PGDLogVals(collections.abc.Mapping):
         return len(self._imps)
 
 
+class _PGDLazyImps(collections.abc.Mapping):
+    """name -> fisher importance (v_hat * w^2, fp32) for one PGD event, recomputed on
+    every access instead of held as a full-model fp32 copy. Entries are kept in insertion
+    order (= maskmgr.named_params order, same as the eager dict). Lazy entries reproduce
+    the eager path exactly: buf = empty fp32; buf.copy_(w); buf.pow_(2); buf.mul_(f)."""
+
+    def __init__(self, fisher, check=False):
+        self._fisher = fisher
+        self._entries = {}          # name -> ('lazy', param) | ('eager', tensor)
+        self._check = check
+        self._ref = {}              # check mode only: name -> eager tensor
+
+    @staticmethod
+    def lazy_ok(fisher, p):
+        st = fisher.optimizer.state.get(p, {})
+        v = st.get('exp_avg_sq', None)
+        if v is None or not torch.is_tensor(v):
+            return False
+        if _DTENSOR_AVAILABLE and isinstance(v, DTensor):
+            return False            # redistribute is a collective: never call it per access
+        return v.device == p.device  # CPU-offloaded state would be copied per access
+
+    def _compute(self, p):
+        f = self._fisher.fisher_factor(p)
+        buf = torch.empty_like(p.data, dtype=torch.float32)
+        buf.copy_(p.data)
+        buf.pow_(2)
+        buf.mul_(f)
+        return buf
+
+    def add_lazy(self, n, p):
+        self._entries[n] = ('lazy', p)
+        if self._check:
+            self._ref[n] = self._compute(p)
+
+    def add_eager(self, n, t):
+        self._entries[n] = ('eager', t)
+
+    def __getitem__(self, n):
+        kind, obj = self._entries[n]
+        if kind == 'eager':
+            return obj
+        t = self._compute(obj)
+        if self._check and not torch.equal(t, self._ref[n]):
+            raise RuntimeError(f"[pgd_lazy_check] lazy importance for {n} differs from the "
+                               f"event-start value ({int((t != self._ref[n]).sum())} elements)")
+        return t
+
+    def __contains__(self, n):
+        return n in self._entries
+
+    def __iter__(self):
+        return iter(self._entries)
+
+    def __len__(self):
+        return len(self._entries)
+
+
 # Exact order statistics for the PGD threshold searches. The searches bisect a
 # threshold 48/64 times, each pass a compare+sum over every prunable weight and
 # a host sync (~1.4s per call at 1.7B, ~8s per event in the growth phase). Their
@@ -8427,7 +8485,29 @@ def globalprune_gmp(
             _PGD_EV_T0[0] = time.time()
             _pgd_imps = {}
             _pgd_fast_path = (fisher.saliency == 'fisher')
+            # MEMORY (2026-11-11): the persistent _pgd_scratch held one fp32 copy of every
+            # prunable weight for the whole run (~43GB/rank at 32B on 3 ranks, the whole
+            # steady-state gap to ALPS+training). Lazy mode keeps no copy: each access
+            # recomputes v_hat*w^2 for that one tensor with the same ops in the same order
+            # (bit-identical; weights and Adam state are fixed during the event, and the
+            # KL screen's zero-and-restore puts the exact values back). Only for plain
+            # on-device Adam state (no DTensor redistribute / CPU offload / v' path) and
+            # unstructured masks (the N:M path refits weights mid-event).
+            # GMP_PGD_LAZY_IMPS=0 restores the persistent buffer; GMP_PGD_LAZY_CHECK=1
+            # keeps an eager copy and asserts every lazy access equals it (debug only).
+            _pgd_lazy = (_pgd_fast_path and not _pgd_layer_rank
+                         and getattr(maskmgr, 'prune_n', 0) == 0
+                         and getattr(fisher, '_vprime', None) is None
+                         and hasattr(fisher, 'optimizer')
+                         and _os_kldbg.environ.get('GMP_PGD_LAZY_IMPS', '1') != '0')
+            _pgd_lazy_check = _pgd_lazy and _os_kldbg.environ.get('GMP_PGD_LAZY_CHECK') == '1'
+            if _pgd_lazy:
+                _pgd_scratch.clear()
+                _pgd_imps = _PGDLazyImps(fisher, check=_pgd_lazy_check)
             for _n, _p in maskmgr.named_params.items():
+                if _pgd_lazy and _p.numel() > 0 and _PGDLazyImps.lazy_ok(fisher, _p):
+                    _pgd_imps.add_lazy(_n, _p)
+                    continue
                 # _p.data itself is the source: in STE mode (--gmp_ste) it is
                 # never hard-reset by maskmgr.apply()/update() (see
                 # _apply_mask), so it already holds the true, continuously-
@@ -8469,7 +8549,10 @@ def globalprune_gmp(
                         _t = _rk.view_as(_t)
                     del _fl, _rk
                 if _t.numel() > 0:
-                    _pgd_imps[_n] = _t
+                    if _pgd_lazy:
+                        _pgd_imps.add_eager(_n, _t)
+                    else:
+                        _pgd_imps[_n] = _t
 
             if _pgd_imps:
                 _pgd_dev = next(iter(_pgd_imps.values())).device
