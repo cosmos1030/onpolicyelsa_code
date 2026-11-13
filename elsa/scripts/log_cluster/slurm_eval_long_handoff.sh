@@ -153,6 +153,15 @@ case "$ARM" in
     [ -f "$MODEL/.download_complete" ] || MODEL=cosmos1030/gmp-kd3e-1-4b-s80pct-lr1e-4_20260917_112952
     RUN=s3_4b_s80_alpsretrain_seed${SEED}
     PROJECT=reasoning_qwen3_4b_nostrip8192; SPARSITY=0.8 ;;
+  # LCB and GSM8K for the 1.7B s60 SCOUT (klb 0.02) arm; math500 and ifeval
+  # are being run elsewhere. Split by BENCHMARK, not by seed, so ALLOW_DUP=1 is
+  # required: the other box holds the same checkpoint and the same seeds.
+  lcb17b_s60_seed0|lcb17b_s60_seed1|lcb17b_s60_seed42)
+    SEED=${ARM#lcb17b_s60_seed}
+    MODEL=cosmos1030/gmp-kd3e-1-s60pct-lr5e-5_20260901_071402
+    RUN=s3_1.7b_s60_ours_klb002_seed${SEED}
+    PROJECT=reasoning_qwen3_1.7b_nostrip8192; SPARSITY=0.6
+    BENCHMARKS=lcb,gsm8k ;;
   *) echo "!! unknown arm '$ARM'" >&2; exit 1 ;;
 esac
 
@@ -221,7 +230,11 @@ EXTRA=()
 # with sparsity 0.8 is exactly the mix-up b9cfaee fixed on the training side.
 # Another box may already be on this checkpoint: several servers share this
 # wandb project and hub, and a duplicate burns a GPU for hours for nothing.
-if ! python "$REPO/elsa/scripts/log_cluster/preflight_dup_check.py" \
+# ALLOW_DUP=1 for a deliberate split -- by seed, or (here) by benchmark, where
+# another box runs the remaining tasks on the same checkpoint and seeds.
+if [ "${ALLOW_DUP:-0}" = "1" ]; then
+  echo "[preflight] ALLOW_DUP=1 -- skipping the duplicate check on purpose"
+elif ! python "$REPO/elsa/scripts/log_cluster/preflight_dup_check.py" \
         --model "$MODEL" --seeds "$SEED" --run "$RUN" --project "$PROJECT"; then
     echo "##### SKIPPED (duplicate running elsewhere) #####"
     exit 0
