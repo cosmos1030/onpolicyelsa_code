@@ -12,10 +12,12 @@ Key components (from "The State of Sparsity in LLMs"):
 import bisect
 import collections.abc
 import math
+import random
 import re
 import struct
 import time
 import types
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -474,6 +476,250 @@ def _pgd_build_topk_vals(imps_by_name, cand_by_name, want_highest, global_lo, gl
     return vals, lo, hi
 
 
+# PGD event VRAM: every candidate/selection mask of a projection used to be a dict of bool tensors over
+# all prunable weights (~1 byte/weight: 10.7GB per dict per rank at 32B on 3 ranks, five of them live at
+# once). _LazyBoolMap computes one tensor on access from tensors the caller already holds (same ops, so
+# bit-identical values), keeping one tensor's worth live. GMP_PGD_EAGER=1 restores the materialized dicts
+# for A/B checks.
+_PGD_EAGER = _os_kldbg.environ.get('GMP_PGD_EAGER') == '1'
+_KL_SCREEN_CHUNK = int(_os_kldbg.environ.get('GMP_KL_SCREEN_CHUNK', '256'))  # tokens per KL-screen log-softmax slice
+
+
+class _LazyImpMap(collections.abc.Mapping):
+    """name -> fisher.importance(name, param), recomputed on every access instead of holding an fp32 copy of every
+    prunable weight (the schedule update's candidate_masks did; ~6 bytes/param at its peak). Same call, same values:
+    valid while weights and optimizer state are unchanged, i.e. within one candidate_masks call. GMP_SCHED_EAGER=1
+    restores the dict."""
+
+    def __init__(self, fisher, named_params):
+        self._f, self._p = fisher, named_params
+
+    def __getitem__(self, n):
+        return self._f.importance(n, self._p[n])
+
+    def __iter__(self):
+        return iter(self._p)
+
+    def __len__(self):
+        return len(self._p)
+
+
+class _LazyBoolMap(collections.abc.Mapping):
+    """name -> tensor computed by fn(name) on each access; m[name] = t pins a value (overrides fn)."""
+
+    def __init__(self, keys, fn):
+        self._keys = list(keys)
+        self._keyset = set(self._keys)
+        self._fn, self._over = fn, {}
+
+    def __getitem__(self, n):
+        t = self._over.get(n)
+        if t is not None:
+            return t
+        if n not in self._keyset:
+            raise KeyError(n)
+        return self._fn(n)
+
+    def __setitem__(self, n, t):
+        self._over[n] = t
+
+    def __contains__(self, n):
+        return n in self._keyset
+
+    def __iter__(self):
+        return iter(self._keys)
+
+    def __len__(self):
+        return len(self._keys)
+
+
+_PGD_LAZY_SAL = [False]   # set per run from --gmp_pgd_lazy_saliency (read by _compute_tr_kl's restore)
+
+
+class _PGDLazyImps(collections.abc.Mapping):
+    """name -> fisher saliency v_hat * w^2 (fp32) recomputed on every access, with the same ops in the same
+    order as the persistent-buffer path (copy w, square, multiply by the bias-corrected Adam second moment),
+    so values are bit-identical. Under --gmp_offload_optimizer_fwd v lives on the CPU, so each access is one
+    host->device copy of that tensor's v instead of a resident fp32 copy of every prunable weight (~43GB per
+    rank at 32B on 3 ranks). Valid while param.data is unchanged, i.e. within one PGD event."""
+
+    _DEPTH = 4   # tensors of v copied ahead on a side stream (sequential passes over the params)
+
+    def __init__(self, named_params, fisher, cache_gb=-1.0):
+        self._p = {n: p for n, p in named_params.items() if p.numel() > 0}
+        self._names = list(self._p)
+        self._pos = {n: i for i, n in enumerate(self._names)}
+        self._fisher = fisher
+        self._pre = {}       # name -> (device copy of exp_avg_sq, ready event)
+        # keep computed saliencies while they fit in a budget of currently-free VRAM (accesses then cost
+        # nothing); only the overflow is recomputed. --gmp_pgd_saliency_cache_gb: <0 = auto (half of the
+        # free memory left after a 24GB reserve for the screening forwards), 0 = never cache.
+        self._cache, self._cache_used = {}, 0
+        _gb = float(cache_gb)
+        if _gb < 0 and torch.cuda.is_available():
+            _free = torch.cuda.mem_get_info()[0]
+            self._cache_budget = max(0, int((_free - 24 * 2 ** 30) * 0.5))
+        else:
+            self._cache_budget = int(max(_gb, 0) * 2 ** 30)
+        self._stream = (torch.cuda.Stream() if torch.cuda.is_available()
+                        and _os_kldbg.environ.get('GMP_PGD_NO_PREFETCH') != '1' else None)  # =1: timing A/B
+
+    def _cpu_v(self, p):
+        """exp_avg_sq when it can be prefetched as is (plain Adam state offloaded to pinned CPU memory)."""
+        if (getattr(self._fisher, '_vprime', None) is not None
+                or type(self._fisher).fisher_factor is not FisherAccumulator.fisher_factor):
+            return None   # only the plain Adam-state fisher_factor is replicated in __getitem__
+        v = self._fisher.optimizer.state.get(p, {}).get('exp_avg_sq', None)
+        if v is None or v.is_cuda or not v.is_pinned() or (_DTENSOR_AVAILABLE and isinstance(v, DTensor)):
+            return None
+        return v
+
+    def _prefetch(self, i):
+        # hide the host->device copies of the next tensors' v behind this tensor's compute
+        for j in range(i + 1, min(i + 1 + self._DEPTH, len(self._names))):
+            n = self._names[j]
+            if n in self._pre or n in self._cache:
+                continue
+            p = self._p[n]
+            v = self._cpu_v(p)
+            if v is None:
+                continue
+            with torch.cuda.stream(self._stream):
+                g = v.to(p.device, non_blocking=True)
+                ev = torch.cuda.Event()
+                ev.record(self._stream)
+            self._pre[n] = (g, ev)
+        for n in [m for m in self._pre if self._pos[m] <= i - 1 or self._pos[m] > i + self._DEPTH]:
+            del self._pre[n]   # stale (the pass restarted or skipped ahead)
+
+    def __getitem__(self, n):
+        c = self._cache.get(n)
+        if c is not None:
+            return c
+        p = self._p[n]
+        i = self._pos[n]
+        hit = self._pre.pop(n, None) if self._stream is not None else None
+        if self._stream is not None:
+            self._prefetch(i)
+        if hit is not None:
+            g, ev = hit
+            torch.cuda.current_stream().wait_event(ev)
+            g.record_stream(torch.cuda.current_stream())
+            # same values as fisher_factor(): v.float() (exact for bf16) then the bias correction on device
+            st = self._fisher.optimizer.state.get(p, {})
+            f = g.float()
+            step = st.get('step', self._fisher._step)
+            if torch.is_tensor(step):
+                step = step.item()
+            beta2 = self._fisher.optimizer.param_groups[0].get('betas', (0.9, 0.999))[1]
+            if step > 0:
+                f = f / (1.0 - beta2 ** step)
+        else:
+            f = self._fisher.fisher_factor(p)
+        if f is None:
+            return p.data.float() ** 2
+        t = torch.empty_like(p.data, dtype=torch.float32)
+        t.copy_(p.data)
+        t.pow_(2)
+        t.mul_(f)
+        if self._cache_used + t.numel() * 4 <= self._cache_budget:
+            self._cache[n] = t
+            self._cache_used += t.numel() * 4
+        return t
+
+    def __contains__(self, n):
+        return n in self._p
+
+    def __iter__(self):
+        return iter(self._p)
+
+    def __len__(self):
+        return len(self._p)
+
+
+_PGD_SPARSE_MAX = 1 << 22   # candidate pools up to this size (global) take the sparse path
+
+
+class _PGDSparsePool:
+    """The prune (or revive) candidates of one PGD event, gathered once: their log-saliency values (the same
+    clamp + log as _PGDLogVals, elementwise, so bit-identical), flat positions and owning tensors, sorted.
+    select(k) returns {name: flat positions} of exactly the set the threshold selection of
+    _pgd_topk_mask_from_vals picks (values at or beyond the k-th, i.e. the k extreme candidates), without a
+    pass over every prunable weight -- or None when the cut falls inside a block of exactly tied values, where
+    the original path thins the tie at random and the caller must take it. Under FSDP the k-th value is taken
+    over all ranks' candidates (all_gather), as the radix select there does."""
+
+    def __init__(self, imps, cand, want_highest, dev, use_fsdp):
+        self.hi, self.use_fsdp, self.dev = want_highest, use_fsdp, dev
+        names, vs, ids, own = [], [], [], []
+        for n in imps:
+            idx = cand[n].reshape(-1).nonzero().squeeze(1)
+            if idx.numel() == 0:
+                continue
+            v = imps[n].reshape(-1)[idx].float().clamp(min=1e-40)
+            v.log_()
+            own.append(torch.full_like(idx, len(names)))
+            names.append(n); vs.append(v); ids.append(idx)
+        self.names = names
+        if vs:
+            v = torch.cat(vs)
+            o = torch.cat(own)
+            i = torch.cat(ids)
+            self.v, perm = torch.sort(v, descending=want_highest, stable=True)
+            self.own, self.idx = o[perm], i[perm]
+        else:
+            self.v = torch.empty(0, device=dev)
+            self.own = self.idx = torch.empty(0, dtype=torch.long, device=dev)
+        if use_fsdp:
+            import torch.distributed as _dist
+            n_t = torch.tensor([self.v.numel()], dtype=torch.long, device=dev)
+            sizes = [torch.zeros_like(n_t) for _ in range(_dist.get_world_size())]
+            _dist.all_gather(sizes, n_t)
+            mx = int(max(s_.item() for s_ in sizes))
+            pad = torch.full((mx,), float('nan'), device=dev)
+            pad[:self.v.numel()] = self.v
+            parts = [torch.empty_like(pad) for _ in sizes]
+            _dist.all_gather(parts, pad)
+            g = torch.cat([p_[:int(s_.item())] for p_, s_ in zip(parts, sizes)])
+            self.gv = torch.sort(g, descending=want_highest).values
+        else:
+            self.gv = self.v
+
+    def select(self, k):
+        if k <= 0:
+            return {}
+        k = min(k, self.gv.numel())
+        if k == 0:
+            return {}
+        kth = self.gv[k - 1]
+        beyond = (self.gv >= kth) if self.hi else (self.gv <= kth)
+        if int(beyond.sum().item()) != k:
+            return None   # tie at the cut
+        m = int(((self.v >= kth) if self.hi else (self.v <= kth)).sum().item())
+        own, idx = self.own[:m], self.idx[:m]
+        out = {}
+        for j in torch.unique(own).tolist():
+            out[self.names[j]] = idx[own == j]
+        return out
+
+
+def _pgd_idx_to_masks(sel_idx, named_params):
+    """{name: flat positions} -> lazy {name: bool mask} over every prunable tensor."""
+    def _fn(n, _s=sel_idx, _p=named_params):
+        m = torch.zeros(_p[n].data.shape, dtype=torch.bool, device=_p[n].device)
+        if n in _s:
+            m.view(-1)[_s[n]] = True
+        return m
+    return _LazyBoolMap(named_params, _fn)
+
+
+def _pgd_sel_map(vals, thr, want_highest):
+    """Threshold selection over `vals` (lazy unless GMP_PGD_EAGER=1)."""
+    if _PGD_EAGER:
+        return {n: ((v >= thr) if want_highest else (v <= thr)) for n, v in vals.items()}
+    return _LazyBoolMap(vals.keys(), lambda n: (vals[n] >= thr) if want_highest else (vals[n] <= thr))
+
+
 class _PGDLogVals(collections.abc.Mapping):
     """Read-only name -> tensor mapping with the values _pgd_build_topk_vals
     used to materialize: log(clamp(imp, floor)) on candidates, `sentinel`
@@ -496,64 +742,6 @@ class _PGDLogVals(collections.abc.Mapping):
 
     def __len__(self):
         return len(self._imps)
-
-
-class _PGDLazyImps(collections.abc.Mapping):
-    """name -> fisher importance (v_hat * w^2, fp32) for one PGD event, recomputed on
-    every access instead of held as a full-model fp32 copy. Entries are kept in insertion
-    order (= maskmgr.named_params order, same as the eager dict). Lazy entries reproduce
-    the eager path exactly: buf = empty fp32; buf.copy_(w); buf.pow_(2); buf.mul_(f)."""
-
-    def __init__(self, fisher, check=False):
-        self._fisher = fisher
-        self._entries = {}          # name -> ('lazy', param) | ('eager', tensor)
-        self._check = check
-        self._ref = {}              # check mode only: name -> eager tensor
-
-    @staticmethod
-    def lazy_ok(fisher, p):
-        st = fisher.optimizer.state.get(p, {})
-        v = st.get('exp_avg_sq', None)
-        if v is None or not torch.is_tensor(v):
-            return False
-        if _DTENSOR_AVAILABLE and isinstance(v, DTensor):
-            return False            # redistribute is a collective: never call it per access
-        return v.device == p.device  # CPU-offloaded state would be copied per access
-
-    def _compute(self, p):
-        f = self._fisher.fisher_factor(p)
-        buf = torch.empty_like(p.data, dtype=torch.float32)
-        buf.copy_(p.data)
-        buf.pow_(2)
-        buf.mul_(f)
-        return buf
-
-    def add_lazy(self, n, p):
-        self._entries[n] = ('lazy', p)
-        if self._check:
-            self._ref[n] = self._compute(p)
-
-    def add_eager(self, n, t):
-        self._entries[n] = ('eager', t)
-
-    def __getitem__(self, n):
-        kind, obj = self._entries[n]
-        if kind == 'eager':
-            return obj
-        t = self._compute(obj)
-        if self._check and not torch.equal(t, self._ref[n]):
-            raise RuntimeError(f"[pgd_lazy_check] lazy importance for {n} differs from the "
-                               f"event-start value ({int((t != self._ref[n]).sum())} elements)")
-        return t
-
-    def __contains__(self, n):
-        return n in self._entries
-
-    def __iter__(self):
-        return iter(self._entries)
-
-    def __len__(self):
-        return len(self._entries)
 
 
 # Exact order statistics for the PGD threshold searches. The searches bisect a
@@ -781,7 +969,9 @@ def _pgd_topk_mask_from_vals(vals, lo, hi, k, dev, use_fsdp, want_highest):
     if use_fsdp:
         import torch.distributed as _dist
     if k <= 0:
-        return {n: torch.zeros_like(v, dtype=torch.bool) for n, v in vals.items()}
+        if _PGD_EAGER:
+            return {n: torch.zeros_like(v, dtype=torch.bool) for n, v in vals.items()}
+        return _LazyBoolMap(vals.keys(), lambda n: torch.zeros(vals._imps[n].shape if isinstance(vals, _PGDLogVals) else vals[n].shape, dtype=torch.bool, device=dev))
     import os as _os_topk
     if (not use_fsdp and k <= _PGD_EXACT_TOPK_MAX_K
             and _os_topk.environ.get('GMP_PGD_TOPK_BISECT') != '1'):
@@ -808,7 +998,7 @@ def _pgd_topk_mask_from_vals(vals, lo, hi, k, dev, use_fsdp, want_highest):
         _kth = torch.kthvalue(_cat, (_cat.numel() - _kk + 1) if want_highest else _kk).values
         del _cat
         thr = float(_kth.item())
-        sel = {n: ((v >= thr) if want_highest else (v <= thr)) for n, v in vals.items()}
+        sel = _pgd_sel_map(vals, thr, want_highest)
         return _pgd_thin_tie_cluster(vals, sel, thr, k, dev, use_fsdp)
     if _pgd_radix_enabled():
         n_total = sum(t.numel() for t in (vals._imps if isinstance(vals, _PGDLogVals) else vals).values())
@@ -819,7 +1009,7 @@ def _pgd_topk_mask_from_vals(vals, lo, hi, k, dev, use_fsdp, want_highest):
         kth = _pgd_kth_for_bisect(vals.values, k, n_total, want_highest, dev, use_fsdp)
         lo, hi = _pgd_bisect_replay(lo, hi, 64, kth, want_highest)
         thr = lo if want_highest else hi
-        sel = {n: ((v >= thr) if want_highest else (v <= thr)) for n, v in vals.items()}
+        sel = _pgd_sel_map(vals, thr, want_highest)
         return _pgd_thin_tie_cluster(vals, sel, thr, k, dev, use_fsdp)
     cnt_t = torch.zeros(1, dtype=torch.long, device=dev)
     for _ in range(64):
@@ -843,7 +1033,7 @@ def _pgd_topk_mask_from_vals(vals, lo, hi, k, dev, use_fsdp, want_highest):
             else:
                 hi = mid
     thr = lo if want_highest else hi
-    sel = {n: ((v >= thr) if want_highest else (v <= thr)) for n, v in vals.items()}
+    sel = _pgd_sel_map(vals, thr, want_highest)
 
     # Tie-breaking: a naive threshold cut can massively overshoot k when many
     # candidates share the EXACT value at `thr` -- e.g. fisher*weight^2==0
@@ -886,7 +1076,8 @@ def _pgd_thin_tie_cluster(vals, sel, thr, k, dev, use_fsdp):
     import os as _os_tiebreak
     if _os_tiebreak.environ.get('GMP_PGD_SKIP_TIEBREAK') == '1':
         return sel
-    tied = {n: (v == thr) for n, v in vals.items()}
+    tied = ({n: (v == thr) for n, v in vals.items()} if _PGD_EAGER
+            else _LazyBoolMap(vals.keys(), lambda n: vals[n] == thr))
     n_tied_t = torch.zeros(1, dtype=torch.long, device=dev)
     for t in tied.values():
         n_tied_t += t.sum(dtype=torch.long)
@@ -1826,6 +2017,9 @@ class FisherAccumulator:
             id(p): group for group in optimizer.param_groups for p in group['params']
         }
         self._wanda_scaler = {}  # name -> per-input-column activation L2-norm^2 (float32)
+        self._snip = {}          # 'snip_calib': name -> |w * dL/dw| on the latest calibration batch (float32)
+        self._movement = {}      # 'movement': name -> running sum of -w*g over optimizer steps (fp32)
+        self._movement_min = 0.0  # global min of the movement scores (shifts them positive for the log-space top-k)
 
     def capture_wanda_stats(self, model, cal_batch, device, chunk_size=8):
         """Wanda-style activation scaler: scaler_row[j] = sum_tokens x_j^2,
@@ -1912,6 +2106,56 @@ class FisherAccumulator:
             f = f / (1.0 - beta2 ** step)
         return f
 
+    def capture_snip_scores(self, model, cal_batch, device):
+        """--gmp_saliency=snip_calib: SNIP connection sensitivity |w * dL/dw| (Lee et al., 2019) of the current
+        (masked) model on a calibration batch -- next-token cross-entropy averaged over the batch's tokens, one
+        sequence per backward. Any gradients already accumulated for the training step are set aside and put
+        back afterwards, so the step itself is unchanged."""
+        params = [p for p in model.parameters() if p.requires_grad]
+        saved = [p.grad for p in params]
+        for p in params:
+            p.grad = None
+        ids, am = cal_batch['input_ids'], cal_batch['attention_mask']
+        n_tok = max(1, int(am[:, 1:].sum()))
+        was_training = model.training
+        model.train()
+        for i in range(ids.shape[0]):
+            x = ids[i:i + 1].to(device); a = am[i:i + 1].to(device)
+            with torch.autocast('cuda', dtype=torch.bfloat16):
+                logits = model(input_ids=x, attention_mask=a).logits
+            lab = x[:, 1:].masked_fill(a[:, 1:] == 0, -100)
+            loss = torch.nn.functional.cross_entropy(logits[:, :-1].float().reshape(-1, logits.shape[-1]),
+                                                     lab.reshape(-1), ignore_index=-100, reduction='sum') / n_tok
+            loss.backward()
+            del logits, loss
+        with torch.no_grad():
+            for n, p in self.named_params.items():
+                if p.numel() == 0:
+                    continue
+                g = p.grad
+                self._snip[n] = ((p.data.float() * g.float()).abs() if g is not None
+                                 else torch.zeros(p.data.shape, dtype=torch.float32, device=p.device))
+        for p, g in zip(params, saved):
+            p.grad = g
+        model.train(was_training)
+
+    @torch.no_grad()
+    def accumulate_movement(self):
+        """--gmp_saliency=movement: add -w*g of this optimizer step (call after backward, before step)."""
+        mn = None
+        for n, p in self.named_params.items():
+            if p.grad is None or p.numel() == 0:
+                continue
+            d = -(p.data.float() * p.grad.float())
+            if n in self._movement:
+                self._movement[n].add_(d)
+            else:
+                self._movement[n] = d
+            m_ = self._movement[n].min()
+            mn = m_ if mn is None else torch.minimum(mn, m_)
+        if mn is not None:
+            self._movement_min = float(mn.item())
+
     def importance(self, name, param):
         """Importance score for pruning. 'fisher': F_hat*w^2, 'magnitude': w^2,
         'spa': h*u^2 (Sparse Projected Adam -- see _spa_importance), 'sqrt_fisher':
@@ -1934,6 +2178,33 @@ class FisherAccumulator:
             return param.data.float() ** 2 / hinv.to(param.device).reshape(1, -1).clamp(min=1e-12)
         if self.saliency == 'spa':
             return self._spa_importance(param)
+        if self.saliency == 'snip':
+            # SNIP / first-order Taylor |w * g|, with g the bias-corrected Adam first moment (a ~10-step
+            # gradient average) instead of one noisy minibatch gradient
+            st = self.optimizer.state.get(param, {})
+            m = st.get('exp_avg', None)
+            if m is None:
+                return param.data.float() ** 2
+            if _DTENSOR_AVAILABLE and isinstance(m, DTensor):
+                m = m.redistribute(placements=[Replicate()]).to_local()
+            step = st.get('step', self._step)
+            if torch.is_tensor(step):
+                step = step.item()
+            beta1 = self.param_to_group[id(param)].get('betas', (0.9, 0.999))[0]
+            g = m.float().to(param.device)
+            if step > 0:
+                g = g / (1.0 - beta1 ** step)
+            return (param.data.float() * g).abs()
+        if self.saliency == 'snip_calib':
+            s_ = self._snip.get(name)
+            return s_ if s_ is not None else param.data.float() ** 2   # w^2 only before the first capture
+        if self.saliency == 'movement':
+            # movement pruning (Sanh et al., 2020): S = -sum_t w_t * g_t, lowest pruned first; shifted by the
+            # global minimum so the scores are positive for the log-space threshold search (order unchanged)
+            s_ = self._movement.get(name)
+            if s_ is None:
+                return param.data.float() ** 2
+            return s_ - self._movement_min + 1e-30
         if self.saliency == 'wanda':
             scaler = self._wanda_scaler.get(name)
             if scaler is None or param.dim() != 2:
@@ -2109,8 +2380,89 @@ class EmpiricalFisherAccumulator:
 # Mask manager
 # ---------------------------------------------------------------------------
 
+_BIT_W = {}
+
+
+def _bitw(dev):
+    w = _BIT_W.get(dev)
+    if w is None:
+        w = _BIT_W[dev] = torch.tensor([1, 2, 4, 8, 16, 32, 64, 128], dtype=torch.uint8, device=dev)
+    return w
+
+
+def _pack_bool(t):
+    """bool tensor -> (uint8 bit-packed, shape): 1 bit per weight instead of 1 byte (lossless)."""
+    flat = t.reshape(-1)
+    pad = (-flat.numel()) % 8
+    if pad:
+        flat = torch.cat([flat, flat.new_zeros(pad)])
+    return (flat.view(-1, 8).to(torch.uint8) * _bitw(flat.device)).sum(1, dtype=torch.uint8), tuple(t.shape)
+
+
+def _unpack_bool(packed, shape):
+    n = 1
+    for d in shape:
+        n *= d
+    return (packed.unsqueeze(1) & _bitw(packed.device)).ne(0).reshape(-1)[:n].reshape(shape)
+
+
+class _PackedMasks(collections.abc.MutableMapping):
+    """--gmp_pack_masks: GradualMaskManager.masks stored bit-packed (1/8 of the bool footprint: ~9.4GB less
+    per rank at 32B/3 ranks, for SCOUT and fixed-mask training alike). Reads return a freshly unpacked bool
+    tensor (identical values), writes pack; nothing in the trainer mutates a mask tensor in place."""
+
+    def __init__(self, src=None):
+        self._d = {}
+        for n, m in (src or {}).items():
+            self[n] = m
+
+    def __getitem__(self, n):
+        p, shape = self._d[n]
+        return _unpack_bool(p, shape)
+
+    def __setitem__(self, n, m):
+        self._d[n] = _pack_bool(m.bool())
+
+    def __delitem__(self, n):
+        del self._d[n]
+
+    def __iter__(self):
+        return iter(self._d)
+
+    def __len__(self):
+        return len(self._d)
+
+    def __contains__(self, n):
+        return n in self._d
+
+    def snapshot(self):
+        """Read-only view of the current masks that stays fixed if entries are reassigned later."""
+        snap = _PackedMasks()
+        snap._d = dict(self._d)
+        return snap
+
+
+def _mask_snapshot(masks):
+    return masks.snapshot() if isinstance(masks, _PackedMasks) else dict(masks)
+
+
 class GradualMaskManager:
     """Maintains binary masks and updates them on a schedule."""
+
+    @property
+    def masks(self):
+        return self._masks
+
+    @masks.setter
+    def masks(self, value):
+        if getattr(self, '_pack', False) and not isinstance(value, _PackedMasks):
+            value = _PackedMasks(value)
+        self._masks = value
+
+    def enable_packing(self):
+        """--gmp_pack_masks: keep masks bit-packed from now on."""
+        self._pack = True
+        self.masks = self._masks
 
     def __init__(self, named_params, fsdp_model=None, prune_n=0, prune_m=0, pruning_scope='global', ste=False,
                  named_shapes=None):
@@ -2287,7 +2639,30 @@ class GradualMaskManager:
             for n, H in cov.items():
                 Hd = H.to(device, torch.float64)
                 Hd.diagonal().add_(0.01 * Hd.diagonal().mean().clamp(min=1e-12))
-                _OBS_HINV[n] = torch.diagonal(torch.cholesky_inverse(torch.linalg.cholesky(Hd))).float().cpu()
+                try:
+                    _OBS_HINV[n] = torch.diagonal(torch.cholesky_inverse(torch.linalg.cholesky(Hd))).float().cpu()
+                except torch.linalg.LinAlgError:
+                    # not positive definite (e.g. inputs that never fire once an upstream layer is pruned away):
+                    # SparseGPT's fix -- unit diagonal for dead inputs -- then 10x more damping until it factors.
+                    # Positive-definite covariances never get here, so their values are unchanged.
+                    Hd = H.to(device, torch.float64)
+                    dead = Hd.diagonal() == 0
+                    Hd[dead, dead] = 1.0
+                    base = 0.01 * Hd.diagonal().mean().clamp(min=1e-12)
+                    for k in range(6):
+                        Hk = Hd.clone()
+                        Hk.diagonal().add_(base * 10 ** k)
+                        try:
+                            _OBS_HINV[n] = torch.diagonal(torch.cholesky_inverse(torch.linalg.cholesky(Hk))).float().cpu()
+                            logging.warning(f'[obs saliency] {n}: covariance not positive definite; '
+                                            f'{int(dead.sum())} dead inputs set to 1, damping x{10 ** k}')
+                            break
+                        except torch.linalg.LinAlgError:
+                            continue
+                    else:
+                        _OBS_HINV.pop(n, None)   # importance() falls back to w^2 for this layer
+                        logging.warning(f'[obs saliency] {n}: covariance still singular; using w^2')
+                    del Hk
                 del Hd
             torch.cuda.empty_cache()
         logging.info('[pgd_nm_refit] captured full input covariance for %d/%d layers (%d shared) '
@@ -2352,7 +2727,8 @@ class GradualMaskManager:
         return ~W_mask  # mask=True means KEEP (consistent with unstructured path)
 
     @torch.no_grad()
-    def candidate_masks(self, fisher: 'FisherAccumulator', sparsity: float, fsdp_model=None, block_size=None) -> dict:
+    def candidate_masks(self, fisher: 'FisherAccumulator', sparsity: float, fsdp_model=None, block_size=None,
+                        _lazy_ok=False) -> dict:
         """Compute candidate masks at target sparsity without modifying self.masks or weights.
 
         Returns a dict {name: bool_tensor} where True=KEEP, same convention as self.masks.
@@ -2404,9 +2780,14 @@ class GradualMaskManager:
                     new_masks[name] = self._nm_mask(imp, current_pruned, sparsity)
             return new_masks
         else:
-            local_imps = {}
-            for name, param in self.named_params.items():
-                local_imps[name] = fisher.importance(name, param)
+            _lazy = (_os_kldbg.environ.get('GMP_SCHED_EAGER') != '1'
+                     and getattr(fisher, 'saliency', 'fisher') == 'fisher' and not self.ste)
+            if _lazy:
+                local_imps = _LazyImpMap(fisher, self.named_params)
+            else:
+                local_imps = {}
+                for name, param in self.named_params.items():
+                    local_imps[name] = fisher.importance(name, param)
 
             if use_fsdp:
                 import torch.distributed as _dist
@@ -2417,7 +2798,8 @@ class GradualMaskManager:
                 # have 0 elements on a given rank (param fully resides in another rank's
                 # shard). Filter these out before any reduction.
                 _dev = next(iter(local_imps.values())).device
-                local_imps = {n: v for n, v in local_imps.items() if v.numel() > 0}
+                local_imps = (_LazyImpMap(fisher, {n: p for n, p in self.named_params.items() if p.numel() > 0}) if _lazy
+                              else {n: v for n, v in local_imps.items() if v.numel() > 0})
 
                 # NaN/Inf check via min/max scalars (no boolean tensor)
                 if local_imps:
@@ -2495,7 +2877,7 @@ class GradualMaskManager:
                 # Stay chunked over the per-layer dict throughout, same as the FSDP branch
                 # above; torch.kthvalue's int32/2B-element ceiling is moot here too since
                 # no per-layer tensor is anywhere near that size.
-                imp_tensors = list(local_imps.values())
+                imp_tensors = local_imps.values() if _lazy else list(local_imps.values())   # lazy: one tensor at a time
                 if any(torch.isnan(v).any() or torch.isinf(v).any() for v in imp_tensors):
                     logging.warning("NaN/Inf in Fisher importance scores, skipping candidate mask")
                     return {n: m.clone() for n, m in self.masks.items()}
@@ -2512,12 +2894,17 @@ class GradualMaskManager:
                         lo = mid
                     else:
                         hi = mid
-                threshold = torch.tensor(hi, device=imp_tensors[0].device, dtype=imp_tensors[0].dtype)
+                _t0 = next(iter(imp_tensors))
+                threshold = torch.tensor(hi, device=_t0.device, dtype=_t0.dtype)
+                del _t0
                 actual = sum((v <= threshold).sum().item() for v in imp_tensors)
                 logging.info(f"  [Fisher] chunked binary-search threshold={threshold.item():.4e} "
                              f"(n_total={n_total}, actual_below={actual}, target={k})")
 
             # For params with empty local shard (filtered out above), keep existing mask.
+            if _lazy and _lazy_ok:
+                return _LazyBoolMap(self.named_params, (lambda name, _li=local_imps, _t=threshold, _m=self.masks:
+                                                        (_li[name] > _t) if name in _li else _m[name].clone()))
             return {
                 name: (local_imps[name] > threshold if name in local_imps
                        else self.masks[name].clone())
@@ -2599,7 +2986,9 @@ class GradualMaskManager:
         """
         if sparsity <= 0.0:
             return
-        new_masks = self.candidate_masks(fisher, sparsity, fsdp_model, block_size=block_size)
+        # lazy candidate only when the packing setter consumes it right here, one tensor at a time, before any weight changes
+        new_masks = self.candidate_masks(fisher, sparsity, fsdp_model, block_size=block_size,
+                                         _lazy_ok=bool(getattr(self, '_pack', False)))
         self.masks = new_masks
         for name, param in self.named_params.items():
             _apply_mask(param, self.masks[name], ste=self.ste)
@@ -3837,16 +4226,19 @@ def _tr_kl_forward_and_score(model, input_ids, attn_mask, old_lp, valid,
     # 2048 tokens at the default 4-sequence screen; scaled down for larger screens so one [B, chunk, V]
     # bf16 slice stays ~2.3GiB (16 full-length rollouts at 2048 needed 9.3GiB and OOMed a 95GB GH200)
     _chunk = min(2048, max(256, 8192 // cand_logits.shape[0]))
+    if not _PGD_EAGER:
+        _chunk = _KL_SCREEN_CHUNK   # rows are independent, so the per-token values do not depend on the chunk
     if _T > _chunk:
-        _kl_chunks = []
+        kl_tok = None
         for _start in range(0, _T, _chunk):
             _end = min(_start + _chunk, _T)
             _lp = F.log_softmax(cand_logits[:, _start:_end, :], dim=-1)
-            _kl_chunks.append(F.kl_div(_lp, old_lp[:, _start:_end, :],
-                                       log_target=True, reduction='none').sum(dim=-1))
-            del _lp
-        kl_tok = torch.cat(_kl_chunks, dim=1)
-        del _kl_chunks, cand_logits
+            _k = F.kl_div(_lp, old_lp[:, _start:_end, :], log_target=True, reduction='none').sum(dim=-1)
+            if kl_tok is None:
+                kl_tok = _k.new_empty((cand_logits.shape[0], _T))
+            kl_tok[:, _start:_end] = _k
+            del _lp, _k
+        del cand_logits
     else:
         cand_lp = F.log_softmax(cand_logits[:, :-1, :], dim=-1)
         del cand_logits
@@ -3924,7 +4316,7 @@ def _compute_tr_kl(model, *args, **kwargs):
 def _compute_tr_kl_impl(model: nn.Module, cal_batch: dict, cand_masks: dict,
                    maskmgr: 'GradualMaskManager', device: str,
                    kl_reduce: str = 'mean', kl_quantile: float = 0.95,
-                   ref_cache: dict = None) -> float:
+                   ref_cache: dict = None, pruned_idx: dict = None) -> float:
     """Compute KL(old || cand) over valid token positions.
 
     kl_reduce: 'mean' (default) or 'quantile' (uses kl_quantile percentile).
@@ -3968,13 +4360,18 @@ def _compute_tr_kl_impl(model: nn.Module, cal_batch: dict, cand_masks: dict,
         # briefly alive together is the same ~9GiB x2 spike either way.
         _T0 = old_logits.shape[1] - 1
         _chunk0 = min(2048, max(256, 8192 // old_logits.shape[0]))  # same batch scaling as the cand_lp chunks below
+        if not _PGD_EAGER:
+            _chunk0 = _KL_SCREEN_CHUNK
         if _T0 > _chunk0:
-            _old_lp_chunks = []
+            old_lp = None
             for _start in range(0, _T0, _chunk0):
                 _end = min(_start + _chunk0, _T0)
-                _old_lp_chunks.append(F.log_softmax(old_logits[:, _start:_end, :], dim=-1))
-            old_lp = torch.cat(_old_lp_chunks, dim=1)  # [B, T-1, V] bf16
-            del _old_lp_chunks, old_logits
+                _c = F.log_softmax(old_logits[:, _start:_end, :], dim=-1)
+                if old_lp is None:
+                    old_lp = _c.new_empty((old_logits.shape[0], _T0, old_logits.shape[2]))  # [B, T-1, V] bf16
+                old_lp[:, _start:_end] = _c
+                del _c
+            del old_logits
         else:
             old_lp = F.log_softmax(old_logits[:, :-1, :], dim=-1)  # [B, T-1, V] bf16
             del old_logits
@@ -4023,10 +4420,19 @@ def _compute_tr_kl_impl(model: nn.Module, cal_batch: dict, cand_masks: dict,
         _TR_KL_SEC.append(time.time() - _tk0)
         return _r
     saved = {}
-    for name, param in maskmgr.named_params.items():
+    if pruned_idx is not None:
+        # sparse candidate (see _PGDSparsePool): only the newly pruned positions are touched
+        for name, idx in pruned_idx.items():
+            flat = maskmgr.named_params[name].data.view(-1)
+            saved[name] = (idx, flat[idx].clone())
+            flat[idx] = 0.0
+    for name, param in ([] if pruned_idx is not None else maskmgr.named_params.items()):
         newly_pruned = maskmgr.masks[name] & ~cand_masks[name]
-        saved[name] = (newly_pruned, param.data[newly_pruned].clone())
+        # positions are recomputed at restore (masks and cand_masks are fixed in between) instead of
+        # holding a bool tensor per parameter for the whole forward; GMP_PGD_EAGER=1 keeps them
+        saved[name] = (newly_pruned if (_PGD_EAGER or _PGD_LAZY_SAL[0]) else None, param.data[newly_pruned].clone())
         param.data[newly_pruned] = 0.0
+        del newly_pruned
 
     # STE: zeroing param.data is NOT enough to realise the candidate here.
     # Under --gmp_ste the forward is `param.data * maskmgr.masks[name]` (see
@@ -4056,6 +4462,11 @@ def _compute_tr_kl_impl(model: nn.Module, cal_batch: dict, cand_masks: dict,
     if _ste_saved_masks is not None:
         maskmgr.masks = _ste_saved_masks
     for name, (mask_idx, vals) in saved.items():
+        if pruned_idx is not None:
+            maskmgr.named_params[name].data.view(-1)[mask_idx] = vals
+            continue
+        if mask_idx is None:
+            mask_idx = maskmgr.masks[name] & ~cand_masks[name]
         maskmgr.named_params[name].data[mask_idx] = vals
 
     if not valid.any():
@@ -5222,6 +5633,7 @@ def globalprune_gmp(
     tr_kl_reduce    = getattr(FLAGS, 'gmp_tr_kl_reduce', 'mean')
     tr_kl_quantile  = getattr(FLAGS, 'gmp_tr_kl_quantile', 0.95)
     cubic_log_kl    = getattr(FLAGS, 'gmp_cubic_log_kl', False)  # diagnostic-only KL before/after each cubic mask update
+    log_mask_kl     = getattr(FLAGS, 'gmp_log_mask_kl', False)  # KL(old||new) of every schedule-driven mask update
     growth_schedule = getattr(FLAGS, 'gmp_growth_schedule', 'cubic')  # non-TR fixed schedule: 'cubic' or 'cosine'
     _schedule_fn = {'cosine': _cosine_sparsity, 'linear': _linear_sparsity}.get(growth_schedule, _cubic_sparsity)
     schedule_update_interval = getattr(FLAGS, 'gmp_schedule_update_interval', 0)
@@ -5306,13 +5718,27 @@ def globalprune_gmp(
     # <=0: no truncation -- screen on whole sequences (rollouts: prompt + full response)
     pgd_kl_calib_seqlen = getattr(FLAGS, 'gmp_pgd_kl_calib_seqlen', 0)
     pgd_kl_calib_seqlen = pgd_kl_calib_seqlen if pgd_kl_calib_seqlen > 0 else None
+    # --gmp_pgd_kl_calib_resp_len: keep the whole prompt and the first N response tokens of each screening
+    # rollout (gmp_pgd_kl_calib_seqlen instead cuts the prompt+response sequence at a fixed length)
+    pgd_kl_calib_resp_len = int(getattr(FLAGS, 'gmp_pgd_kl_calib_resp_len', 0) or 0)
     pgd_screen_source   = getattr(FLAGS, 'gmp_pgd_screen_source', 'prompt')
     pgd_kl_bisect_iters = max(1, getattr(FLAGS, 'gmp_pgd_kl_bisect_iters', 6))
     pgd_skip_growth_step = getattr(FLAGS, 'gmp_pgd_skip_growth_step', False)  # skip PGD on the exact step growth just fired, so the model trains at least one step under the mask growth decided before PGD can touch it again
     pgd_post_target_only = getattr(FLAGS, 'gmp_pgd_post_target_only', False)  # isolate PGD's post-target-maintenance role from its during-growth-ramp role -- see gate check at the main PGD condition below
     pgd_freeze_after_target = getattr(FLAGS, 'gmp_pgd_freeze_after_target', False)
     pgd_flip_trace = getattr(FLAGS, 'gmp_pgd_flip_trace', False)
+    _ckpt_at_target = ['on' if getattr(FLAGS, 'gmp_ckpt_at_target', False) else 'off']  # on -> pending -> done
     _flip_state = {'on': False, 'event': 0, 'cnt': {}, 'last': {}}
+    # revived weights restart from zero and grow ~lr per step, so at the next projection they sit below the
+    # saliency threshold and are pruned again; protect each revived weight from pruning for this many events
+    pgd_revive_protect = max(0, getattr(FLAGS, 'gmp_pgd_revive_protect_events', 0))
+    # --gmp_pgd_revive_window: a pruned weight is reset to zero every step, so at a projection it competes with
+    # one Adam step's worth of value; accumulate its per-step updates over the projection window instead, use the
+    # window total for its saliency, and start a revived weight from it (not checkpointed: a resume loses one window)
+    pgd_revive_window = bool(getattr(FLAGS, 'gmp_pgd_revive_window', False))
+    _revive_win = {}           # param name -> accumulated updates of the inactive positions since the last projection
+    _revive_win_used = [False]  # this step's projection already folded the window in
+    _revive_protect = {}  # param name -> uint8 events of protection left
     _pgd_frozen = [False]
     pgd_interval = max(1, getattr(FLAGS, 'gmp_pgd_interval', 1))  # only run PGD's reprojection every Nth step (default 1 = every step, prior behavior) -- decouples PGD's own cadence from mask_interval's growth cadence
     pgd_topk_impl = getattr(FLAGS, 'gmp_pgd_topk_impl', 'bisect')  # DIAGNOSTIC/A-B only (analysis phase, not a default): 'bisect' (default, unchanged 64-iter value-threshold search) or 'kthvalue' (torch.kthvalue on a one-time concat of the candidate pool instead) -- only wired into the unstructured gmp_pgd_kl_budget branch (where gmp_pgd_grow_to_target lives), non-FSDP only.
@@ -5435,6 +5861,7 @@ def globalprune_gmp(
         logging.info("  PGD one-shot jump ENABLED (--gmp_pgd_jump_to_target): the FIRST PGD projection "
                      f"will accept every prune candidate, snapping sparsity to {final_sparsity} in one "
                      "step; the self-KL bisection resumes as pure maintenance from the next PGD step on.")
+    _mkl_cal = [None]  # --gmp_log_mask_kl calibration batch (same source as PGD's kl_at), refreshed every mask_interval
     _pgd_kl_cal_batch = None  # small/short batch, refreshed every mask_interval steps (see below), reused every PGD step in between
     _pgd_scratch   = {}  # name -> preallocated fp32 buffer, reused in-place every PGD step (see below)
     # Formerly persistent buffers for _pgd_build_topk_vals' log-space candidate
@@ -5592,6 +6019,9 @@ def globalprune_gmp(
     offline_ipo_max_len  = getattr(FLAGS, 'gmp_offline_ipo_max_length', 2048)
     offline_ipo_max_prompt = getattr(FLAGS, 'gmp_offline_ipo_max_prompt_length', 1024)
     use_offline_ipo = (offline_ipo_lambda > 0.0)
+    # every data stream shuffles with its own generator seeded from --seed (not the global RNG, which the
+    # training loop consumes differently before and after a resume), so a resumed run can skip to its position
+    _stream_seed = int(getattr(FLAGS, 'seed', 42)) * 1000
     offline_ipo_iter = None
     use_teacher_gen_kd = getattr(FLAGS, 'gmp_teacher_gen_kd', False) and (dpo_dense_model is not None or teacher_model is not None)
 
@@ -5629,8 +6059,9 @@ def globalprune_gmp(
             shuffle=True,
             collate_fn=OfflineIPOCollator(_pad_val),
             drop_last=True,
+            generator=torch.Generator().manual_seed(_stream_seed + 4),
         )
-        offline_ipo_iter = _infinite(_offline_loader)
+        offline_ipo_iter = _CountedIter(_infinite(_offline_loader))
         # Use dense model as ref if available, else frozen copy of initial student
         if dpo_dense_model is not None:
             _offline_ipo_ref = dpo_dense_model
@@ -5660,8 +6091,9 @@ def globalprune_gmp(
             batch_size=batch_size,
             shuffle=True,
             collate_fn=collate_prompts(tokenizer.pad_token_id or 0),
+            generator=torch.Generator().manual_seed(_stream_seed + 1),
         )
-        prompt_iter = _infinite(_prompt_loader)
+        prompt_iter = _CountedIter(_infinite(_prompt_loader))
         # `interval` printed here is gmp_onpolicy_kd_interval. Two different
         # refresh regimes depending on tr_enabled:
         # - tr_enabled=true (TR-GMP growth): pool refill is tied to
@@ -5713,6 +6145,15 @@ def globalprune_gmp(
             wandb.run.config.update({"opkd_effective_refresh_interval": _opkd_eff_interval,
                                      "opkd_effective_refresh_why": _opkd_eff_why},
                                     allow_val_change=True)
+
+    # where in the prompt stream the current rollout pool was drawn; a resumed run redraws that pool
+    _pool_draw = {'start': 0, 'size': 0}
+
+    def _draw_pool(n):
+        _pool_draw['start'] = prompt_iter.n
+        _out = [next(prompt_iter) for _ in range(n)]
+        _pool_draw['size'] = n
+        return _out
 
     _opkd_vllm_engine = None
     _opkd_vllm_params = None
@@ -5831,7 +6272,7 @@ def globalprune_gmp(
                 logging.info(f"  OPKD vLLM: frozen-pool mode (onpolicy_interval={onpolicy_interval} "
                              f">= steps={total_steps}) -- initial pool sized to {_n_pool} rollouts "
                              f"to match the refreshed-baseline total, not {mask_interval * grad_accum}")
-            _pool_batches = [next(prompt_iter) for _ in range(_n_pool)]
+            _pool_batches = _draw_pool(_n_pool)
             _vllm_inputs, _flat_meta = _opkd_flatten_pool_batches(_pool_batches)
             _vllm_outs = _opkd_vllm_engine.generate(_vllm_inputs, _opkd_vllm_params)
             _opkd_vllm_sleep(_opkd_vllm_engine)
@@ -5912,6 +6353,9 @@ def globalprune_gmp(
                                   pruning_scope=getattr(FLAGS, 'gmp_pruning_scope', 'global'),
                                   ste=ste_enabled, named_shapes=named_shapes)
     maskmgr.obs_saliency = getattr(FLAGS, 'gmp_saliency', 'fisher') == 'obs'
+    if getattr(FLAGS, 'gmp_pack_masks', False):
+        maskmgr.enable_packing()
+        logging.info('[pack_masks] masks stored bit-packed (1 bit per weight)')
     # Wanda/OBS scores are in per-layer output-error units -- one global threshold across layers is
     # meaningless. Unstructured PGD ranks them within each layer (see _pgd_layer_rank); the
     # schedule-driven paths need --gmp_pruning_scope=layer.
@@ -5919,6 +6363,17 @@ def globalprune_gmp(
                         or getattr(FLAGS, 'gmp_pgd_layer_rank', False)) and prune_n == 0
                        and not getattr(FLAGS, 'gmp_pgd_raw_global_rank', False))
     _wanda_cal_id = [None]   # id() of the KL-calibration batch the Wanda scaler was last refreshed for
+    _snip_cal_id = [None]    # same, for the --gmp_saliency=snip_calib gradients
+
+    def _refit_calib(n, seqlen):
+        """Calibration batch for the Wanda / OBS / SNIP statistics. --gmp_pgd_refit_calib_source=rollout takes the
+        current on-policy rollout pool (prompt + the student's own response, first `seqlen` tokens of the first
+        `n` rollouts) instead of documents."""
+        if getattr(FLAGS, 'gmp_pgd_refit_calib_source', 'prompts') == 'rollout' and _opkd_standalone_pool:
+            items = [{'full_seq': it['full_seq'][:, :seqlen], 'prompt_len': it['prompt_len']}
+                     for it in _opkd_standalone_pool[:n]]
+            return _opkd_pool_to_batch(items, str(device))
+        return _pgd_kl_calib_batch(refit_calib_iter, n, seqlen, str(device))
     _empf_cal_id = [None]    # same, for the --gmp_fisher_source=opd_empirical refresh
     _empf_nsamples = int(getattr(FLAGS, 'gmp_fisher_emp_nsamples', 32))
     if (_pgd_layer_rank and not getattr(FLAGS, 'gmp_pgd', False)
@@ -6248,7 +6703,7 @@ def globalprune_gmp(
 
     if is_distributed:
         _train_sampler = DistributedSampler(
-            train_dataset, num_replicas=world_size, rank=local_rank, shuffle=True
+            train_dataset, num_replicas=world_size, rank=local_rank, shuffle=True, seed=_stream_seed + 2
         )
         loader = DataLoader(
             train_dataset,
@@ -6262,14 +6717,15 @@ def globalprune_gmp(
             batch_size=batch_size,
             shuffle=True,
             collate_fn=_collate_fn,
+            generator=torch.Generator().manual_seed(_stream_seed + 2),
         )
-    data_iter = _infinite(loader, sampler=_train_sampler if is_distributed else None)
+    data_iter = _CountedIter(_infinite(loader, sampler=_train_sampler if is_distributed else None))
     # Re-fit / rewind covariance source: its own shuffled pass over the training documents, so the
     # training batch order is untouched (--gmp_pgd_refit_calib_source=train)
     refit_calib_iter = prompt_iter
     if getattr(FLAGS, 'gmp_pgd_refit_calib_source', 'prompts') == 'train':
-        refit_calib_iter = _infinite(DataLoader(train_dataset, batch_size=1, shuffle=True, collate_fn=_collate_fn,
-                                                generator=torch.Generator().manual_seed(1234)))
+        refit_calib_iter = _CountedIter(_infinite(DataLoader(train_dataset, batch_size=1, shuffle=True, collate_fn=_collate_fn,
+                                                generator=torch.Generator().manual_seed(1234))))
 
     # --gmp_pgd_screen_source=train: off-policy screening sequences from the training documents
     # (OT3 question + teacher CoT), shaped like a rollout: the whole prompt up to and including
@@ -6277,9 +6733,34 @@ def globalprune_gmp(
     # batch order is untouched; FineWeb rows (no <think>) are skipped.
     screen_train_iter = None
     if pgd_screen_source == 'train':
-        screen_train_iter = _infinite(DataLoader(train_dataset, batch_size=1, shuffle=True, collate_fn=_collate_fn,
-                                                 generator=torch.Generator().manual_seed(4321)))
+        screen_train_iter = _CountedIter(_infinite(DataLoader(train_dataset, batch_size=1, shuffle=True, collate_fn=_collate_fn,
+                                                 generator=torch.Generator().manual_seed(4321))))
     _think_id = tokenizer.convert_tokens_to_ids('<think>')
+
+    # --gmp_opd_offline_kd: the OPD term on teacher-written training documents instead of rollouts (control for
+    # "OPD only adds samples"). Same permutation as the NTP/KD stream, starting after everything that stream reads
+    # in this run, so the extra sequences are never seen by NTP/KD; shaped like a rollout (prompt through <think>,
+    # then the teacher CoT cut at gmp_onpolicy_max_new_tokens), FineWeb rows (no <think>) skipped.
+    opd_offline_kd = bool(getattr(FLAGS, 'gmp_opd_offline_kd', False))
+    opd_offline_iter = None
+    if opd_offline_kd:
+        assert not is_distributed, "--gmp_opd_offline_kd is single-GPU only"
+        opd_offline_iter = _CountedIter(_infinite(DataLoader(train_dataset, batch_size=1, shuffle=True, collate_fn=_collate_fn,
+                                                             generator=torch.Generator().manual_seed(_stream_seed + 2))))
+        _ntp_reads = total_steps * grad_accum * batch_size
+        assert _ntp_reads < len(train_dataset), "NTP/KD stream wraps the dataset: no unseen documents left"
+        opd_offline_iter.skip(_ntp_reads)
+        logging.info(f"  OPD offline-KD control: documents from position {_ntp_reads} of the NTP/KD permutation "
+                     f"(dataset {len(train_dataset)}), CoT <= {getattr(FLAGS, 'gmp_onpolicy_max_new_tokens', 2048)} tok")
+
+    def _opd_offline_item():
+        _cot_len = getattr(FLAGS, 'gmp_onpolicy_max_new_tokens', 2048)
+        while True:
+            _ids = next(opd_offline_iter)['input_ids']
+            _pos = (_ids[0] == _think_id).nonzero()
+            if len(_pos):
+                _plen = int(_pos[0]) + 1
+                return {'full_seq': _ids[:, :_plen + _cot_len], 'prompt_len': _plen}
 
     # Anchor KD: separate iterator over CoT dataset (batch_size=1)
     anchor_iter = None
@@ -6289,10 +6770,18 @@ def globalprune_gmp(
             batch_size=1,
             shuffle=True,
             collate_fn=_collate_fn,
+            generator=torch.Generator().manual_seed(_stream_seed + 3),
         )
-        anchor_iter = _infinite(_anchor_loader)
+        anchor_iter = _CountedIter(_infinite(_anchor_loader))
         logging.info(f"  Anchor KD: lambda={anchor_lambda}, interval={anchor_interval}, "
                      f"prefix_len={anchor_prefix_len}, max_new_tokens={anchor_max_new}")
+
+    # data streams whose position a checkpoint records (refit_calib_iter is prompt_iter itself unless it has its own pass)
+    _data_streams = {k: v for k, v in [('data', data_iter), ('prompt', prompt_iter), ('offline_ipo', offline_ipo_iter),
+                                         ('refit_calib', refit_calib_iter if refit_calib_iter is not prompt_iter else None),
+                                         ('screen_train', screen_train_iter), ('anchor', anchor_iter),
+                                         ('opd_offline', opd_offline_iter)]
+                     if isinstance(v, _CountedIter)}
 
     # ── DPO setup ──────────────────────────────────────────────────────────────
     import copy as _copy
@@ -6575,8 +7064,31 @@ def globalprune_gmp(
             _qst = {'committed': {k: v.detach().cpu() for k, v in qmgr.committed.items()},
                     'scales': {k: v.detach().cpu() for k, v in qmgr.scales.items()},
                     'zeros': {k: v.detach().cpu() for k, v in qmgr.zeros.items()}}
+        # rank-local resume state besides the masks: how far each data stream got, the RNG states, and the
+        # in-memory PGD bookkeeping (revival protection, flip trace) that would otherwise restart from zero
+        _resume = {'streams': {k: it.n for k, it in _data_streams.items()}, 'pool': dict(_pool_draw),
+                   # PGD state carried across projection events: the bisection's warm start (without it a resumed
+                   # run searches from k=1 under the 6-evaluation cap and stalls the sparsity ramp) and the latches
+                   'pgd': {'last_k': _pgd_last_k_actual, 'frozen': _pgd_frozen[0], 'jump_done': _pgd_jump_done,
+                           'opd_target_hit': _opd_target_hit},
+                   # the current rollout pool and KL screening batch themselves (a few MB), so a resumed run uses
+                   # exactly the rollouts the interrupted one had instead of regenerating them with later weights
+                   'pool_items': [{'full_seq': _d['full_seq'].cpu(), 'prompt_len': _d['prompt_len']}
+                                  for _d in _opkd_standalone_pool],
+                   'pool_ptr': _opkd_standalone_pool_ptr,
+                   'cal_batch': ({k: (v.cpu() if torch.is_tensor(v) else v) for k, v in _pgd_kl_cal_batch.items()}
+                                 if isinstance(_pgd_kl_cal_batch, dict) else None),
+                   'cal_on_gpu': (isinstance(_pgd_kl_cal_batch, dict)
+                                  and any(torch.is_tensor(v) and v.is_cuda for v in _pgd_kl_cal_batch.values())),
+                   'rng': {'torch': torch.get_rng_state(), 'cuda': torch.cuda.get_rng_state(),
+                           'numpy': np.random.get_state(), 'python': random.getstate()},
+                   'revive_protect': {k: v.cpu() for k, v in _revive_protect.items()},
+                   'flip': ({'on': _flip_state['on'], 'event': _flip_state['event'],
+                             'cnt': {k: v.cpu() for k, v in _flip_state['cnt'].items()},
+                             'last': {k: v.cpu() for k, v in _flip_state['last'].items()}}
+                            if pgd_flip_trace else None)}
         torch.save({'masks': {k: v.detach().cpu() for k, v in maskmgr.masks.items()},
-                    'quant': _qst,
+                    'quant': _qst, 'resume': _resume,
                     'step': _st, 'world_size': world_size}, _mask_p)
         if is_fsdp and ckpt_sharded:
             # --gmp_ckpt_sharded: every rank writes its own parameter shards and Adam state
@@ -6662,6 +7174,32 @@ def globalprune_gmp(
             optimizer.load_state_dict(_ck['optim'])
         scheduler.load_state_dict(_ck['sched'])
         maskmgr.apply(fsdp_model if is_fsdp else model)
+        _rs = _mk.get('resume')
+        if _rs is None:
+            # written before data positions were checkpointed: resuming would re-read the data from the start
+            raise RuntimeError(f"[ckpt] {_mask_p} has no data-stream positions (written before they were saved); "
+                               f"resuming it would train on the start of the data again. Restart this run instead.")
+        _missing = set(_data_streams) - set(_rs['streams'])
+        if _missing:
+            raise RuntimeError(f"[ckpt] {_mask_p} has no position for data streams {sorted(_missing)}")
+        _t_skip = time.time()
+        for _k, _it in _data_streams.items():
+            if _k != 'prompt':
+                _it.skip(int(_rs['streams'][_k]) - _it.n)
+        _resume_info.update(prompt_target=int(_rs['streams'].get('prompt', 0)), pool=_rs.get('pool'), pgd=_rs['pgd'],
+                            pool_items=_rs.get('pool_items'), pool_ptr=_rs.get('pool_ptr'), cal_batch=_rs.get('cal_batch'),
+                            cal_on_gpu=_rs.get('cal_on_gpu', False))
+        logging.info(f"[ckpt] data streams fast-forwarded {_rs['streams']} in {time.time() - _t_skip:.0f}s")
+        for _k, _v in _rs['revive_protect'].items():
+            _revive_protect[_k] = _v.to(device)
+        if pgd_flip_trace and _rs.get('flip') is not None:
+            _flip_state.update(on=_rs['flip']['on'], event=_rs['flip']['event'],
+                               cnt={_k: _v.to(device) for _k, _v in _rs['flip']['cnt'].items()},
+                               last={_k: _v.to(device) for _k, _v in _rs['flip']['last'].items()})
+        torch.set_rng_state(_rs['rng']['torch'])
+        torch.cuda.set_rng_state(_rs['rng']['cuda'])
+        np.random.set_state(_rs['rng']['numpy'])
+        random.setstate(_rs['rng']['python'])
         _st = int(_ck['step'])
         logging.info(f"[ckpt] resumed from {_main_p} at step={_st} "
                      f"(sparsity={maskmgr.current_sparsity():.4f}, lr={scheduler.get_last_lr()[0]:.3e}"
@@ -6669,8 +7207,47 @@ def globalprune_gmp(
         return _st
 
     _resume_from = getattr(FLAGS, 'gmp_resume_from', '') or ''
+    _resume_info = {}
+    _resume_prompt_tail = [0]  # prompts to skip right after the post-resume pool redraw
+    _resume_refresh_cal = [False]  # rebuild the KL screening batch from the redrawn pool
     if _resume_from:
         step = _load_train_ckpt(_resume_from)
+        _pgd_last_k_actual = int(_resume_info['pgd']['last_k'])
+        _pgd_frozen[0] = bool(_resume_info['pgd']['frozen'])
+        _pgd_jump_done = bool(_resume_info['pgd']['jump_done'])
+        _opd_target_hit = bool(_resume_info['pgd']['opd_target_hit'])
+        if pgd_freeze_after_target and not _pgd_frozen[0] and maskmgr.current_sparsity() >= final_sparsity - 1e-4:
+            # a freeze run branched from a checkpoint already at the target: frozen from the first step on
+            _pgd_frozen[0] = True
+        logging.info(f"[ckpt] PGD state restored {_resume_info['pgd']} (frozen now {_pgd_frozen[0]})")
+        if prompt_iter is not None and _resume_info.get('pool_items'):
+            # the interrupted run's own rollout pool and screening batch: continue exactly where it stopped
+            _opkd_standalone_pool = _resume_info['pool_items']
+            _opkd_standalone_pool_ptr = int(_resume_info['pool_ptr'])
+            if _resume_info.get('cal_batch') is not None:
+                _pgd_kl_cal_batch = {k: (v.to(device) if torch.is_tensor(v) and _resume_info['cal_on_gpu'] else v)
+                                     for k, v in _resume_info['cal_batch'].items()}
+            prompt_iter.skip(_resume_info['prompt_target'] - prompt_iter.n)
+            logging.info(f"[ckpt] rollout pool restored ({len(_opkd_standalone_pool)} rollouts, ptr "
+                         f"{_opkd_standalone_pool_ptr}); prompt stream at {prompt_iter.n}")
+        elif prompt_iter is not None:
+            _pt, _pl = _resume_info['prompt_target'], _resume_info['pool'] or {'start': 0, 'size': 0}
+            _frozen_pool = (not tr_enabled) and onpolicy_interval >= total_steps
+            if _frozen_pool or _pl['start'] == 0 or tr_enabled:
+                # the startup pool already is this window's pool (first window, or the dense-model pool kept for
+                # the whole run); tr_enabled paths refill on their own schedule
+                prompt_iter.skip(_pt - prompt_iter.n)
+                if tr_enabled and _pl['start'] > 0:
+                    logging.warning("[ckpt] tr_enabled resume: rollout pool stays the startup pool until its next refill")
+            else:
+                # the startup pool was drawn from the first prompts with the pre-resume (dense) weights: redraw the
+                # interrupted window's pool from the same prompts with the resumed weights at the first step
+                prompt_iter.skip(_pl['start'] - prompt_iter.n)
+                _resume_prompt_tail[0] = _pt - _pl['start'] - _pl['size']
+                _oneshot_force_refill = True
+                _resume_refresh_cal[0] = True
+            logging.info(f"[ckpt] prompt stream at {prompt_iter.n} (target {_pt}, window pool drawn at {_pl['start']}"
+                         f"{', redrawn at the first step' if _oneshot_force_refill else ''})")
 
     _PH_ON = bool(_os_kldbg.environ.get('GMP_PHASE_TIMING'))
     _ph = {'t': None, 'acc': {}, 'n': 0, 'pk': {}, 'gpk': 0.0}
@@ -6699,6 +7276,21 @@ def globalprune_gmp(
         if _ckpt_every and step > 0 and step % _ckpt_every == 0 and step != _last_ckpt_step:
             _save_train_ckpt(step)
             _last_ckpt_step = step
+        if _ckpt_at_target[0] == 'pending':
+            # --gmp_ckpt_at_target: the state right after the projection that first reached the target sparsity,
+            # kept under at_target/ (out of reach of the periodic retention) as a branch point
+            if step != _last_ckpt_step:
+                _save_train_ckpt(step)
+                _last_ckpt_step = step
+            if is_main_process:
+                import shutil as _sh_t
+                _tdir = _os_ck.path.join(_ckpt_dir, 'at_target')
+                _os_ck.makedirs(_tdir, exist_ok=True)
+                for _f in _os_ck.listdir(_ckpt_dir):
+                    if _f.startswith(f'step{step:06d}'):
+                        _sh_t.copy2(_os_ck.path.join(_ckpt_dir, _f), _tdir)
+                logging.info(f"[ckpt] target-sparsity branch point saved: step {step} -> {_tdir}")
+            _ckpt_at_target[0] = 'done'
         accum_onpolicy = 0.0
         accum_offline_ipo = 0.0
         _measure_generated  = None   # OPKD reuse sequence for grad conflict measurement
@@ -7063,15 +7655,15 @@ def globalprune_gmp(
                 if (_opkd_refilled_pre_mask or pgd_screen_source == 'rollout') and _opkd_standalone_pool:
                     _n_cal = min(pgd_kl_calib_size, len(_opkd_standalone_pool))
                     if pgd_screen_source == 'rollout':
-                        logging.info(f"  [pgd_screen] rollout pool: {_n_cal} seqs x <= {pgd_kl_calib_seqlen or 'full'} tok (pool size {len(_opkd_standalone_pool)}, step={step})")
+                        logging.info(f"  [pgd_screen] rollout pool: {_n_cal} seqs x <= {('prompt+' + str(pgd_kl_calib_resp_len)) if pgd_kl_calib_resp_len > 0 else (pgd_kl_calib_seqlen or 'full')} tok (pool size {len(_opkd_standalone_pool)}, step={step})")
                     if pgd_screen_source == 'rollout':
                         _pool_items = [
-                            {'full_seq': item['full_seq'][:, :pgd_kl_calib_seqlen], 'prompt_len': item['prompt_len']}
+                            {'full_seq': item['full_seq'][:, :(item['prompt_len'] + pgd_kl_calib_resp_len if pgd_kl_calib_resp_len > 0 else pgd_kl_calib_seqlen)], 'prompt_len': item['prompt_len']}
                             for item in _opkd_standalone_pool[:_n_cal]
                         ]
                     else:
                         _pool_items = [
-                            {'full_seq': item['full_seq'][:, :pgd_kl_calib_seqlen], 'prompt_len': item['prompt_len']}
+                            {'full_seq': item['full_seq'][:, :(item['prompt_len'] + pgd_kl_calib_resp_len if pgd_kl_calib_resp_len > 0 else pgd_kl_calib_seqlen)], 'prompt_len': item['prompt_len']}
                             for item in _opkd_standalone_pool[:_n_cal]
                         ]
                     _batch = _opkd_pool_to_batch(_pool_items, str(device))
@@ -7100,6 +7692,27 @@ def globalprune_gmp(
                 _batch = {'input_ids': _b['input_ids'].to(device),
                           'attention_mask': _b['attention_mask'].to(device)}
             return _batch
+
+        def _sched_mask_update(_sp):
+            # --gmp_log_mask_kl: KL(old || new) of a schedule-driven mask update, measured like PGD's kl_at
+            # (same calibration source and _compute_tr_kl), so cubic/linear ramps can be compared with SCOUT's
+            if not log_mask_kl:
+                maskmgr.update(fisher, _sp, fsdp_model)
+                return
+            if _sp <= 0.0:
+                return
+            if _mkl_cal[0] is None or step % mask_interval == 0:
+                _mkl_cal[0] = _refresh_pgd_kl_cal_batch()
+            _cand = maskmgr.candidate_masks(fisher, _sp, fsdp_model)
+            _newly = sum(int((maskmgr.masks[_n] & ~_cand[_n]).sum()) for _n in _cand)
+            _kl, _ = _compute_tr_kl(fsdp_model if fsdp_model is not None else model, _mkl_cal[0], _cand, maskmgr,
+                                    str(device), kl_reduce=tr_kl_reduce, kl_quantile=tr_kl_quantile)
+            maskmgr.masks = _cand
+            maskmgr.apply(fsdp_model)
+            logging.info(f"  [mask_kl] step={step} sparsity={_sp:.4f} post={maskmgr.current_sparsity():.4f} "
+                         f"newly_pruned={_newly} kl={_kl:.6f}")
+            if use_wandb and is_main_process:
+                wandb.log({'mask_kl/kl': _kl, 'mask_kl/sparsity': _sp}, step=step)
 
         # BUGFIX: _pgd_kl_cal_batch starts as None and used to be filled in ONLY
         # inside the `step % mask_interval == 0` block below -- for
@@ -7139,7 +7752,7 @@ def globalprune_gmp(
                 and fsdp_model is None
                 and _pgd_kl_cal_batch is not None and getattr(maskmgr, '_full_cov', None) is None):
             _rf_t0 = time.time()
-            _rf_batch = _pgd_kl_calib_batch(refit_calib_iter, pgd_nm_refit_calib, pgd_nm_refit_seqlen, str(device))
+            _rf_batch = _refit_calib(pgd_nm_refit_calib, pgd_nm_refit_seqlen)
             maskmgr.capture_full_cov(model, _rf_batch, str(device))
             del _rf_batch
             if getattr(FLAGS, 'gmp_saliency', 'fisher') == 'obs':
@@ -7160,12 +7773,22 @@ def globalprune_gmp(
         if (getattr(fisher, 'saliency', None) == 'wanda' and pgd_enabled and fsdp_model is None
                 and _pgd_kl_cal_batch is not None and _wanda_cal_id[0] != id(_pgd_kl_cal_batch)):
             _wd_t0 = time.time()
-            _wd_batch = _pgd_kl_calib_batch(refit_calib_iter, pgd_nm_refit_calib, pgd_nm_refit_seqlen, str(device))
+            _wd_batch = _refit_calib(pgd_nm_refit_calib, pgd_nm_refit_seqlen)
             fisher.capture_wanda_stats(model, _wd_batch, str(device))
             del _wd_batch
             _wanda_cal_id[0] = id(_pgd_kl_cal_batch)
             logging.info(f"[wanda saliency] activation norms refreshed at step {step} "
                          f"({pgd_nm_refit_calib}x{pgd_nm_refit_seqlen} tok, {time.time() - _wd_t0:.1f}s)")
+        # SNIP (calibration-gradient) scores: same documents and cadence as the Wanda scaler above
+        if (getattr(fisher, 'saliency', None) == 'snip_calib' and pgd_enabled and fsdp_model is None
+                and _pgd_kl_cal_batch is not None and _snip_cal_id[0] != id(_pgd_kl_cal_batch)):
+            _sn_t0 = time.time()
+            _sn_batch = _refit_calib(pgd_nm_refit_calib, pgd_nm_refit_seqlen)
+            fisher.capture_snip_scores(model, _sn_batch, str(device))
+            del _sn_batch
+            _snip_cal_id[0] = id(_pgd_kl_cal_batch)
+            logging.info(f"[snip saliency] calibration gradients refreshed at step {step} "
+                         f"({pgd_nm_refit_calib}x{pgd_nm_refit_seqlen} tok, {time.time() - _sn_t0:.1f}s)")
 
         _saliency_diag_step = getattr(FLAGS, 'gmp_saliency_diag_step', 0)
         if _saliency_diag_step > 0 and step == _saliency_diag_step and is_main_process:
@@ -7242,7 +7865,7 @@ def globalprune_gmp(
                         _sync_opkd_weights_to_vllm(model, _opkd_vllm_engine)
             if is_main_process and _opkd_vllm_engine is not None:
                 _n_pool_mid = onpolicy_interval * grad_accum * world_size
-                _pool_batches = [next(prompt_iter) for _ in range(_n_pool_mid)]
+                _pool_batches = _draw_pool(_n_pool_mid)
                 _vllm_inputs, _flat_meta = _opkd_flatten_pool_batches(_pool_batches)
                 _vllm_outs = _opkd_vllm_engine.generate(_vllm_inputs, _opkd_vllm_params)
                 _opkd_vllm_sleep(_opkd_vllm_engine)
@@ -7263,9 +7886,10 @@ def globalprune_gmp(
                 and step % mask_interval != 0 and not tr_enabled and not pgd_enabled
                 and not fixed_mask and dense_warmup_steps < step <= pruning_end_steps):
             current_sparsity = _schedule_fn(step, pruning_end_steps, final_sparsity, dense_warmup_steps)
-            maskmgr.update(fisher, current_sparsity, fsdp_model)
+            _sched_mask_update(current_sparsity)
             if is_main_process:
                 logging.info(f"  [sched_update] step={step} sparsity={current_sparsity:.4f} ({growth_schedule}, every {schedule_update_interval})")
+        _phase('mb_pre')
         if step % mask_interval == 0:
             # NOTE: _refresh_pgd_kl_cal_batch() used to be called right here,
             # BEFORE the vLLM wake below -- this was the one extra GPU
@@ -7329,7 +7953,7 @@ def globalprune_gmp(
                     _dbg_f0, _dbg_t0 = torch.cuda.mem_get_info()
                     logging.info(f"  [DBG mem] pre-wake: free={_dbg_f0/1e9:.2f}GB / total={_dbg_t0/1e9:.2f}GB (step={step})")
                     _n_pool = mask_interval * grad_accum * world_size
-                    _pool_batches = [next(prompt_iter) for _ in range(_n_pool)]
+                    _pool_batches = _draw_pool(_n_pool)
                     _vllm_inputs, _flat_meta = _opkd_flatten_pool_batches(_pool_batches)
                     _dbg_f1, _ = torch.cuda.mem_get_info()
                     logging.info(f"  [DBG mem] post-wake: free={_dbg_f1/1e9:.2f}GB (step={step})")
@@ -7366,6 +7990,7 @@ def globalprune_gmp(
                 _pgd_kl_cal_batch = _refresh_pgd_kl_cal_batch()
                 maskmgr._group_cov = None  # recapture the group covariance against the fresh batch
                 maskmgr._full_cov = None
+                _phase('mb_calib')
 
             if step <= dense_warmup_steps:
                 pass  # dense warmup: no mask update or apply
@@ -7552,9 +8177,10 @@ def globalprune_gmp(
                         maskmgr.masks = _cand_masks
                         maskmgr.apply(fsdp_model)
                     else:
-                        maskmgr.update(fisher, current_sparsity, fsdp_model)
+                        _sched_mask_update(current_sparsity)
                 else:
                     maskmgr.apply(fsdp_model)
+                _phase('mb_update')
 
             # Refill rejected AFTER mask update → rejected ~ π̃_k (post-mask damaged policy)
             if use_dpo_queue and is_main_process and dpo_rejected_queue is not None and step > dense_warmup_steps:
@@ -7605,7 +8231,7 @@ def globalprune_gmp(
                             _sync_opkd_weights_to_vllm(model, _opkd_vllm_engine)
                 if is_main_process and _opkd_vllm_engine is not None:
                     _n_pool = mask_interval * grad_accum * world_size
-                    _pool_batches = [next(prompt_iter) for _ in range(_n_pool)]
+                    _pool_batches = _draw_pool(_n_pool)
                     _vllm_inputs, _flat_meta = _opkd_flatten_pool_batches(_pool_batches)
                     _vllm_outs = _opkd_vllm_engine.generate(_vllm_inputs, _opkd_vllm_params)
                     _opkd_vllm_sleep(_opkd_vllm_engine)
@@ -7734,7 +8360,10 @@ def globalprune_gmp(
                         _sync_opkd_weights_to_vllm(model, _opkd_vllm_engine)
             if is_main_process and _opkd_vllm_engine is not None:
                 _n_pool = onpolicy_interval * grad_accum * world_size
-                _pool_batches = [next(prompt_iter) for _ in range(_n_pool)]
+                _pool_batches = _draw_pool(_n_pool)
+                if _resume_prompt_tail[0]:
+                    prompt_iter.skip(_resume_prompt_tail[0])
+                    _resume_prompt_tail[0] = 0
                 _vllm_inputs, _flat_meta = _opkd_flatten_pool_batches(_pool_batches)
                 _phase('refill_prep')
                 _vllm_outs = _opkd_vllm_engine.generate(_vllm_inputs, _opkd_vllm_params)
@@ -7746,6 +8375,13 @@ def globalprune_gmp(
                 _opkd_standalone_pool = _opkd_build_pool_from_outputs(_pool_batches, _flat_meta, _vllm_outs)
                 logging.info(f"  OPKD vLLM pool refilled (pgd2growth, onpolicy_interval={onpolicy_interval}): "
                              f"{len(_opkd_standalone_pool)} rollouts (step={step})")
+                if _resume_refresh_cal[0]:
+                    # the screening batch was bootstrapped from the startup pool this step; take it from the redrawn one
+                    _resume_refresh_cal[0] = False
+                    _pgd_kl_cal_batch = _refresh_pgd_kl_cal_batch()
+                    maskmgr._group_cov = None
+                    maskmgr._full_cov = None
+                    logging.info(f"  [ckpt] KL screening batch rebuilt from the redrawn pool (step={step})")
             _opkd_standalone_pool = _opkd_broadcast_pool(_opkd_standalone_pool, is_distributed, device)
             _opkd_standalone_pool_ptr = local_rank
             torch.cuda.empty_cache()
@@ -7949,6 +8585,8 @@ def globalprune_gmp(
                         _pooled = dpo_rejected_queue.sample_from_pool()
                     else:
                         raise RuntimeError("OPKD: vLLM pool is empty and no DPO queue — pool should have been filled before this point.")
+                    if opd_offline_kd:
+                        _pooled = _opd_offline_item()  # same loss, weight and count; teacher text instead of a rollout
                     generated = _pooled["full_seq"].to(device)
                     prompt_len = _pooled["prompt_len"]
                     _total_gen_tokens += generated.shape[1] - prompt_len
@@ -8089,6 +8727,11 @@ def globalprune_gmp(
 
                     if torch.isnan(op_loss) or torch.isinf(op_loss):
                         logging.warning(f"NaN/Inf on-policy loss at step {step} micro {_op_i}, skipping")
+                    elif not op_loss.requires_grad:
+                        # every rollout in this micro-batch ended without a scored response token (collapsed
+                        # models emit EOS at once), so the loss is a constant with no graph
+                        logging.warning(f"on-policy loss without grad at step {step} micro {_op_i} "
+                                        f"(no response tokens), skipping")
                     else:
                         _phase('opd_loss_compute')
                         op_loss.backward()
@@ -8346,6 +8989,8 @@ def globalprune_gmp(
             _srste_decay_step(maskmgr, step, total_steps, ste_enabled,
                               getattr(FLAGS, 'gmp_ste_decay', 0.0),
                               getattr(FLAGS, 'gmp_ste_decay_warmup', -1))
+            if getattr(fisher, 'saliency', None) == 'movement' and fsdp_model is None:
+                fisher.accumulate_movement()
             if offload_opt_fwd:
                 _reload_optimizer_state(optimizer, device)
             _memlog('before opt.step', step)
@@ -8481,33 +9126,26 @@ def globalprune_gmp(
                     fsdp_model if fsdp_model is not None else model, _wanda_b, str(device))
                 del _wanda_b
 
+            if pgd_revive_window and _revive_win:
+                assert fsdp_model is None or not _FSDP_AVAILABLE, "--gmp_pgd_revive_window is single-GPU only"
+                with torch.no_grad():
+                    for _n, _p in maskmgr.named_params.items():
+                        _w = _revive_win.get(_n)
+                        if _w is not None:
+                            _p.data.add_(_w.masked_fill(maskmgr.masks[_n], 0))  # inactive: this step + the window
+                            _w.zero_()
+                _revive_win_used[0] = True
+
             # importance scores (v_t * w^2), skip empty FSDP shards
             _PGD_EV_T0[0] = time.time()
             _pgd_imps = {}
             _pgd_fast_path = (fisher.saliency == 'fisher')
-            # MEMORY (2026-11-11): the persistent _pgd_scratch held one fp32 copy of every
-            # prunable weight for the whole run (~43GB/rank at 32B on 3 ranks, the whole
-            # steady-state gap to ALPS+training). Lazy mode keeps no copy: each access
-            # recomputes v_hat*w^2 for that one tensor with the same ops in the same order
-            # (bit-identical; weights and Adam state are fixed during the event, and the
-            # KL screen's zero-and-restore puts the exact values back). Only for plain
-            # on-device Adam state (no DTensor redistribute / CPU offload / v' path) and
-            # unstructured masks (the N:M path refits weights mid-event).
-            # GMP_PGD_LAZY_IMPS=0 restores the persistent buffer; GMP_PGD_LAZY_CHECK=1
-            # keeps an eager copy and asserts every lazy access equals it (debug only).
-            _pgd_lazy = (_pgd_fast_path and not _pgd_layer_rank
-                         and getattr(maskmgr, 'prune_n', 0) == 0
-                         and getattr(fisher, '_vprime', None) is None
-                         and hasattr(fisher, 'optimizer')
-                         and _os_kldbg.environ.get('GMP_PGD_LAZY_IMPS', '1') != '0')
-            _pgd_lazy_check = _pgd_lazy and _os_kldbg.environ.get('GMP_PGD_LAZY_CHECK') == '1'
-            if _pgd_lazy:
-                _pgd_scratch.clear()
-                _pgd_imps = _PGDLazyImps(fisher, check=_pgd_lazy_check)
-            for _n, _p in maskmgr.named_params.items():
-                if _pgd_lazy and _p.numel() > 0 and _PGDLazyImps.lazy_ok(fisher, _p):
-                    _pgd_imps.add_lazy(_n, _p)
-                    continue
+            _PGD_LAZY_SAL[0] = bool(getattr(FLAGS, 'gmp_pgd_lazy_saliency', False) and _pgd_fast_path
+                                    and not _pgd_layer_rank and getattr(maskmgr, 'prune_n', 0) == 0)
+            if _PGD_LAZY_SAL[0]:
+                _pgd_imps = _PGDLazyImps(maskmgr.named_params, fisher,
+                                         getattr(FLAGS, 'gmp_pgd_saliency_cache_gb', -1.0))
+            for _n, _p in ([] if _PGD_LAZY_SAL[0] else maskmgr.named_params.items()):
                 # _p.data itself is the source: in STE mode (--gmp_ste) it is
                 # never hard-reset by maskmgr.apply()/update() (see
                 # _apply_mask), so it already holds the true, continuously-
@@ -8549,10 +9187,7 @@ def globalprune_gmp(
                         _t = _rk.view_as(_t)
                     del _fl, _rk
                 if _t.numel() > 0:
-                    if _pgd_lazy:
-                        _pgd_imps.add_eager(_n, _t)
-                    else:
-                        _pgd_imps[_n] = _t
+                    _pgd_imps[_n] = _t
 
             if _pgd_imps:
                 _pgd_dev = next(iter(_pgd_imps.values())).device
@@ -8609,12 +9244,14 @@ def globalprune_gmp(
                     _pgd_k_prune = int(_pgd_stats[1].item() - _pgd_stats[0].item())
 
                 # global min/max — two all_reduces for FSDP
+                _mm = [torch.aminmax(v) for v in _pgd_imps.values()]   # one pass for both ends
                 _pgd_lo_t = torch.tensor(
-                    torch.stack([v.min() for v in _pgd_imps.values()]).min().item(),
+                    torch.stack([a for a, _ in _mm]).min().item(),
                     dtype=torch.float32, device=_pgd_dev)
                 _pgd_hi_t = torch.tensor(
-                    torch.stack([v.max() for v in _pgd_imps.values()]).max().item(),
+                    torch.stack([b for _, b in _mm]).max().item(),
                     dtype=torch.float32, device=_pgd_dev)
+                del _mm
                 if _pgd_use_fsdp:
                     _dist.all_reduce(_pgd_lo_t, op=_dist.ReduceOp.MIN)
                     _dist.all_reduce(_pgd_hi_t, op=_dist.ReduceOp.MAX)
@@ -8659,10 +9296,15 @@ def globalprune_gmp(
                 _pgd_thr = _pgd_thr_hi
 
                 # desired mask (uncapped) -- same as before pgd_max_swap_frac existed
-                _pgd_desired = {
-                    _n: (_pgd_imps[_n] > _pgd_thr) if _n in _pgd_imps else maskmgr.masks[_n].clone()
-                    for _n in maskmgr.named_params
-                }
+                if _PGD_EAGER:
+                    _pgd_desired = {
+                        _n: (_pgd_imps[_n] > _pgd_thr) if _n in _pgd_imps else maskmgr.masks[_n].clone()
+                        for _n in maskmgr.named_params
+                    }
+                else:  # lazy (see _LazyBoolMap); masks snapshotted so later reassignment cannot leak in
+                    _pgd_desired = _LazyBoolMap(maskmgr.named_params, (
+                        lambda _n, _i=_pgd_imps, _t=_pgd_thr, _m=_mask_snapshot(maskmgr.masks):
+                        (_i[_n] > _t) if _n in _i else _m[_n]))
 
                 if pgd_grow_to_target and getattr(maskmgr, 'prune_n', 0) > 0 and getattr(maskmgr, 'prune_m', 0) > 0:
                     # N:M-aware PGD-driven growth: a global-threshold _pgd_desired
@@ -9459,8 +10101,17 @@ def globalprune_gmp(
                         _pgd_recdiag_L_pre = _pgd_diag_nll(model, _pgd_recdiag_batch, maskmgr, str(device))
                         _pgd_recdiag_open_step = step
 
-                    _revive_cand = {_n: _pgd_desired[_n] & ~maskmgr.masks[_n] for _n in maskmgr.named_params}
-                    _prune_cand  = {_n: (~_pgd_desired[_n]) & maskmgr.masks[_n] for _n in maskmgr.named_params}
+                    if _PGD_EAGER:
+                        _revive_cand = {_n: _pgd_desired[_n] & ~maskmgr.masks[_n] for _n in maskmgr.named_params}
+                        _prune_cand  = {_n: (~_pgd_desired[_n]) & maskmgr.masks[_n] for _n in maskmgr.named_params}
+                    else:
+                        _cm = _mask_snapshot(maskmgr.masks)
+                        _revive_cand = _LazyBoolMap(maskmgr.named_params, lambda _n, _d=_pgd_desired, _m=_cm: _d[_n] & ~_m[_n])
+                        _prune_cand  = _LazyBoolMap(maskmgr.named_params, lambda _n, _d=_pgd_desired, _m=_cm: (~_d[_n]) & _m[_n])
+                    if pgd_revive_protect > 0 and _revive_protect:
+                        assert not _pgd_use_fsdp, "--gmp_pgd_revive_protect_events is single-GPU only"
+                        for _n, _p in _revive_protect.items():
+                            _prune_cand[_n] = _prune_cand[_n] & (_p == 0)
                     _n_prune_cand_t = torch.tensor(
                         _pgd_count(_prune_cand.values()), dtype=torch.long, device=_pgd_dev)
                     _n_revive_cand_t = torch.tensor(
@@ -9470,6 +10121,10 @@ def globalprune_gmp(
                         _dist.all_reduce(_n_revive_cand_t, op=_dist.ReduceOp.SUM)
                     _n_prune_cand = int(_n_prune_cand_t.item())
                     _n_revive_cand = int(_n_revive_cand_t.item())
+                    _n_prune_cand_raw = _n_prune_cand
+                    _pgd_sparse_ok = (not _PGD_EAGER and not _TR_KL_USE_HOOK[0] and not getattr(maskmgr, 'ste', False)
+                                      and not _os_kldbg.environ.get('GMP_PGD_KL_DEBUG')
+                                      and _os_kldbg.environ.get('GMP_PGD_SPARSE') != '0')
                     # BUGFIX: the bisection below used to search k in
                     # [0, _n_prune_cand] and then apply that SAME k to both
                     # prune and revive selection, assuming revive_cand is at
@@ -9511,6 +10166,15 @@ def globalprune_gmp(
                     # of everything else already live at a mask_interval boundary).
                     _prune_vals, _prune_vlo, _prune_vhi = _pgd_build_topk_vals(
                         _pgd_imps, _prune_cand, False, _pgd_lo, _pgd_hi, scratch=_pgd_vals_scratch)
+                    # Small candidate pools (after the target is reached: thousands to a few million) are
+                    # gathered and sorted once, so each KL probe selects the k-th directly and zeroes only
+                    # those positions instead of a pass over every prunable weight (_PGDSparsePool).
+                    _pgd_sp_prune = _pgd_sp_revive = None
+                    if (_pgd_sparse_ok and pgd_topk_impl != 'kthvalue'
+                            and _n_prune_cand_raw + _n_revive_cand <= _PGD_SPARSE_MAX
+                            and all(maskmgr.named_params[_n].data.is_contiguous() for _n in _pgd_imps)):
+                        _pgd_sp_prune = _PGDSparsePool(_pgd_imps, _prune_cand, False, _pgd_dev, _pgd_use_fsdp)
+                        _pgd_sp_revive = _PGDSparsePool(_pgd_imps, _revive_cand, True, _pgd_dev, _pgd_use_fsdp)
 
                     # maskmgr.masks doesn't change across this whole bisection
                     # search (only after it's done, when the winning k is
@@ -9547,14 +10211,50 @@ def globalprune_gmp(
                         if k <= 0:
                             return 0.0
                         torch.cuda.synchronize(); _t_call0 = _time_dbg.time()
+                        _pidx = _pgd_sp_prune.select(k) if _pgd_sp_prune is not None else None
+                        if _pidx is not None:
+                            torch.cuda.synchronize(); _t_topk1 = _time_dbg.time()
+                            _pgd_topk_time[0] += _t_topk1 - _t_call0
+                            _kl, _ = _compute_tr_kl(fsdp_model if fsdp_model is not None else model,
+                                                     _pgd_kl_cal_batch, None, maskmgr, str(device),
+                                                     kl_reduce=tr_kl_reduce, kl_quantile=tr_kl_quantile,
+                                                     ref_cache=_pgd_kl_ref_cache, pruned_idx=_pidx)
+                            if _pgd_use_fsdp:
+                                import torch.distributed as _dist
+                                _kl_t = torch.tensor([_kl], dtype=torch.float64, device=_pgd_dev)
+                                _dist.broadcast(_kl_t, src=0)
+                                _kl = _kl_t.item()
+                            torch.cuda.synchronize(); _t_call2 = _time_dbg.time()
+                            _pgd_fwd_time[0] += _t_call2 - _t_topk1
+                            _pgd_kl_at_calls[0] += 1
+                            _pgd_kl_at_time[0] += _t_call2 - _t_call0
+                            if _os_kldbg.environ.get('GMP_PGD_SPARSE_CHECK') == '1':
+                                # A/B in place: the original selection + mask-path KL on the same state
+                                _sel = _pgd_topk_mask_from_vals(_prune_vals, _prune_vlo, _prune_vhi, k, _pgd_dev, _pgd_use_fsdp, False)
+                                _sm = _pgd_idx_to_masks(_pidx, maskmgr.named_params)
+                                _nd = sum(int((_sel[_n] != _sm[_n]).sum()) for _n in _pgd_imps)
+                                _cm2 = _LazyBoolMap(maskmgr.named_params, (
+                                    lambda _n, _s=_sel, _m=_mask_snapshot(maskmgr.masks):
+                                    (_m[_n] & ~_s[_n]) if _n in _pgd_imps else _m[_n]))
+                                _kl2, _ = _compute_tr_kl(fsdp_model if fsdp_model is not None else model,
+                                                         _pgd_kl_cal_batch, _cm2, maskmgr, str(device),
+                                                         kl_reduce=tr_kl_reduce, kl_quantile=tr_kl_quantile,
+                                                         ref_cache=_pgd_kl_ref_cache)
+                                logging.info(f"  [pgd_sparse_check] step={step} k={k} sel_diff={_nd} kl_sparse={_kl!r} kl_orig={_kl2!r} same={_nd == 0 and _kl == _kl2}")
+                            return _kl
                         if pgd_topk_impl == 'kthvalue' and not _pgd_use_fsdp:
                             _sel = _pgd_topk_mask_from_vals_kthvalue(_prune_vals, k, _pgd_dev, False)
                         else:
                             _sel = _pgd_topk_mask_from_vals(_prune_vals, _prune_vlo, _prune_vhi, k, _pgd_dev, _pgd_use_fsdp, False)
                         torch.cuda.synchronize(); _t_topk1 = _time_dbg.time()
                         _pgd_topk_time[0] += _t_topk1 - _t_call0
-                        _cand_masks = {_n: (maskmgr.masks[_n] & ~_sel[_n]) if _n in _pgd_imps else maskmgr.masks[_n]
-                                       for _n in maskmgr.named_params}
+                        if _PGD_EAGER:
+                            _cand_masks = {_n: (maskmgr.masks[_n] & ~_sel[_n]) if _n in _pgd_imps else maskmgr.masks[_n]
+                                           for _n in maskmgr.named_params}
+                        else:
+                            _cand_masks = _LazyBoolMap(maskmgr.named_params, (
+                                lambda _n, _s=_sel, _m=_mask_snapshot(maskmgr.masks):
+                                (_m[_n] & ~_s[_n]) if _n in _pgd_imps else _m[_n]))
                         if _os_kldbg.environ.get('GMP_PGD_KL_DEBUG') and k <= 63:
                             _picked = []
                             for _n in _pgd_imps:
@@ -9745,7 +10445,13 @@ def globalprune_gmp(
                                    "pgd/k_actual": _k_actual, "pgd/n_prune_cand": _n_prune_cand,
                                    "pgd/n_revive_cand": _n_revive_cand,
                                    "pgd/net_prune_predicted": max(0, _k_actual - _n_revive_cand)}, step=step)
-                    if pgd_topk_impl == 'kthvalue' and not _pgd_use_fsdp:
+                    _pidx = _pgd_sp_prune.select(_k_actual) if _pgd_sp_prune is not None else None
+                    if _pidx is not None:
+                        _sel_prune = _pgd_idx_to_masks(_pidx, maskmgr.named_params)
+                        if _os_kldbg.environ.get('GMP_PGD_SPARSE_CHECK') == '1':
+                            _o = _pgd_topk_mask_from_vals(_prune_vals, _prune_vlo, _prune_vhi, _k_actual, _pgd_dev, _pgd_use_fsdp, False)
+                            logging.info(f"  [pgd_sparse_check] step={step} final prune k={_k_actual} sel_diff={sum(int((_o[_n] != _sel_prune[_n]).sum()) for _n in _pgd_imps)}")
+                    elif pgd_topk_impl == 'kthvalue' and not _pgd_use_fsdp:
                         _sel_prune = _pgd_topk_mask_from_vals_kthvalue(_prune_vals, _k_actual, _pgd_dev, False)
                     else:
                         _sel_prune = _pgd_topk_mask_from_vals(_prune_vals, _prune_vlo, _prune_vhi, _k_actual, _pgd_dev, _pgd_use_fsdp, False)
@@ -9757,9 +10463,18 @@ def globalprune_gmp(
                     # candidates than exist. No-op when not growing (there
                     # _k_actual <= _n_revive_cand always, per the min() above).
                     _k_revive = min(_k_actual, _n_revive_cand)
-                    _sel_revive = (_pgd_topk_mask(_pgd_imps, _revive_cand, _k_revive, True, _pgd_dev, _pgd_use_fsdp, _pgd_lo, _pgd_hi)
-                                   if _k_revive > 0 else {n: torch.zeros_like(m) for n, m in maskmgr.masks.items()})
+                    _ridx = _pgd_sp_revive.select(_k_revive) if (_pgd_sp_revive is not None and _k_revive > 0) else None
+                    if _ridx is not None:
+                        _sel_revive = _pgd_idx_to_masks(_ridx, maskmgr.named_params)
+                        if _os_kldbg.environ.get('GMP_PGD_SPARSE_CHECK') == '1':
+                            _o = _pgd_topk_mask(_pgd_imps, _revive_cand, _k_revive, True, _pgd_dev, _pgd_use_fsdp, _pgd_lo, _pgd_hi)
+                            logging.info(f"  [pgd_sparse_check] step={step} final revive k={_k_revive} sel_diff={sum(int((_o[_n] != _sel_revive[_n]).sum()) for _n in _pgd_imps)}")
+                    else:
+                        _sel_revive = (_pgd_topk_mask(_pgd_imps, _revive_cand, _k_revive, True, _pgd_dev, _pgd_use_fsdp, _pgd_lo, _pgd_hi)
+                                       if _k_revive > 0 else {n: torch.zeros_like(m) for n, m in maskmgr.masks.items()})
+                    _pgd_sp_prune = _pgd_sp_revive = None
                     _ft = dict(rev_back=0, prn_back=0, gap_sum=0, gap1=0) if (pgd_flip_trace and _flip_state['on']) else None
+                    _n_protected = 0
                     for _n in maskmgr.named_params:
                         _old = maskmgr.masks[_n]
                         _new = _old.clone()
@@ -9767,6 +10482,14 @@ def globalprune_gmp(
                             _new = (_new | _sel_revive[_n]) & ~_sel_prune[_n]
                         _pgd_revivals += int((_new & ~_old).sum().item())
                         _pgd_prunings += int((~_new & _old).sum().item())
+                        if pgd_revive_protect > 0:
+                            # one event of protection used up everywhere, then a fresh window for this event's revivals
+                            _p = _revive_protect.get(_n)
+                            if _p is None:
+                                _p = _revive_protect[_n] = torch.zeros(_old.shape, dtype=torch.uint8, device=_old.device)
+                            _p.sub_((_p > 0).to(torch.uint8))
+                            _p.masked_fill_(_new & ~_old, min(pgd_revive_protect, 255))
+                            _n_protected += int((_p > 0).sum().item())
                         if _ft is not None:
                             # flip trace: positions flipping now that already flipped since reach
                             _flip = _new ^ _old
@@ -9829,13 +10552,16 @@ def globalprune_gmp(
                     if pgd_flip_trace and not _flip_state['on'] and _pgd_post_sparsity >= final_sparsity - 1e-4:
                         _flip_state['on'] = True
                         logging.info(f"  [flip_trace] target reached at step {step}: flip tracing starts from next projection")
+                    if _ckpt_at_target[0] == 'on' and _pgd_post_sparsity >= final_sparsity - 1e-4:
+                        _ckpt_at_target[0] = 'pending'  # saved at the top of the next step, once this one is complete
                     if pgd_freeze_after_target and not _pgd_frozen[0] and _pgd_post_sparsity >= final_sparsity - 1e-4:
                         _pgd_frozen[0] = True
                         logging.info(f"  [pgd_freeze] target {final_sparsity} reached at step {step} (sparsity {_pgd_post_sparsity:.4f}): mask frozen, no further PGD projections")
                         if use_wandb and is_main_process:
                             wandb.log({'pgd/frozen_step': step}, step=step)
                     logging.info(f"  [pgd_kl_budget] applied revivals={_pgd_revivals} prunings={_pgd_prunings} "
-                                 f"post_sparsity={_pgd_post_sparsity:.4f} (step={step})")
+                                 f"post_sparsity={_pgd_post_sparsity:.4f} (step={step})"
+                                 + (f" protected={_n_protected}" if pgd_revive_protect > 0 else ""))
                     if pgd_recovery_diag and pgd_grow_to_target and not _pgd_use_fsdp and is_main_process \
                             and _pgd_recdiag_batch is not None:
                         # BUGFIX: maskmgr.masks[_n] = _new (just above) only updates the
@@ -9868,7 +10594,8 @@ def globalprune_gmp(
                         wandb.log({"pgd/revivals": _pgd_revivals, "pgd/prunings": _pgd_prunings,
                                    "pgd/net_growth": _pgd_prunings - _pgd_revivals,
                                    "pgd/turnover": _pgd_revivals + _pgd_prunings,
-                                   "pgd/post_sparsity": _pgd_post_sparsity}, step=step)
+                                   "pgd/post_sparsity": _pgd_post_sparsity,
+                                   **({"pgd/protected": _n_protected} if pgd_revive_protect > 0 else {})}, step=step)
                 # trust-region cap: limit how many positions actually flip this
                 # step (--gmp_pgd_max_swap_frac, fraction of total masked
                 # params). Uncapped PGD projects straight onto the full
@@ -10008,8 +10735,25 @@ def globalprune_gmp(
                     if pgd_debug_repeat_swap and use_wandb and is_main_process:
                         wandb.log({"pgd/repeat_swap_frac": (_pgd_repeat_flips / _pgd_total_flips) if _pgd_total_flips > 0 else 0.0,
                                    "pgd/total_flips": _pgd_total_flips}, step=step)
+                if _pgd_is_nm:
+                    # the at-target checkpoint / freeze triggers sit in the unstructured kl-budget branch only;
+                    # N:M runs reach the target through the branches above and need them here
+                    _nm_post = maskmgr.current_sparsity()
+                    if _ckpt_at_target[0] == 'on' and _nm_post >= final_sparsity - 1e-4:
+                        _ckpt_at_target[0] = 'pending'
+                    if pgd_freeze_after_target and not _pgd_frozen[0] and _nm_post >= final_sparsity - 1e-4:
+                        _pgd_frozen[0] = True
+                        logging.info(f"  [pgd_freeze] N:M target {final_sparsity} reached at step {step} "
+                                     f"(sparsity {_nm_post:.4f}): mask frozen, no further PGD projections")
+                        if use_wandb and is_main_process:
+                            wandb.log({'pgd/frozen_step': step}, step=step)
                 maskmgr.apply(fsdp_model)
                 del _pgd_imps, _pgd_desired
+                if not _PGD_EAGER:
+                    # the fp32 importance buffers (one copy of every prunable weight: ~43GB per rank at
+                    # 32B/3 ranks) are only needed during an event; keeping them for the 7 steps in between
+                    # was pure steady-state VRAM. Reallocated at the next event (expandable_segments).
+                    _pgd_scratch.clear()
                 # this event's per-weight scratch (bool / fp32 dicts over every prunable weight) is
                 # function-local and otherwise stays alive until the next event: ~30GB/rank at 32B,
                 # enough to OOM the following optimizer.step()
@@ -10101,6 +10845,15 @@ def globalprune_gmp(
                            "grad_conflict/norm_ipo":  math.sqrt(_norm2)}, step=step)
             model.zero_grad()
 
+        if pgd_revive_window and step > dense_warmup_steps:
+            if not _revive_win_used[0]:
+                with torch.no_grad():
+                    for _n, _p in maskmgr.named_params.items():
+                        _w = _revive_win.get(_n)
+                        if _w is None:
+                            _w = _revive_win[_n] = torch.zeros_like(_p.data)
+                        _w.add_(_p.data.masked_fill(maskmgr.masks[_n], 0))  # this step's update of inactive weights
+            _revive_win_used[0] = False
         if step > dense_warmup_steps:
             maskmgr.apply(fsdp_model)
 
@@ -10216,6 +10969,22 @@ def globalprune_gmp(
                                  + f" peak_alloc={_ph['gpk']:.1f}GB peak_reserved={torch.cuda.max_memory_reserved()/1e9:.1f}GB")
                     logging.info(f"  [phase_peak] steps={_ph['n']} (up to step {step}) peak allocated GB by phase: "
                                  + ' '.join(f'{k}={v:.2f}' for k, v in sorted(_ph['pk'].items(), key=lambda x: -x[1])))
+                    # the window values above reset every 32 steps; keep a whole-run max as well, and send both to
+                    # wandb so cost tables never depend on the log files of the machine the run happened on
+                    _ph.setdefault('pk_run', {})
+                    for _k, _v in _ph['pk'].items():
+                        _ph['pk_run'][_k] = max(_ph['pk_run'].get(_k, 0.0), _v)
+                    _ph['gpk_run'] = max(_ph.get('gpk_run', 0.0), _ph['gpk'])
+                    _ph['sec_run'] = _ph.get('sec_run', 0.0) + _tot
+                    for _k, _v in _ph['acc'].items():
+                        _ph.setdefault('acc_run', {})[_k] = _ph.get('acc_run', {}).get(_k, 0.0) + _v
+                    if use_wandb and is_main_process:
+                        _wb = {'phase/peak_alloc_gb_window': _ph['gpk'], 'phase/peak_alloc_gb_run': _ph['gpk_run'],
+                               'phase/peak_reserved_gb_run': torch.cuda.max_memory_reserved() / 1e9,
+                               'phase/sec_per_step_window': _tot / 32, 'phase/sec_total_run': _ph['sec_run']}
+                        _wb.update({f'phase_peak_gb/{_k}': _v for _k, _v in _ph['pk_run'].items()})
+                        _wb.update({f'phase_sec/{_k}': _v for _k, _v in _ph['acc_run'].items()})
+                        wandb.log(_wb, step=step)
                     _ph['acc'] = {}
                     _ph['pk'] = {}
                     _ph['gpk'] = 0.0
@@ -10444,6 +11213,27 @@ def _infinite(loader, sampler=None):
             sampler.set_epoch(epoch)
         yield from loader
         epoch += 1
+
+
+class _CountedIter:
+    """A data stream that counts its draws. Checkpoints record the count and a resumed run skips that many
+    items, so it continues where the interrupted run stopped instead of re-reading the data from the start
+    (every stream shuffles with its own seeded generator, so the skipped prefix is the same sequence)."""
+
+    def __init__(self, it):
+        self.it, self.n = it, 0
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        self.n += 1
+        return next(self.it)
+
+    def skip(self, k):
+        for _ in range(k):
+            next(self.it)
+        self.n += k
 
 
 def _model_tag(FLAGS):
