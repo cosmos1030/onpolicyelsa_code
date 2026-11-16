@@ -3886,6 +3886,44 @@ def _reload_optimizer_state(optimizer, device) -> None:
     torch.cuda.synchronize()
 
 
+def _streamed_optimizer_step(optimizer, device) -> None:
+    """optimizer.step() with exp_avg/exp_avg_sq resident on CPU: each parameter's state is
+    copied in, updated, and copied back to its pinned buffer before the next one, so the
+    GPU holds one parameter's Adam state at a time instead of all of it (32B on 3 A100-80GB
+    ranks: params + grads + full bf16 m/v is ~85GB per rank). Same AdamW update per
+    parameter as one step() over the group (AdamW has no cross-parameter terms)."""
+    _t0 = time.time()
+    pinned = optimizer.__dict__.setdefault('_elsa_pinned', {})
+    for group in optimizer.param_groups:
+        params = group['params']
+        try:
+            for p in params:
+                if p.grad is None:
+                    continue
+                state = optimizer.state.get(p)
+                if state:
+                    for key in ('exp_avg', 'exp_avg_sq'):
+                        if key in state and not state[key].is_cuda:
+                            state[key] = state[key].to(device, non_blocking=True)
+                group['params'] = [p]
+                optimizer.step()
+                state = optimizer.state[p]
+                for key in ('exp_avg', 'exp_avg_sq'):
+                    t = state.get(key)
+                    if t is None or not t.is_cuda:
+                        continue
+                    buf = pinned.get((id(state), key))
+                    if buf is None or buf.shape != t.shape or buf.dtype != t.dtype:
+                        buf = torch.empty(t.shape, dtype=t.dtype, device='cpu', pin_memory=True)
+                        pinned[(id(state), key)] = buf
+                    buf.copy_(t, non_blocking=True)
+                    state[key] = buf
+        finally:
+            group['params'] = params
+    torch.cuda.synchronize()
+    _log_opt_move('streamed step', optimizer, _t0)
+
+
 def _opkd_vllm_wake(vllm_engine) -> None:
     """Wake the OPKD vLLM engine before a rollout batch, if it supports vLLM's
     sleep/wake_up (the direct in-process single-GPU vllm.LLM object created
@@ -5644,6 +5682,7 @@ def globalprune_gmp(
     fused_topk_k     = int(getattr(FLAGS, 'gmp_fused_topk_k', 0) or 0)  # >0: NTP+KD and OPD via fused lm_head + teacher-top-K forward KL
     fused_topk_chunk = int(getattr(FLAGS, 'gmp_fused_topk_chunk', 1024) or 1024)
     offload_opt_fwd  = bool(getattr(FLAGS, 'gmp_offload_optimizer_fwd', False))  # Adam state on CPU outside optimizer.step()
+    stream_opt_step  = bool(getattr(FLAGS, 'gmp_stream_optimizer_step', False))  # ...and inside it, one parameter at a time
     fsdp_sync_every_micro = bool(getattr(FLAGS, 'gmp_fsdp_sync_every_micro', False))
     if (offload_opt_fwd and int(getattr(FLAGS, 'gmp_ckpt_every_steps', 0) or 0) > 0 and is_fsdp
             and not getattr(FLAGS, 'gmp_ckpt_sharded', False)):
@@ -8991,11 +9030,16 @@ def globalprune_gmp(
                               getattr(FLAGS, 'gmp_ste_decay_warmup', -1))
             if getattr(fisher, 'saliency', None) == 'movement' and fsdp_model is None:
                 fisher.accumulate_movement()
-            if offload_opt_fwd:
+            if offload_opt_fwd and stream_opt_step:
+                _memlog('before opt.step', step)
+                _streamed_optimizer_step(optimizer, device)
+                _memlog('after opt.step', step)
+            else:
+              if offload_opt_fwd:
                 _reload_optimizer_state(optimizer, device)
-            _memlog('before opt.step', step)
-            optimizer.step()
-            _memlog('after opt.step', step)
+              _memlog('before opt.step', step)
+              optimizer.step()
+              _memlog('after opt.step', step)
             if offload_opt_fwd:
                 # back to CPU before the mask/PGD work that follows the update (saliency reads
                 # exp_avg_sq through fisher_factor, which moves it to the param's device per tensor)
